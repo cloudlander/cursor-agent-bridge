@@ -2,7 +2,22 @@ export type ClientToolDefinition = {
   name: string;
   description?: string;
   inputSchema: Record<string, unknown>;
+  namespaced?: { namespace: string; name: string };
+  freeform?: boolean;
 };
+
+export type ClientToolIdentity = Pick<
+  ClientToolDefinition,
+  "namespaced" | "freeform"
+>;
+
+/** Identity fields a tool call carries from its definition. */
+export function callIdentity(source: ClientToolIdentity): ClientToolIdentity {
+  return {
+    ...(source.namespaced ? { namespaced: source.namespaced } : {}),
+    ...(source.freeform ? { freeform: true } : {}),
+  };
+}
 
 export type ClientToolOutput = {
   callId: string;
@@ -10,7 +25,7 @@ export type ClientToolOutput = {
   isError?: boolean;
 };
 
-export type PendingClientToolCall = {
+export type PendingClientToolCall = ClientToolIdentity & {
   callId: string;
   itemId: string;
   name: string;
