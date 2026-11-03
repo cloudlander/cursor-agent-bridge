@@ -34,8 +34,8 @@ npm install cursor-api-proxy
 From source:
 
 ```bash
-git clone <this-repo>
-cd cursor-api-proxy
+git clone https://github.com/cloudlander/cursor-agent-bridge.git
+cd cursor-agent-bridge
 npm install
 npm run build
 ```

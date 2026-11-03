@@ -14,7 +14,7 @@ Human install and env tables: [README.md](./README.md). CAI operations: [docs/CA
 | npm package | `cursor-agent-bridge` (see `package.json`; upstream publishes `cursor-api-proxy`) |
 | CLI binary | **`cursor-api-proxy`** — keep for SDK/docs compatibility with upstream |
 | Upstream | [anyrobert/cursor-api-proxy](https://github.com/anyrobert/cursor-api-proxy) @ **1.7.0** baseline |
-| License | MIT (`package.json`; add `LICENSE` file if missing before first public release) |
+| License | MIT — root `LICENSE` |
 
 Positioning: **OpenAI-compatible HTTP bridge to Cursor CLI agent mode** — dashboard, web chat, plugins, CDSW inbound auth, CAI bootstrap — not a replacement for the Cursor IDE.
 
@@ -70,6 +70,7 @@ npm test
 - If you add or change env vars, update **README.md** env table and, when CAI-relevant, **docs/CAI-DEPLOYMENT.md**.
 - If you change HTTP routes or auth behavior, update **README.md** and this file’s map if paths move.
 - Run **`npm run build`** after `src/` edits so `dist/` stays publishable (this repo ships `dist/` in npm `files`).
+- **GitHub Actions** (`.github/workflows/ci.yml`): on push/PR to `main`, runs `npm ci`, `typecheck`, `build`, and `npm test` on Node 18 / 20 / 22. Keep CI green when changing tests or flaky timing suites.
 
 ### Security (public repo)
 
@@ -90,7 +91,7 @@ npm test
 ## Local development
 
 ```bash
-git clone https://github.com/<org>/cursor-agent-bridge.git
+git clone https://github.com/cloudlander/cursor-agent-bridge.git
 cd cursor-agent-bridge
 npm install          # runs prepare → tsc
 npm run build
