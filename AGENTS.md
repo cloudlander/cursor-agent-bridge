@@ -144,7 +144,7 @@ Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (neve
 | Dashboard login | `src/lib/agent-login.ts` |
 | Web chat | `src/lib/chat-api.ts`, `chat-store.ts`, `public/chat*` |
 | Plugins UI/API extensions | `src/lib/plugins/*` (bridge marketplace behavior) |
-| CAI | `app.py`, `app.sh`, `scripts/bootstrap-cai-application.sh`, `scripts/bootstrap-cai-runtime.sh`, `scripts/create-cai-application.sh`, `docs/CAI-DEPLOYMENT.md` |
+| CAI | `.project-metadata.yaml`, `app.py`, `app.sh`, `scripts/bootstrap-cai-application.sh`, `scripts/bootstrap-cai-application.py`, `scripts/create-cai-application.sh`, `scripts/create-cai-application.py`, `docs/CAI-DEPLOYMENT.md` |
 | Agent docs | **`AGENTS.md`** |
 
 **Not fully merged yet** — upstream expects newer ACP + `handlers/agent-turn.ts` / `agent-failure.ts`. Wire those only after upgrading `acp-connection.ts` and request logging to upstream 1.7.0 shapes; do not enable half-merged handlers.

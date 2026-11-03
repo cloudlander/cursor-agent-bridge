@@ -7,11 +7,15 @@ set -euo pipefail
 : "${CDSW_DOMAIN:?CDSW_DOMAIN is not set}"
 : "${CDSW_PROJECT_ID:?CDSW_PROJECT_ID is not set}"
 
-APP_NAME="${CAI_APP_NAME:-Model Gateway}"
-APP_SUBDOMAIN="${CAI_APP_SUBDOMAIN:-model-gateway}"
+APP_NAME="${CAI_APP_NAME:-Cursor Agent}"
+APP_SUBDOMAIN="${CAI_APP_SUBDOMAIN:-agent-cai}"
 APP_SCRIPT="${CAI_APP_SCRIPT:-app.py}"
-RUNTIME_ID="${CAI_RUNTIME_IDENTIFIER:-ip-10-129-85-165.iopscloud.cloudera.com:5000/cloudera/cdsw/ml-runtime-pbj-workbench-python3.10-standard:2025.01.3-b8}"
-APP_CPU="${CAI_APP_CPU:-2}"
+
+RUNTIME_ID="$(
+  curl -fsS -k -u "${CDSW_API_KEY}": "${CDSW_ENGINE_URL}" | python3 -c "import json,sys; runtime=json.load(sys.stdin).get('runtime',{});print(runtime.get('image_identifier') if runtime else '')"
+)"
+
+APP_CPU="${CAI_APP_CPU:-1}"
 APP_MEMORY_GB="${CAI_APP_MEMORY_GB:-4}"
 
 API_BASE="https://${CDSW_DOMAIN}/api/v2/projects/${CDSW_PROJECT_ID}/applications"
@@ -33,14 +37,13 @@ import json, os
 print(json.dumps({
     "name": "${APP_NAME}",
     "subdomain": "${APP_SUBDOMAIN}",
-    "description": "OpenAI-compatible LLM bridge with admin dashboard",
+    "description": "OpenAI-compatible LLM bridge",
     "script": "${APP_SCRIPT}",
     "runtime_identifier": "${RUNTIME_ID}",
     "cpu": float("${APP_CPU}"),
     "memory": float("${APP_MEMORY_GB}"),
     "environment": {
         "CDSW_APP_POLLING_ENDPOINT": "/healthz",
-        "CDSW_API_KEY": os.environ.get("CDSW_API_KEY", ""),
         "CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE": "false",
         "CURSOR_BRIDGE_MODE": "agent",
     },
