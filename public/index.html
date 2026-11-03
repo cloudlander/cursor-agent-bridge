@@ -17,6 +17,7 @@
       <a href="/" class="active">Dashboard</a>
       <a href="/plugins">Plugins</a>
       <a href="/wiki">Wiki</a>
+      <a href="/apps">Apps</a>
       <a href="/healthz" target="_blank">/healthz</a>
       <a href="/health" target="_blank">/health</a>
       <a href="/chat" class="btn small primary">Agent chat</a>
@@ -74,6 +75,20 @@
         <button class="btn" data-action="enable">Enable autostart</button>
         <button class="btn" data-action="disable">Disable autostart</button>
       </div>
+    </section>
+
+    <section class="card" style="margin-bottom: 16px;">
+      <div class="card-head">
+        <span>Deployed apps</span>
+        <a href="/apps" class="muted-text" style="font-size: 12px; text-transform: none; letter-spacing: 0;">View all</a>
+      </div>
+      <div class="card-body" id="apps-body">
+        <div class="empty">Loading…</div>
+      </div>
+      <p class="muted-text" style="margin: 0 16px 14px; font-size: 11px;">
+        Static sites under <span class="mono">/apps/{name}/</span> or <span class="mono">/{name}/</span>. Hot-deploy with
+        <span class="mono">POST /api/apps/deploy</span> — no bridge restart required.
+      </p>
     </section>
 
     <section class="card" style="margin-bottom: 16px;">
