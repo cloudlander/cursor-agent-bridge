@@ -82,6 +82,7 @@ export class AcpToolSession {
   #listener?: (event: ToolTurnEvent) => void;
   #ttl?: ReturnType<typeof setTimeout>;
   #closed = false;
+  #closing?: Promise<void>;
   #terminal = false;
 
   constructor(opts: AcpToolSessionOptions) {
@@ -135,8 +136,9 @@ export class AcpToolSession {
       if (!this.#sessionId) throw new Error("ACP session/new returned no sessionId");
       await this.#setModel(session);
       this.#armTtl();
-      this.#promptDone = this.#connection
-        .prompt(this.#sessionId, prompt, 0)
+      const promptTurn = this.#connection.prompt(this.#sessionId, prompt, 0);
+      void promptTurn.catch(() => undefined);
+      this.#promptDone = promptTurn
         .then(() => ({ ok: true }) as const)
         .catch((error: unknown) => ({
           ok: false as const,
@@ -233,18 +235,27 @@ export class AcpToolSession {
     return this.collect(listener);
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    if (this.#ttl) clearTimeout(this.#ttl);
-    this.#listener = undefined;
-    this.bridge.rejectAll(new Error("ACP tool session closed"));
-    if (this.#connection && this.#sessionId) {
-      await this.#connection.cancelSession(this.#sessionId).catch(() => undefined);
+  close(): Promise<void> {
+    this.#closing ??= this.#teardown();
+    return this.#closing;
+  }
+
+  async #teardown(): Promise<void> {
+    try {
+      this.#closed = true;
+      if (this.#ttl) clearTimeout(this.#ttl);
+      this.#listener = undefined;
+      void this.#promptDone?.catch(() => undefined);
+      this.bridge.rejectAll(new Error("ACP tool session closed"));
+      if (this.#connection && this.#sessionId) {
+        await this.#connection.cancelSession(this.#sessionId).catch(() => undefined);
+      }
+      await this.#connection?.close("SIGKILL").catch(() => undefined);
+      await this.bridge.close().catch(() => undefined);
+      await this.#opts.onClose?.();
+    } catch {
+      // Best-effort shutdown (TTL, abort, or duplicate close).
     }
-    await this.#connection?.close("SIGKILL").catch(() => undefined);
-    await this.bridge.close().catch(() => undefined);
-    await this.#opts.onClose?.();
   }
 
   async #setModel(session: AcpSessionResult): Promise<void> {
@@ -318,7 +329,7 @@ export class AcpToolSession {
     if (this.#ttl) clearTimeout(this.#ttl);
     if (this.#opts.timeoutMs <= 0) return;
     this.#ttl = setTimeout(() => {
-      void this.close();
+      void this.close().catch(() => undefined);
     }, this.#opts.timeoutMs);
     this.#ttl.unref?.();
   }
