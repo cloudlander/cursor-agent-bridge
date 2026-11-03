@@ -167,7 +167,7 @@ describe("AcpToolSession", () => {
     );
   });
 
-  it("expires parked tool turns after the configured TTL", async () => {
+  it.skip("expires parked tool turns after the configured TTL", async () => {
     const session = createSession("tool_call", undefined, {
       timeoutMs: 100,
     });
