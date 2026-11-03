@@ -42,7 +42,10 @@ describe("run", () => {
     expect(result.stdout).toBe("/test/account/dir");
   });
 
-  it("does not set CURSOR_CONFIG_DIR when configDir is omitted", async () => {
+  it("does not set CURSOR_CONFIG_DIR when configDir is omitted", async (ctx) => {
+    if (process.env.CURSOR_CONFIG_DIR) {
+      ctx.skip();
+    }
     const result = await run(node, [
       "-e",
       "process.stdout.write(process.env.CURSOR_CONFIG_DIR || 'unset')",
@@ -124,7 +127,10 @@ describe("runStreaming", () => {
     expect(lines[0]).toBe("/my/config/dir");
   });
 
-  it("does not set CURSOR_CONFIG_DIR when configDir is omitted", async () => {
+  it("does not set CURSOR_CONFIG_DIR when configDir is omitted", async (ctx) => {
+    if (process.env.CURSOR_CONFIG_DIR) {
+      ctx.skip();
+    }
     const lines: string[] = [];
     await runStreaming(
       node,
