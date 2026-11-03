@@ -18,7 +18,7 @@ Human install and env tables: [README.md](./README.md). CAI operations: [docs/CA
 
 Positioning: **OpenAI-compatible HTTP bridge to Cursor CLI agent mode** — dashboard, web chat, plugins, CDSW inbound auth, CAI bootstrap — not a replacement for the Cursor IDE.
 
-**GitHub remote:** [cloudlander/cursor-agent-bridge](https://github.com/cloudlander/cursor-agent-bridge) — history is intentionally **two commits** on `main`: (1) vanilla import of upstream **v1.7.0**, (2) all bridge-only and fork-specific changes. No copied upstream git history; treat upstream tags as the baseline reference.
+**GitHub remote:** [cloudlander/cursor-agent-bridge](https://github.com/cloudlander/cursor-agent-bridge) — shallow `main` history: upstream **v1.7.0** import, then bridge layer, then LICENSE/CI/docs. No copied upstream git history; treat upstream tags as the baseline reference.
 
 ---
 
