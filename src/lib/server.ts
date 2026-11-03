@@ -13,6 +13,7 @@ import {
 } from "./auth-token-keepalive.js";
 import { killAllChildProcesses } from "./process.js";
 import { ToolSessionRegistry } from "./tool-session-registry.js";
+import { appsDirOf } from "./dynamic-apps.js";
 import { maybeAutoSyncCliCache, redeployAll } from "./plugins/manager.js";
 
 function acpLauncherLabel(acpArgs: string[]): string {
@@ -254,6 +255,7 @@ function startSingleServer(opts: BridgeServerOptions): BridgeHttpServer {
     console.log(`- approve mcps: ${config.approveMcps}`);
     console.log(`- ${formatInboundAuthStartupLog(process.env)}`);
     console.log(`- sessions log: ${config.sessionsLogPath}`);
+    console.log(`- user apps: ${appsDirOf(config)} (hot deploy at /apps/{name}/ and /{name}/)`);
     console.log(
       `- chat-only workspace: ${config.chatOnlyWorkspace ? "yes (isolated temp dir)" : "no"}`,
     );

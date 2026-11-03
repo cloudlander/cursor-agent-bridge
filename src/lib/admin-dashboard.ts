@@ -26,6 +26,13 @@ import {
   resolveAgentAuthStatus,
   startAgentLoginSession,
 } from "./agent-login.js";
+import {
+  appsDirOf,
+  deployAppFromSource,
+  dynamicAppsMatches,
+  handleDynamicApps,
+  listApps,
+} from "./dynamic-apps.js";
 
 const ACCOUNT_USAGE_CACHE_MS = 45_000;
 let accountUsageCache:
@@ -43,6 +50,8 @@ const MIME: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
 };
 
 function packageRoot(): string {
@@ -166,6 +175,8 @@ function getStatus(
     docsDir,
     storageDir,
     sessionsLogPath: config.sessionsLogPath,
+    appsDir: appsDirOf(config),
+    deployedApps: listApps(appsDirOf(config)),
     serviceLog,
     pidFile,
     apiKeyConfigured: Boolean(env.CURSOR_API_KEY ?? env.CURSOR_AUTH_TOKEN),
@@ -252,11 +263,21 @@ export type AdminDashboardOpts = {
   config: BridgeConfig;
 };
 
-export function adminDashboardMatches(req: http.IncomingMessage): boolean {
+export function adminDashboardMatches(
+  req: http.IncomingMessage,
+  config?: BridgeConfig,
+): boolean {
   const url = req.url ?? "";
   const pathname = url.split("?")[0] ?? "";
-  if (req.method === "GET" && (pathname === "/" || pathname === "/wiki" || pathname === "/chat" || pathname === "/plugins"))
+  if (
+    req.method === "GET" &&
+    (pathname === "/" ||
+      pathname === "/wiki" ||
+      pathname === "/chat" ||
+      pathname === "/plugins")
+  )
     return true;
+  if (dynamicAppsMatches(req, config)) return true;
   if (mcpOAuthCallbackMatches(req)) return true;
   if (pluginApiMatches(req)) return true;
   if (req.method === "GET" && pathname.startsWith("/static/")) return true;
@@ -269,6 +290,7 @@ export function adminDashboardMatches(req: http.IncomingMessage): boolean {
   if (req.method === "GET" && pathname === "/api/agent-login/status") return true;
   if (req.method === "POST" && pathname === "/api/agent-login") return true;
   if (req.method === "POST" && pathname === "/api/agent-login/cancel") return true;
+  if (req.method === "POST" && pathname === "/api/apps/deploy") return true;
   if (chatApiMatches(req)) return true;
   return false;
 }
@@ -305,6 +327,35 @@ export function handleAdminDashboard(
   }
   if (req.method === "GET" && pathname === "/plugins") {
     return serveFile(res, path.join(publicDir, "plugins.html"));
+  }
+  if (req.method === "POST" && pathname === "/api/apps/deploy") {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      let body: { name?: string; sourceDir?: string } = {};
+      try {
+        body = JSON.parse(raw || "{}") as typeof body;
+      } catch {
+        return json(res, 400, { error: "invalid json" });
+      }
+      const name = String(body.name ?? "").trim();
+      const sourceDir = String(body.sourceDir ?? "").trim();
+      if (!name || !sourceDir) {
+        return json(res, 400, { error: "name and sourceDir are required" });
+      }
+      const result = deployAppFromSource(
+        appsDirOf(config),
+        name,
+        sourceDir,
+        config.workspace,
+      );
+      if (!result.ok) return json(res, 400, { error: result.error });
+      json(res, 200, result);
+    });
+    return;
+  }
+  if (dynamicAppsMatches(req, config) && handleDynamicApps(req, res, config)) {
+    return;
   }
   if (pluginApiMatches(req)) {
     void handlePluginApi(req, res, config);

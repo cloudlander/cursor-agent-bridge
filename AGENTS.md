@@ -119,6 +119,7 @@ Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (neve
 | Bridge preamble | `src/lib/bridge-context-preamble.ts` | |
 | Plugin marketplace & deploy | `src/lib/plugins/*` | |
 | Admin UI & web chat | `src/lib/admin-dashboard.ts`, `chat-api.ts`, `public/` | Mobile layout: `public/chat*.css/js` |
+| Dynamic user apps | `src/lib/dynamic-apps.ts` | Hot-deploy static sites at `/apps/{name}/` and `/{name}/`; `POST /api/apps/deploy`; storage `<sessions-log-dir>/apps/` |
 | CLI entry | `src/cli.ts`, `src/cli/*` | Published bin: `cursor-api-proxy` |
 | SDK consumer | `src/client.ts` | npm export `"."` |
 | CAI deploy | `app.py`, `app.sh`, `scripts/bootstrap-cai-application.sh`, `docs/CAI-DEPLOYMENT.md` | Not required for generic Node deploy |

@@ -52,7 +52,7 @@ export function createRequestListener(
     // (status/log/stats polls, asset loads, control actions). These are
     // self-referential noise that pollutes the live log tail the dashboard
     // reads from the sessions log file.
-    const isAdminDashboardReq = adminDashboardMatches(req);
+    const isAdminDashboardReq = adminDashboardMatches(req, config);
 
     if (!isAdminDashboardReq) {
       logIncoming(method, pathname, remoteAddress);

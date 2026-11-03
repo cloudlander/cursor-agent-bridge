@@ -184,6 +184,37 @@
     $('status-body').replaceChildren(kv, copy);
   }
 
+  function renderApps(data) {
+    const body = $('apps-body');
+    if (!body) return;
+    if (!data || !Array.isArray(data.apps)) {
+      body.replaceChildren(el('div', { class: 'empty' }, 'No app data.'));
+      return;
+    }
+    if (data.apps.length === 0) {
+      body.replaceChildren(
+        el('div', { class: 'empty' },
+          'No apps deployed yet. POST to ',
+          el('code', {}, '/api/apps/deploy'),
+          ' with ',
+          el('code', {}, '{ "name": "my-app", "sourceDir": "public/my-app" }'),
+          '.',
+        ),
+      );
+      return;
+    }
+    const list = el('ul', { style: 'margin: 0; padding-left: 1.2rem; line-height: 1.8;' });
+    for (const app of data.apps) {
+      const link = el('a', { href: app.shortUrl || app.url, target: '_blank', rel: 'noopener' }, app.name);
+      const meta = el('span', { class: 'dim-text mono', style: 'font-size: 11px; margin-left: 6px;' }, app.shortUrl || app.url);
+      list.appendChild(el('li', {}, link, meta));
+    }
+    const dir = el('p', { class: 'muted-text mono', style: 'font-size: 11px; margin: 10px 0 0; word-break: break-all;' },
+      data.appsDir || '',
+    );
+    body.replaceChildren(list, dir);
+  }
+
   function renderConfig(cfg) {
     const skip = new Set(['requiredKey']);
     const rows = Object.entries(cfg)
@@ -452,6 +483,16 @@
     }
   }
 
+  async function refreshApps() {
+    try {
+      const data = await fetchJSON('/api/apps');
+      renderApps(data);
+    } catch (e) {
+      const body = $('apps-body');
+      if (body) body.replaceChildren(el('div', { class: 'empty' }, `Error: ${e.message}`));
+    }
+  }
+
   async function refreshConfig() {
     try {
       const cfg = await fetchJSON('/api/config');
@@ -526,6 +567,7 @@
   function refreshAll() {
     refreshStatus();
     refreshConfig();
+    refreshApps();
     refreshStats();
     refreshCursorAccount();
     refreshLog();
