@@ -35,6 +35,30 @@ On application start, `app.sh`:
 
 Use **`CDSW_API_KEY`** as the bearer token for `/v1` from other CAI workloads unless `CURSOR_BRIDGE_API_KEY` is explicitly set.
 
+## User-deployed web apps (dynamic routes)
+
+Static HTML/CSS/JS apps are served **without restarting** the bridge after deploy:
+
+| Route | Purpose |
+|-------|---------|
+| `/{name}/` | Short URL for deployed app (e.g. `/aigc-course/`) |
+| `/apps/{name}/` | Canonical app URL |
+| `/apps` | App index page |
+| `GET /api/apps` | JSON list + `appsDir` path |
+| `POST /api/apps/deploy` | Hot-deploy from workspace — body `{ "name": "my-app", "sourceDir": "public/my-app" }` |
+
+Apps live under `<HOME>/.cursor-api-proxy/apps/` (override with `CURSOR_BRIDGE_APPS_DIR`). Each app folder must include `index.html`. Dashboard **Apps** link and `/apps` require no bridge API key.
+
+Example (from project root after building a site under `public/aigc-course/`):
+
+```bash
+curl -s -X POST "http://127.0.0.1:${CDSW_APP_PORT}/api/apps/deploy" \
+  -H "content-type: application/json" \
+  -d '{"name":"aigc-course","sourceDir":"public/aigc-course"}'
+```
+
+Then open `https://model-gateway.${CDSW_DOMAIN}/aigc-course/` (or loopback on the engine).
+
 ## Plugins and MCP on CAI
 
 - UI: `/plugins` on the same port (no bridge key).
