@@ -1,0 +1,29 @@
+services:
+  proxy:
+    build: .
+    image: cursor-api-proxy:latest
+    container_name: cursor-api-proxy
+    restart: unless-stopped
+    init: true
+    ports:
+      # HOST_BIND defaults to 127.0.0.1 (localhost only). Set HOST_BIND=0.0.0.0
+      # in .env to expose on all host interfaces (LAN/Tailscale/public), or
+      # set it to a specific IP (e.g. 100.x.x.x for Tailscale only).
+      - "${HOST_BIND:-127.0.0.1}:${HOST_PORT:-8765}:8765"
+    environment:
+      # Cursor CLI auth — required. Get it from https://cursor.com/dashboard/integrations
+      CURSOR_API_KEY: ${CURSOR_API_KEY:?Set CURSOR_API_KEY in .env (copy .env.example to .env)}
+      # Bind 0.0.0.0 so the port mapping works
+      CURSOR_BRIDGE_HOST: "0.0.0.0"
+      CURSOR_BRIDGE_PORT: "8765"
+      # Optional pass-throughs (set in .env to use)
+      CURSOR_BRIDGE_API_KEY: ${CURSOR_BRIDGE_API_KEY:-}
+      CURSOR_BRIDGE_DEFAULT_MODEL: ${CURSOR_BRIDGE_DEFAULT_MODEL:-auto}
+      CURSOR_BRIDGE_TIMEOUT_MS: ${CURSOR_BRIDGE_TIMEOUT_MS:-300000}
+      CURSOR_BRIDGE_VERBOSE: ${CURSOR_BRIDGE_VERBOSE:-false}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8765/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3

@@ -1,0 +1,90 @@
+import * as http from "node:http";
+
+export function extractBearerToken(req: http.IncomingMessage): string | undefined {
+  const h = req.headers["authorization"];
+  if (!h) return undefined;
+  const val = Array.isArray(h) ? h[0] : h;
+  const match = val.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : undefined;
+}
+
+export function json(
+  res: http.ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders?: http.OutgoingHttpHeaders,
+) {
+  res.writeHead(status, {
+    ...extraHeaders,
+    "Content-Type": "application/json",
+  });
+  res.end(JSON.stringify(body));
+}
+
+export function writeSseHeaders(
+  res: http.ServerResponse,
+  extraHeaders?: http.OutgoingHttpHeaders,
+): void {
+  res.writeHead(200, {
+    ...extraHeaders,
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+}
+
+/** Default interval for SSE comment heartbeats during agent silence. */
+export const SSE_KEEPALIVE_INTERVAL_MS = 15_000;
+
+let defaultSseKeepaliveIntervalMs = SSE_KEEPALIVE_INTERVAL_MS;
+
+/** Test-only override for the default keepalive interval (omit to restore). */
+export function setDefaultSseKeepaliveIntervalMsForTests(ms?: number): void {
+  defaultSseKeepaliveIntervalMs =
+    ms === undefined ? SSE_KEEPALIVE_INTERVAL_MS : ms;
+}
+
+/**
+ * Periodically write an SSE comment so idle clients (e.g. Codex) do not drop
+ * the stream while the agent is silent. Returns a stop function.
+ * Also stops automatically when the response closes or errors.
+ */
+export function startSseKeepalive(
+  res: http.ServerResponse,
+  intervalMs = defaultSseKeepaliveIntervalMs,
+): () => void {
+  const timer = setInterval(() => {
+    if (res.writableEnded || res.destroyed) return;
+    try {
+      res.write(": keepalive\n\n");
+    } catch {
+      /* client gone */
+    }
+  }, intervalMs);
+  timer.unref();
+
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+    res.off("close", stop);
+    res.off("error", stop);
+  };
+  res.on("close", stop);
+  res.on("error", stop);
+  return stop;
+}
+
+export async function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      data += chunk;
+    });
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
+}
