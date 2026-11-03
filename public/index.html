@@ -3,25 +3,43 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>cursor-api-proxy</title>
+  <title>Cursor Agent Bridge</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <header class="site-header">
     <div class="brand">
       <span class="dot" id="status-dot"></span>
-      <span>cursor-api-proxy</span>
+      <span>Cursor Agent Bridge</span>
       <span class="muted-text mono" id="status-summary" style="font-weight: 400; font-size: 12px;">…</span>
     </div>
-    <nav>
+    <nav class="site-nav">
       <a href="/" class="active">Dashboard</a>
+      <a href="/plugins">Plugins</a>
       <a href="/wiki">Wiki</a>
       <a href="/healthz" target="_blank">/healthz</a>
       <a href="/health" target="_blank">/health</a>
+      <a href="/chat" class="btn small primary">Agent chat</a>
     </nav>
   </header>
 
-  <main class="container">
+  <div id="login-gate" class="login-gate hidden" aria-hidden="true">
+    <div class="login-gate-card card">
+      <div class="card-head">
+        <span>Sign in to Cursor</span>
+      </div>
+      <div class="card-body">
+        <p class="muted-text" style="margin: 0 0 14px;">
+          The proxy needs a signed-in Cursor agent before the dashboard can load usage and controls.
+          Complete OAuth in your browser (same flow as <span class="mono">cursor-api-proxy login</span>).
+        </p>
+        <button type="button" class="btn primary" id="agent-login-btn">Sign in with Cursor</button>
+        <p id="login-gate-error" class="muted-text" style="margin: 12px 0 0; font-size: 12px; color: var(--red);"></p>
+      </div>
+    </div>
+  </div>
+
+  <main class="container hidden" id="dashboard-main">
     <div class="grid cols-2" style="margin-bottom: 16px;">
       <section class="card">
         <div class="card-head">
@@ -56,6 +74,32 @@
         <button class="btn" data-action="enable">Enable autostart</button>
         <button class="btn" data-action="disable">Disable autostart</button>
       </div>
+    </section>
+
+    <section class="card" style="margin-bottom: 16px;">
+      <div class="card-head">
+        <span>Cursor account (all usage)</span>
+        <span class="muted-text mono" id="cursor-account-summary" style="font-size: 12px; text-transform: none; letter-spacing: 0;"></span>
+      </div>
+      <div class="card-body" id="cursor-account-body">
+        <div class="empty">Loading…</div>
+      </div>
+      <p class="muted-text" style="margin: 0 16px 14px; font-size: 11px;">
+        Live data from Cursor <span class="mono">api2.cursor.sh</span> for the signed-in account(s) used by this proxy. Token totals are Cursor’s billing-period counters (IDE + CLI + proxy). Subscription price is list-price reference only.
+      </p>
+    </section>
+
+    <section class="card" style="margin-bottom: 16px;">
+      <div class="card-head">
+        <span>Proxy traffic (this bridge)</span>
+        <span class="muted-text mono" id="usage-summary" style="font-size: 12px; text-transform: none; letter-spacing: 0;"></span>
+      </div>
+      <div class="card-body" id="usage-body">
+        <div class="empty">Loading…</div>
+      </div>
+      <p class="muted-text" style="margin: 0 16px 14px; font-size: 11px;">
+        Tokens use the same char÷4 estimate as API <span class="mono">usage</span> fields. Cost is an illustrative API-equivalent USD estimate (not Cursor subscription billing).
+      </p>
     </section>
 
     <div class="grid cols-2" style="margin-bottom: 16px;">
@@ -102,6 +146,24 @@
   </main>
 
   <div class="toast-stack" id="toasts"></div>
+
+  <dialog id="agent-oauth-dialog" class="oauth-dialog">
+    <div class="card-head" style="border-radius: 10px 10px 0 0;">
+      <span>Cursor agent OAuth</span>
+      <button type="button" class="btn small" id="agent-oauth-close">Close</button>
+    </div>
+    <div class="card-body">
+      <p id="agent-oauth-hint" class="muted-text"></p>
+      <div id="agent-oauth-url-wrap" style="margin-top: 12px; display: none;">
+        <a id="agent-oauth-url-link" class="mono" href="#" target="_blank" rel="noopener" style="word-break: break-all;"></a>
+        <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <button type="button" class="btn small primary" id="agent-oauth-open">Open in browser</button>
+          <button type="button" class="btn small" id="agent-oauth-copy">Copy URL</button>
+        </div>
+      </div>
+      <p id="agent-oauth-wait" class="muted-text" style="font-size: 12px; margin-top: 12px;"></p>
+    </div>
+  </dialog>
 
   <script src="/static/app.js"></script>
 </body>

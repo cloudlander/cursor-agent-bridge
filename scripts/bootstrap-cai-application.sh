@@ -124,8 +124,21 @@ NODE_BIN="$(find_agent_node || true)"
 
 ensure_bundled_node_on_path "${NODE_BIN}"
 
-if [[ ! -f "${ROOT}/dist/cli.js" ]]; then
-  echo "Building cursor-api-proxy..."
+needs_project_build() {
+  if [[ ! -f "${ROOT}/dist/cli.js" ]]; then
+    return 0
+  fi
+  if [[ "${CAI_FORCE_BUILD:-}" =~ ^(1|true|yes)$ ]]; then
+    return 0
+  fi
+  # Rebuild when TypeScript sources or static UI changed after the last build.
+  find "${ROOT}/src" "${ROOT}/public" -type f \
+    \( -name '*.ts' -o -name '*.html' -o -name '*.js' -o -name '*.css' \) \
+    -newer "${ROOT}/dist/cli.js" -print -quit 2>/dev/null | grep -q .
+}
+
+if needs_project_build; then
+  echo "Building cursor-agent-bridge (npm install && npm run build)..."
   ensure_npm "${NODE_BIN}"
   (cd "${ROOT}" && npm install && npm run build)
 fi

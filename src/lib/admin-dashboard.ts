@@ -46,6 +46,10 @@ const MIME: Record<string, string> = {
 };
 
 function packageRoot(): string {
+  const fromEnv = process.env.CURSOR_API_PROXY_ROOT?.trim();
+  if (fromEnv) {
+    return path.resolve(fromEnv);
+  }
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 

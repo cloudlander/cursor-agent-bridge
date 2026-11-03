@@ -416,7 +416,8 @@ function labelledContext(labels: readonly string[]): string | undefined {
 /**
  * The one model decision shared by every ACP path. Catalog match first; on a
  * miss, trust the row the CLI already selected for `--model <requested>`.
- * Either way, carry the context size the id or display name names.
+ * Context size from the id or display name is applied only when the proxy
+ * selects the row (`set`); a `keep` plan trusts the CLI's `--model` resolution.
  */
 export function decideAcpModel(
   requested: string,
@@ -424,7 +425,7 @@ export function decideAcpModel(
   aliases: readonly string[] = [],
 ): AcpModelPlan {
   const plan = matchOrKeepCliModel(requested, session, aliases);
-  if (plan.action !== "set" && plan.action !== "keep") return plan;
+  if (plan.action !== "set") return plan;
   const context = labelledContext([requested, ...aliases]);
   return context ? { ...plan, context } : plan;
 }

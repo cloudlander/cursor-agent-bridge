@@ -10,8 +10,10 @@ Short checklist for agents operating this bridge on a **CAI Application** engine
 
 ## Bootstrap sequence
 
-1. **Build TypeScript** (in a session with Node 18+): `npm install && npm run build`.
-2. **Install Cursor CLI into isolated home**: `bash scripts/bootstrap-cai-application.sh` (installs npm via bundled Node when the session has no npm).
+1. **Build TypeScript** (in a session with Node 18+): `npm install && npm run build`, or run the prototype **build-project** job (`scripts/bootstrap-cai-application.sh`).
+2. **Install Cursor CLI into isolated home**: same bootstrap script (installs npm via bundled Node when the session has no npm).
+
+Bootstrap and `app.sh` **rebuild automatically** when any `src/` or `public/` file is newer than `dist/cli.js`. Set `CAI_FORCE_BUILD=1` to force a full rebuild after git pull.
 3. **Register application** (once per project/subdomain): `scripts/create-cai-application.sh` with `CDSW_APIV2_KEY`, project id, domain.
 
 On application start, `app.sh`:
@@ -48,6 +50,7 @@ Use **`CDSW_API_KEY`** as the bearer token for `/v1` from other CAI workloads un
 | `agent: not found` | Bootstrap not run | Run `bootstrap-cai-application.sh`; verify `.cai/home/.local/bin/agent` |
 | `npm not found` during build | Session lacks npm; agent bundle has only `node` | Re-run bootstrap; check `.cai/home/.local/bin/npm` |
 | `/usr/bin/env: 'node': No such file` after npm install | Bundled `node` was not on `PATH` (npm shebang) | Re-run bootstrap (symlinks `.cai/home/.local/bin/node`); or `ln -sf …/versions/*/node .cai/home/.local/bin/node` |
+| Dashboard looks like upstream only (no Chat/Plugins/Sign in) | Stale checkout or upstream `public/index.html` | Pull latest; run bootstrap or restart app (rebuilds when `public/` changed); open `/chat` and `/plugins` directly |
 | Empty models list | CLI not logged in | Set `CURSOR_API_KEY` or `HOME=.cai/home agent login` |
 | Hang on startup | Stale `cursor --version` | `app.sh` already reaps; check `.cai/startup.log` |
 

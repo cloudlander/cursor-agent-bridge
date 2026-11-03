@@ -3,20 +3,22 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Wiki — cursor-api-proxy</title>
+  <title>Wiki — Cursor Agent Bridge</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <header class="site-header">
     <div class="brand">
       <span class="dot" id="status-dot"></span>
-      <span>cursor-api-proxy</span>
+      <span>Cursor Agent Bridge</span>
       <span class="muted-text" style="font-weight: 400; font-size: 12px;">Wiki</span>
     </div>
-    <nav>
+    <nav class="site-nav">
       <a href="/">Dashboard</a>
+      <a href="/plugins">Plugins</a>
       <a href="/wiki" class="active">Wiki</a>
       <a href="/api/wiki" target="_blank">View source</a>
+      <a href="/chat" class="btn small primary">Agent chat</a>
     </nav>
   </header>
 
@@ -25,7 +27,6 @@
     <article class="wiki-body" id="wiki"></article>
   </div>
 
-  <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/wiki.js"></script>
 </body>
 </html>

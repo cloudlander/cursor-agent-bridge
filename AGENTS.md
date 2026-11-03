@@ -133,7 +133,7 @@ Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (neve
 - `src/lib/acp-model.ts`, `acp-spawn.ts`, `acp-text-trailer.ts`
 - `src/lib/media-input.ts`, `plan-limit.ts`, `prompt-delivery.ts`, `run-config-dir.ts`
 - `.env.example`, `.dockerignore`
-- Shared dashboard assets where not bridge-customized (`public/app.js`, `index.html`, `wiki.html`, etc.)
+- Upstream-only dashboard bits (review diffs; **do not** replace bridge UI wholesale)
 
 **Bridge-only — do not delete or overwrite when syncing upstream:**
 
@@ -141,7 +141,7 @@ Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (neve
 |----------|--------|
 | CDSW / startup auth logging | `src/lib/env.ts` (CDSW sections), `bridge-api-auth.ts` |
 | Server overlays | `src/lib/server.ts` (keepalive, plugins, merged shutdown) |
-| Dashboard login | `src/lib/agent-login.ts` |
+| Dashboard login & nav | `src/lib/agent-login.ts`, `public/index.html`, `public/app.js`, `public/wiki.html` (Chat/Plugins links, Sign in, Cursor account) |
 | Web chat | `src/lib/chat-api.ts`, `chat-store.ts`, `public/chat*` |
 | Plugins UI/API extensions | `src/lib/plugins/*` (bridge marketplace behavior) |
 | CAI | `.project-metadata.yaml`, `app.py`, `app.sh`, `scripts/bootstrap-cai-application.sh`, `scripts/bootstrap-cai-application.py`, `scripts/create-cai-application.sh`, `scripts/create-cai-application.py`, `docs/CAI-DEPLOYMENT.md` |

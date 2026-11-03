@@ -13,6 +13,15 @@ import {
   type AcpPermissionParams,
 } from "./acp-connection.js";
 import {
+  ACP_CLIENT_CAPABILITIES,
+  acpFailureText,
+  configureAcpSessionModel,
+  formatAcpRpcError,
+  type AcpModelOptions,
+  type AcpModelPlan,
+  type AcpSessionModelState,
+} from "./acp-model.js";
+import {
   acpArgsIncludeModel,
   matchCliModelToAcpCatalog,
   shouldRejectUnresolvedAcpModel,
@@ -57,16 +66,10 @@ function normalizeAcpPrompt(prompt: AcpPromptInput): AcpPromptBlock[] {
   return [...prompt];
 }
 
-export type AcpRunOptions = {
+export type AcpRunOptions = AcpModelOptions & {
   cwd: string;
   timeoutMs: number;
   env?: Record<string, string | undefined>;
-  /** When set, call session/set_config_option for "model" after session/new (ACP session config). */
-  model?: string;
-  /** Additional catalog names for model matching (typically `agent --list-models` display name). */
-  modelAliases?: string[];
-  /** Reject a requested model when the ACP catalog cannot match it. */
-  strictModel?: boolean;
   /** Per-request timeout in ms (default 60000). Rejects and clears pending on timeout. */
   requestTimeoutMs?: number;
   /** Spawn options (e.g. windowsVerbatimArguments for cmd.exe fallback on Windows). */
@@ -307,11 +310,33 @@ export function resolveAcpModelConfigValue(
 
 export { acpArgsIncludeModel, shouldRejectUnresolvedAcpModel };
 
-function modelSelectedOnArgv(
-  args: readonly string[],
-  model?: string,
-): boolean {
-  return acpArgsIncludeModel(args) || Boolean(model?.trim());
+/** Pick the session model through the decision the tool path shares. */
+function configureAcpModel(
+  stdin: NodeJS.WritableStream,
+  nextId: { current: number },
+  pending: Map<
+    number,
+    {
+      resolve: (value: unknown) => void;
+      reject: (err: Error) => void;
+      timerId?: ReturnType<typeof setTimeout>;
+    }
+  >,
+  requestTimeoutMs: number,
+  sessionId: string,
+  request: AcpModelOptions,
+  session: AcpSessionModelState,
+): Promise<AcpModelPlan> {
+  return configureAcpSessionModel(request, session, (configId, value) =>
+    sendRequest(
+      stdin,
+      nextId,
+      "session/set_config_option",
+      { sessionId, configId, value },
+      pending,
+      requestTimeoutMs,
+    ),
+  );
 }
 
 function sendRequest(
@@ -451,7 +476,7 @@ export function runAcpSync(
           if (waiter) {
             pending.delete(reqId);
             if (msg.error) {
-              waiter.reject(new Error(msg.error.message ?? "ACP error"));
+              waiter.reject(new Error(formatAcpRpcError(msg.error)));
             } else {
               waiter.resolve(msg.result);
             }
@@ -460,7 +485,6 @@ export function runAcpSync(
         }
 
         handleAcpNotification(msg, {
-          rawDebug: opts.rawDebug,
           autoApprovePermissions: opts.autoApprovePermissions,
           stdin: child.stdin,
           onAgentTextChunk: (text) => {
@@ -498,10 +522,7 @@ export function runAcpSync(
         debugAcp("ACP step: initialize");
         await sendRequest(child.stdin, nextId, "initialize", {
           protocolVersion: 1,
-          clientCapabilities: {
-            fs: { readTextFile: false, writeTextFile: false },
-            terminal: false,
-          },
+          clientCapabilities: ACP_CLIENT_CAPABILITIES,
           clientInfo: { name: "cursor-api-proxy", version: "0.1.0" },
         }, pending, requestTimeoutMs);
 
@@ -522,50 +543,22 @@ export function runAcpSync(
           { cwd: opts.cwd, mcpServers: [] },
           pending,
           requestTimeoutMs,
-        )) as {
-          sessionId?: string;
-          models?: { availableModels?: AcpAvailableModel[] };
-        };
+        )) as ({ sessionId?: string } & AcpSessionModelState) | undefined;
         const sessionId = sessionResult?.sessionId;
         if (!sessionId) {
           finish(1);
           return;
         }
 
-        if (opts.model) {
-          const resolvedModelId = resolveAcpModelConfigValue(
-            opts.model,
-            sessionResult.models?.availableModels,
-            opts.modelAliases,
-          );
-          if (
-            shouldRejectUnresolvedAcpModel({
-              requested: opts.model,
-              resolved: resolvedModelId,
-              strictModel: opts.strictModel,
-              modelOnArgv: modelSelectedOnArgv(args, opts.model),
-            })
-          ) {
-            throw new Error(
-              `ACP model catalog has no match for ${JSON.stringify(opts.model)}`,
-            );
-          }
-          if (resolvedModelId !== "default" && resolvedModelId !== "default[]") {
-            debugAcp("ACP step: session/set_config_option (model)");
-            await sendRequest(
-              child.stdin,
-              nextId,
-              "session/set_config_option",
-              { sessionId, configId: "model", value: resolvedModelId },
-              pending,
-              requestTimeoutMs,
-            );
-          } else {
-            debugAcp(
-              "ACP step: session/set_config_option (model) — skipped, using session default or --model argv",
-            );
-          }
-        }
+        await configureAcpModel(
+          child.stdin,
+          nextId,
+          pending,
+          requestTimeoutMs,
+          sessionId,
+          opts,
+          sessionResult,
+        );
 
         debugAcp("ACP step: session/prompt");
         await sendRequest(child.stdin, nextId, "session/prompt", {
@@ -576,7 +569,12 @@ export function runAcpSync(
           debugAcp("ACP sync: no content accumulated; stderr tail: %s", stderr.slice(-500));
         }
         finish(0);
-      } catch {
+      } catch (err) {
+        stderr = acpFailureText(err)
+          ? stderr.trim()
+            ? `${stderr.trim()}\n${acpFailureText(err)}`
+            : acpFailureText(err)
+          : stderr;
         if (timeout) clearTimeout(timeout);
         if (!resolved) {
           finish(1);
@@ -671,7 +669,7 @@ export function runAcpStream(
           if (waiter) {
             pending.delete(reqId);
             if (msg.error) {
-              waiter.reject(new Error(msg.error.message ?? "ACP error"));
+              waiter.reject(new Error(formatAcpRpcError(msg.error)));
             } else {
               waiter.resolve(msg.result);
             }
@@ -680,7 +678,6 @@ export function runAcpStream(
         }
 
         handleAcpNotification(msg, {
-          rawDebug: opts.rawDebug,
           autoApprovePermissions: opts.autoApprovePermissions,
           stdin: child.stdin,
           onAgentTextChunk: onChunk,
@@ -713,10 +710,7 @@ export function runAcpStream(
         debugAcp("ACP step: initialize");
         await sendRequest(child.stdin, nextId, "initialize", {
           protocolVersion: 1,
-          clientCapabilities: {
-            fs: { readTextFile: false, writeTextFile: false },
-            terminal: false,
-          },
+          clientCapabilities: ACP_CLIENT_CAPABILITIES,
           clientInfo: { name: "cursor-api-proxy", version: "0.1.0" },
         }, pending, requestTimeoutMs);
 
@@ -737,50 +731,22 @@ export function runAcpStream(
           { cwd: opts.cwd, mcpServers: [] },
           pending,
           requestTimeoutMs,
-        )) as {
-          sessionId?: string;
-          models?: { availableModels?: AcpAvailableModel[] };
-        };
+        )) as ({ sessionId?: string } & AcpSessionModelState) | undefined;
         const sessionId = sessionResult?.sessionId;
         if (!sessionId) {
           finish(1);
           return;
         }
 
-        if (opts.model) {
-          const resolvedModelId = resolveAcpModelConfigValue(
-            opts.model,
-            sessionResult.models?.availableModels,
-            opts.modelAliases,
-          );
-          if (
-            shouldRejectUnresolvedAcpModel({
-              requested: opts.model,
-              resolved: resolvedModelId,
-              strictModel: opts.strictModel,
-              modelOnArgv: modelSelectedOnArgv(args, opts.model),
-            })
-          ) {
-            throw new Error(
-              `ACP model catalog has no match for ${JSON.stringify(opts.model)}`,
-            );
-          }
-          if (resolvedModelId !== "default" && resolvedModelId !== "default[]") {
-            debugAcp("ACP step: session/set_config_option (model)");
-            await sendRequest(
-              child.stdin,
-              nextId,
-              "session/set_config_option",
-              { sessionId, configId: "model", value: resolvedModelId },
-              pending,
-              requestTimeoutMs,
-            );
-          } else {
-            debugAcp(
-              "ACP step: session/set_config_option (model) — skipped, using session default or --model argv",
-            );
-          }
-        }
+        await configureAcpModel(
+          child.stdin,
+          nextId,
+          pending,
+          requestTimeoutMs,
+          sessionId,
+          opts,
+          sessionResult,
+        );
 
         debugAcp("ACP step: session/prompt");
         await sendRequest(child.stdin, nextId, "session/prompt", {
@@ -788,7 +754,12 @@ export function runAcpStream(
           prompt: promptBlocks,
         }, pending, requestTimeoutMs);
         finish(0);
-      } catch {
+      } catch (err) {
+        stderr = acpFailureText(err)
+          ? stderr.trim()
+            ? `${stderr.trim()}\n${acpFailureText(err)}`
+            : acpFailureText(err)
+          : stderr;
         if (timeout) clearTimeout(timeout);
         if (!resolved) {
           finish(1);

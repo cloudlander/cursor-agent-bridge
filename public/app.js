@@ -11,8 +11,25 @@
     logIntervalMs: 3000,
     logIntervalApplyTimer: null,
     statsTimer: null,
+    cursorAccountTimer: null,
     lastStatusOk: true,
+    agentAuthenticated: false,
+    loginPollTimer: null,
+    loginSessionId: null,
+    dashboardPolling: false,
   };
+
+  function fmtTokens(n) {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+    if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+    return String(n);
+  }
+
+  function fmtUsd(amount) {
+    if (amount < 0.01) return '< $0.01';
+    if (amount < 1) return `$${amount.toFixed(3)}`;
+    return `$${amount.toFixed(2)}`;
+  }
 
   function fmtDuration(seconds) {
     if (seconds < 60) return `${seconds}s`;
@@ -143,8 +160,8 @@
       : el('span', { class: 'badge yellow' }, 'no CURSOR_API_KEY');
 
     const bridgeKey = s.bridgeApiKeyRequired
-      ? el('span', { class: 'badge yellow' }, 'CURSOR_BRIDGE_API_KEY required')
-      : el('span', { class: 'badge muted' }, 'no bridge API key gate');
+      ? el('span', { class: 'badge yellow' }, 'LLM /v1 API key required')
+      : el('span', { class: 'badge muted' }, 'no LLM API key gate');
 
     const kv = el('div', { class: 'kv' },
       el('div', { class: 'k' }, 'Process'), el('div', { class: 'v' }, runBadge, ' ', `PID ${s.pid ?? '—'}`),
@@ -152,7 +169,7 @@
       el('div', { class: 'k' }, 'Uptime'), el('div', { class: 'v' }, fmtDuration(s.uptimeSeconds), el('span', { class: 'dim-text' }, `  (since ${new Date(s.startedAt).toLocaleString()})`)),
       el('div', { class: 'k' }, 'Autostart'), el('div', { class: 'v' }, launchdBadge, ' ', el('span', { class: 'dim-text mono' }, (s.plistPath || '').replace(/^.*\//, ''))),
       el('div', { class: 'k' }, 'Cursor auth'), el('div', { class: 'v' }, cursorKey),
-      el('div', { class: 'k' }, 'Inbound API key'), el('div', { class: 'v' }, bridgeKey),
+      el('div', { class: 'k' }, 'LLM API key'), el('div', { class: 'v' }, bridgeKey),
       el('div', { class: 'k' }, 'Node'), el('div', { class: 'v' }, `${s.node} (${s.platform})`),
       el('div', { class: 'k' }, 'Package'), el('div', { class: 'v mono', style: 'font-size: 11px; word-break: break-all;' }, s.packageRoot),
       el('div', { class: 'k' }, 'Sessions log'), el('div', { class: 'v mono', style: 'font-size: 11px; word-break: break-all;' }, s.sessionsLogPath),
@@ -184,10 +201,155 @@
     $('config-body').replaceChildren(tbl);
   }
 
+  function renderCursorAccount(data) {
+    const summary = $('cursor-account-summary');
+    const body = $('cursor-account-body');
+    if (!data || !Array.isArray(data.accounts)) {
+      summary.textContent = '';
+      body.replaceChildren(el('div', { class: 'empty' }, 'No account data.'));
+      return;
+    }
+
+    const fetched = data.fetchedAt ? new Date(data.fetchedAt).toLocaleString() : '';
+    summary.textContent = fetched ? `updated ${fetched}` : '';
+
+    const blocks = data.accounts.map(acc => {
+      const headBits = [acc.name];
+      if (acc.email) headBits.push(acc.email);
+      const head = el('div', { style: 'font-weight: 600; margin-bottom: 6px;' }, headBits.join(' · '));
+
+      if (acc.error) {
+        return el('div', { style: 'margin-bottom: 16px;' }, head,
+          el('div', { class: 'muted-text', style: 'font-size: 12px;' }, acc.error),
+        );
+      }
+
+      const planLine = acc.planDescription
+        ? el('div', { class: 'muted-text', style: 'font-size: 12px; margin-bottom: 8px;' }, acc.planDescription)
+        : null;
+
+      const sub = acc.subscription;
+      const subUsd = sub && sub.monthlyListPriceUsd != null && !sub.isTeamMember
+        ? fmtUsd(sub.monthlyListPriceUsd) + (sub.isYearlyPlan ? '/mo (yearly plan)' : '/mo list')
+        : sub && sub.isTeamMember ? 'Team (billed separately)' : null;
+
+      const kv = el('div', { class: 'kv', style: 'margin-bottom: 10px;' });
+      if (subUsd) {
+        kv.append(el('div', { class: 'k' }, 'Subscription'), el('div', { class: 'v' }, subUsd));
+      }
+      if (sub && sub.subscriptionStatus) {
+        kv.append(el('div', { class: 'k' }, 'Status'), el('div', { class: 'v mono' }, sub.subscriptionStatus));
+      }
+      const b = acc.billed;
+      const periodIso = (b && b.startDate) || (acc.usage && acc.usage.startOfMonth);
+      if (periodIso) {
+        kv.append(
+          el('div', { class: 'k' }, 'Period from'),
+          el('div', { class: 'v' }, new Date(periodIso).toLocaleDateString()),
+        );
+      }
+      if (b) {
+        kv.append(
+          el('div', { class: 'k' }, 'Account tokens'),
+          el('div', { class: 'v mono', title: 'input + output + cache write + cache read' }, fmtTokens(b.totalTokens)),
+          el('div', { class: 'k' }, 'Input / Output'),
+          el('div', { class: 'v mono' }, `${fmtTokens(b.inputTokens)} / ${fmtTokens(b.outputTokens)}`),
+          el('div', { class: 'k' }, 'Cache write / read'),
+          el('div', { class: 'v mono' }, `${fmtTokens(b.cacheWriteTokens)} / ${fmtTokens(b.cacheReadTokens)}`),
+          el('div', { class: 'k' }, 'Charged this period'),
+          el('div', { class: 'v' }, fmtUsd(b.costUsd)),
+        );
+      } else if (acc.usage) {
+        kv.append(
+          el('div', { class: 'k' }, 'Account tokens'),
+          el('div', { class: 'v mono' }, fmtTokens(acc.usage.totalTokens)),
+          el('div', { class: 'k' }, 'Requests'),
+          el('div', { class: 'v mono' }, String(acc.usage.totalRequests)),
+        );
+      }
+
+      const children = [head];
+      if (planLine) children.push(planLine);
+      if (kv.childNodes.length) children.push(kv);
+
+      if (b && b.byModel.length) {
+        const models = b.byModel.slice(0, 8);
+        const max = Math.max(...models.map(m => m.totalTokens), 1);
+        for (const m of models) {
+          children.push(el('div', { class: 'stat-row' },
+            el('div', { class: 'mono', style: 'font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;' }, m.model),
+            el('div', { class: 'bar bar-OTHER' }, el('div', { style: `width: ${Math.round((m.totalTokens / max) * 100)}%` })),
+            el('div', {
+              class: 'count',
+              title: `in ${fmtTokens(m.inputTokens)} · out ${fmtTokens(m.outputTokens)} · cache w ${fmtTokens(m.cacheWriteTokens)} · cache r ${fmtTokens(m.cacheReadTokens)}`,
+            }, `${fmtTokens(m.totalTokens)} · ${fmtUsd(m.costUsd)}`),
+          ));
+        }
+      }
+
+      if (acc.usage && acc.usage.pools.some(p => p.numRequests > 0 || p.maxRequestUsage)) {
+        const pools = acc.usage.pools.slice(0, 8);
+        const maxReq = Math.max(...pools.map(p => p.maxRequestUsage || p.numRequests || 1), 1);
+        for (const p of pools) {
+          const denom = p.maxRequestUsage && p.maxRequestUsage > 0 ? p.maxRequestUsage : maxReq;
+          const pct = Math.round((p.numRequests / denom) * 100);
+          children.push(el('div', { class: 'stat-row' },
+            el('div', { class: 'mono', style: 'font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;' }, p.label),
+            el('div', { class: 'bar bar-OTHER' }, el('div', { style: `width: ${Math.min(100, pct)}%` })),
+            el('div', { class: 'count', title: `${fmtTokens(p.numTokens)} tokens` },
+              p.maxRequestUsage != null && p.maxRequestUsage > 0
+                ? `${p.numRequests}/${p.maxRequestUsage}`
+                : `${p.numRequests} req`,
+            ),
+          ));
+        }
+      }
+
+      return el('div', { style: 'margin-bottom: 16px;' }, ...children);
+    });
+
+    body.replaceChildren(...blocks);
+  }
+
+  function renderUsage(usage, windowHours) {
+    const summary = $('usage-summary');
+    if (!usage || usage.requestCount === 0) {
+      summary.textContent = `no LLM completions in ${windowHours}h window`;
+      $('usage-body').replaceChildren(
+        el('div', { class: 'empty' }, 'No token usage recorded yet. Successful chat/completion/message/responses calls are logged as USAGE lines in the sessions log.'),
+      );
+      return;
+    }
+
+    summary.textContent =
+      `${fmtTokens(usage.totalTokens)} tokens · ${fmtUsd(usage.estimatedCostUsd)} est. · ${usage.requestCount} completions (${windowHours}h)`;
+
+    const totals = el('div', { class: 'kv', style: 'margin-bottom: 12px;' },
+      el('div', { class: 'k' }, 'Input'), el('div', { class: 'v mono' }, fmtTokens(usage.promptTokens)),
+      el('div', { class: 'k' }, 'Output'), el('div', { class: 'v mono' }, fmtTokens(usage.completionTokens)),
+      el('div', { class: 'k' }, 'Total'), el('div', { class: 'v mono' }, fmtTokens(usage.totalTokens)),
+      el('div', { class: 'k' }, 'Est. cost'), el('div', { class: 'v' }, fmtUsd(usage.estimatedCostUsd)),
+    );
+
+    const models = Object.entries(usage.byModel)
+      .sort((a, b) => b[1].totalTokens - a[1].totalTokens)
+      .slice(0, 8);
+    const max = Math.max(...models.map(([, m]) => m.totalTokens), 1);
+    const rows = models.map(([name, m]) => el('div', { class: 'stat-row' },
+      el('div', { class: 'mono', style: 'font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;' }, name),
+      el('div', { class: 'bar bar-OTHER' }, el('div', { style: `width: ${Math.round((m.totalTokens / max) * 100)}%` })),
+      el('div', { class: 'count', title: `${m.requestCount} requests` }, `${fmtTokens(m.totalTokens)} · ${fmtUsd(m.estimatedCostUsd)}`),
+    ));
+
+    $('usage-body').replaceChildren(totals, el('div', { class: 'muted-text', style: 'font-size: 11px; margin-bottom: 8px;' }, 'By model'), ...rows);
+  }
+
   function renderStats(stats) {
     $('stats-total').textContent = stats.total > 0
       ? `${stats.total} requests · ${stats.errors} errors (${stats.windowHours}h window)`
       : 'no requests in window';
+
+    renderUsage(stats.usage, stats.windowHours);
 
     if (stats.total === 0) {
       $('stats-body').replaceChildren(el('div', { class: 'empty' }, 'No lines matched in the sessions log for this window.'));
@@ -234,7 +396,9 @@
       const d = new Date(tsPart);
       wrap.appendChild(el('span', { class: 'ts' }, d.toLocaleTimeString() + ' '));
     }
-    if (rest.includes(' ERROR ')) {
+    if (rest.startsWith('USAGE ')) {
+      wrap.appendChild(el('span', { class: 'ok' }, rest));
+    } else if (rest.includes(' ERROR ')) {
       wrap.appendChild(el('span', { class: 'err' }, rest));
     } else if (/\s(5\d\d)\s*$/.test(rest) || /\s(4\d\d)\s*$/.test(rest)) {
       wrap.appendChild(el('span', { class: 'req' }, rest));
@@ -302,7 +466,19 @@
       const stats = await fetchJSON('/api/stats?hours=24');
       renderStats(stats);
     } catch (e) {
+      $('usage-summary').textContent = '';
+      $('usage-body').replaceChildren(el('div', { class: 'empty' }, `Error: ${e.message}`));
       $('stats-body').replaceChildren(el('div', { class: 'empty' }, `Error: ${e.message}`));
+    }
+  }
+
+  async function refreshCursorAccount() {
+    try {
+      const data = await fetchJSON('/api/cursor-account');
+      renderCursorAccount(data);
+    } catch (e) {
+      $('cursor-account-summary').textContent = '';
+      $('cursor-account-body').replaceChildren(el('div', { class: 'empty' }, `Error: ${e.message}`));
     }
   }
 
@@ -351,7 +527,138 @@
     refreshStatus();
     refreshConfig();
     refreshStats();
+    refreshCursorAccount();
     refreshLog();
+  }
+
+  function showDashboardMain() {
+    $('login-gate').classList.add('hidden');
+    $('login-gate').setAttribute('aria-hidden', 'true');
+    $('dashboard-main').classList.remove('hidden');
+  }
+
+  function showLoginGate(message) {
+    $('dashboard-main').classList.add('hidden');
+    $('login-gate').classList.remove('hidden');
+    $('login-gate').setAttribute('aria-hidden', 'false');
+    const err = $('login-gate-error');
+    if (err) err.textContent = message || '';
+  }
+
+  function startDashboardPolling() {
+    if (state.dashboardPolling) return;
+    state.dashboardPolling = true;
+    refreshAll();
+    state.statusTimer = setInterval(refreshStatus, 5000);
+    restartLogPolling();
+    state.statsTimer = setInterval(refreshStats, 15000);
+    state.cursorAccountTimer = setInterval(refreshCursorAccount, 60000);
+  }
+
+  function stopLoginPoll() {
+    if (state.loginPollTimer) {
+      clearInterval(state.loginPollTimer);
+      state.loginPollTimer = null;
+    }
+    state.loginSessionId = null;
+  }
+
+  function showAgentOAuthDialog(session) {
+    const url = session.loginUrl || '';
+    $('agent-oauth-hint').textContent =
+      'Open the link below and sign in with your Cursor account. This tab will unlock when login completes.';
+    const wrap = $('agent-oauth-url-wrap');
+    if (url) {
+      wrap.style.display = 'block';
+      const link = $('agent-oauth-url-link');
+      link.href = url;
+      link.textContent = url;
+      $('agent-oauth-open').onclick = () => window.open(url, '_blank', 'noopener');
+      $('agent-oauth-copy').onclick = async () => {
+        try {
+          await navigator.clipboard.writeText(url);
+          toast('Login URL copied', 'ok');
+        } catch {
+          toast('Could not copy URL', 'err');
+        }
+      };
+    } else {
+      wrap.style.display = 'none';
+    }
+    $('agent-oauth-wait').textContent = 'Waiting for Cursor to confirm sign-in…';
+    $('agent-oauth-dialog').showModal();
+  }
+
+  function onAgentLoginTerminal(session) {
+    stopLoginPoll();
+    $('agent-oauth-dialog').close();
+    if (session.status === 'success') {
+      state.agentAuthenticated = true;
+      showDashboardMain();
+      toast(session.email ? `Signed in as ${session.email}` : 'Cursor sign-in complete', 'ok', 5000);
+      if (!session.email) {
+        toast('Restart the proxy to pick up the new account pool if requests still fail.', 'warn', 8000);
+      }
+      startDashboardPolling();
+      return;
+    }
+    const msg = session.error || `Login ${session.status}`;
+    $('login-gate-error').textContent = msg;
+    toast(msg, 'err');
+  }
+
+  function pollAgentLoginSession(sessionId) {
+    stopLoginPoll();
+    state.loginSessionId = sessionId;
+    state.loginPollTimer = setInterval(async () => {
+      try {
+        const session = await fetchJSON(
+          `/api/agent-login/status?session=${encodeURIComponent(sessionId)}`,
+        );
+        if (session.status === 'success' || session.status === 'failed' || session.status === 'cancelled') {
+          onAgentLoginTerminal(session);
+        }
+      } catch (e) {
+        if (String(e.message).startsWith('404')) {
+          onAgentLoginTerminal({ status: 'failed', error: 'Login session ended' });
+        }
+      }
+    }, 2000);
+  }
+
+  async function beginAgentOAuthLogin() {
+    $('login-gate-error').textContent = '';
+    $('agent-login-btn').disabled = true;
+    try {
+      const session = await fetchJSON('/api/agent-login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      showAgentOAuthDialog(session);
+      pollAgentLoginSession(session.sessionId);
+    } catch (e) {
+      $('login-gate-error').textContent = e.message;
+      toast(`Could not start login: ${e.message}`, 'err');
+    } finally {
+      $('agent-login-btn').disabled = false;
+    }
+  }
+
+  async function ensureAgentAuth() {
+    try {
+      const auth = await fetchJSON('/api/agent-auth');
+      state.agentAuthenticated = Boolean(auth.authenticated);
+      if (auth.authenticated) {
+        showDashboardMain();
+        return true;
+      }
+      showLoginGate();
+      return false;
+    } catch (e) {
+      showLoginGate(`Could not check Cursor auth: ${e.message}`);
+      return false;
+    }
   }
 
   function bind() {
@@ -388,14 +695,16 @@
     for (const btn of document.querySelectorAll('[data-action]')) {
       btn.addEventListener('click', () => doControl(btn.dataset.action));
     }
+    $('agent-login-btn').addEventListener('click', () => beginAgentOAuthLogin());
+    $('agent-oauth-close').addEventListener('click', () => {
+      $('agent-oauth-dialog').close();
+    });
   }
 
-  function start() {
+  async function start() {
     bind();
-    refreshAll();
-    state.statusTimer = setInterval(refreshStatus, 5000);
-    restartLogPolling();
-    state.statsTimer = setInterval(refreshStats, 15000);
+    const ok = await ensureAgentAuth();
+    if (ok) startDashboardPolling();
   }
 
   document.addEventListener('DOMContentLoaded', start);

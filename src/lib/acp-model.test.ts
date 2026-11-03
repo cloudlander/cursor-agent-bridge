@@ -56,9 +56,9 @@ function aliases(id: string): string[] {
   return [catalog.listModels[id]!];
 }
 
-/** Bridge applies `context` from display-name tokens (e.g. 1M) when the plan carries it. */
+/** Bridge applies `context` from display-name tokens (e.g. 1M) on catalog `set` plans. */
 function expectedApplyCalls(plan: AcpModelPlan): string[] {
-  if (plan.action !== "set" && plan.action !== "keep") return [];
+  if (plan.action !== "set") return [];
   return plan.context ? [`context=${plan.context}`] : [];
 }
 
@@ -141,11 +141,7 @@ describe("decideAcpModel with the real ACP catalog", () => {
           failures.push(`${id}: ${final.model} != ${cliModel}`);
         }
         for (const [configId, cli] of Object.entries(catalog.sessions[id]!.values)) {
-          if (
-            configId === "context" &&
-            (plan.action === "set" || plan.action === "keep") &&
-            plan.context
-          ) {
+          if (configId === "context" && plan.action === "set" && plan.context) {
             continue;
           }
           if (final.values[configId] !== cli) {
@@ -172,7 +168,7 @@ describe("decideAcpModel with the real ACP catalog", () => {
         return {};
       },
     );
-    expect(calls.sort()).toEqual(["context=1m", "effort=medium"].sort());
+    expect(calls).toEqual(["effort=medium"]);
   });
 
   it("skips an option the CLI-selected row does not offer", async () => {

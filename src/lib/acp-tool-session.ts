@@ -6,11 +6,6 @@ import {
   type AcpSessionResult,
 } from "./acp-connection.js";
 import { createAssistantTextDeduper } from "./assistant-stream-dedupe.js";
-import {
-  acpArgsIncludeModel,
-  resolveAcpModelConfigValue,
-  shouldRejectUnresolvedAcpModel,
-} from "./acp-client.js";
 import { ClientToolBridge } from "./client-tool-bridge.js";
 import type {
   ClientToolDefinition,
@@ -256,28 +251,15 @@ export class AcpToolSession {
     if (!this.#connection || !this.#sessionId) return;
     const candidates = (this.#opts.modelCandidates ?? []).filter(Boolean);
     if (candidates.length === 0) return;
-    const available = session.models?.availableModels;
-    const resolved = resolveAcpModelConfigValue(
-      candidates[0],
-      available,
-      candidates.slice(1),
-    );
-    if (
-      shouldRejectUnresolvedAcpModel({
-        requested: candidates[0],
-        resolved,
+    await this.#connection.configureSessionModel(
+      this.#sessionId,
+      {
+        model: candidates[0],
+        modelAliases: candidates.slice(1),
         strictModel: this.#opts.strictModel,
-        modelOnArgv:
-          acpArgsIncludeModel(this.#opts.args) ||
-          Boolean(candidates[0]?.trim()),
-      })
-    ) {
-      throw new Error(
-        `ACP model catalog has no match for ${JSON.stringify(candidates[0])}`,
-      );
-    }
-    if (resolved === "default" || resolved === "default[]") return;
-    await this.#connection.setSessionModel(this.#sessionId, resolved);
+      },
+      session,
+    );
   }
 
   #permissionFor(params: AcpPermissionParams): string {

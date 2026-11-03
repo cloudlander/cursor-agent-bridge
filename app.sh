@@ -70,8 +70,18 @@ find_agent_node() {
   echo "${versions_dir}/${latest}/node"
 }
 
-if [[ ! -x "${HOME}/.local/bin/agent" || ! -f "${ROOT}/dist/cli.js" ]]; then
-  log "Bootstrapping project-local CAI runtime (first start)..."
+bootstrap_needed() {
+  [[ ! -x "${HOME}/.local/bin/agent" || ! -f "${ROOT}/dist/cli.js" ]] && return 0
+  if [[ "${CAI_FORCE_BUILD:-}" =~ ^(1|true|yes)$ ]]; then
+    return 0
+  fi
+  find "${ROOT}/src" "${ROOT}/public" -type f \
+    \( -name '*.ts' -o -name '*.html' -o -name '*.js' -o -name '*.css' \) \
+    -newer "${ROOT}/dist/cli.js" -print -quit 2>/dev/null | grep -q .
+}
+
+if bootstrap_needed; then
+  log "Bootstrapping project-local CAI runtime (agent, npm, and/or build)..."
   bash "${ROOT}/scripts/bootstrap-cai-application.sh" >>"${LOG}" 2>&1
 fi
 
