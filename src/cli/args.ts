@@ -19,6 +19,12 @@ export type ParsedArgs = {
   dryRun: boolean;
   /** Set via `--mode`; default applied in config when omitted. */
   mode?: CursorExecutionMode;
+  sessionsExport: boolean;
+  sessionsImport: boolean;
+  sessionDays: number;
+  sessionOut: string;
+  sessionBundleDir: string;
+  sessionMerge: boolean;
 };
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -39,9 +45,34 @@ export function parseArgs(argv: string[]): ParsedArgs {
   let deepClean = false;
   let dryRun = false;
   let mode: CursorExecutionMode | undefined;
+  let sessionsExport = false;
+  let sessionsImport = false;
+  let sessionDays = 3;
+  let sessionOut = "";
+  let sessionBundleDir = "";
+  let sessionMerge = true;
+  let sessionOptionUsed = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
+
+    if (arg === "sessions") {
+      const sub = argv[i + 1];
+      if (sub === "export") {
+        sessionsExport = true;
+        i++;
+        continue;
+      }
+      if (sub === "import") {
+        sessionsImport = true;
+        i++;
+        if (i + 1 < argv.length && !argv[i + 1]!.startsWith("-")) {
+          sessionBundleDir = argv[++i]!;
+        }
+        continue;
+      }
+      throw new Error('sessions requires a subcommand: "export" or "import"');
+    }
 
     if (arg === "requests") {
       requests = true;
@@ -68,6 +99,41 @@ export function parseArgs(argv: string[]): ParsedArgs {
     if (arg === "--watch") {
       watch = true;
       requestOptionUsed = true;
+      continue;
+    }
+
+    if (arg === "--days" || arg.startsWith("--days=")) {
+      const value = arg === "--days" ? argv[++i] : arg.slice("--days=".length);
+      if (!value || value.startsWith("-")) {
+        throw new Error("--days requires a positive number between 1 and 365");
+      }
+      sessionDays = Number(value);
+      if (!Number.isFinite(sessionDays) || sessionDays < 1 || sessionDays > 365) {
+        throw new Error("--days must be a number between 1 and 365");
+      }
+      sessionOptionUsed = true;
+      continue;
+    }
+
+    if (arg === "--out" || arg.startsWith("--out=")) {
+      const value = arg === "--out" ? argv[++i] : arg.slice("--out=".length);
+      if (!value || value.startsWith("-")) {
+        throw new Error("--out requires a directory path");
+      }
+      sessionOut = value;
+      sessionOptionUsed = true;
+      continue;
+    }
+
+    if (arg === "--no-merge") {
+      sessionMerge = false;
+      sessionOptionUsed = true;
+      continue;
+    }
+
+    if (arg === "--merge") {
+      sessionMerge = true;
+      sessionOptionUsed = true;
       continue;
     }
 
@@ -173,6 +239,20 @@ export function parseArgs(argv: string[]): ParsedArgs {
     throw new Error("--limit, --watch, and --interval require requests command");
   }
 
+  if (sessionOptionUsed && !sessionsExport && !sessionsImport) {
+    throw new Error(
+      "--days, --out, --merge, and --no-merge require sessions export or import",
+    );
+  }
+
+  if (sessionsExport && !sessionOut) {
+    throw new Error('sessions export requires --out <directory>');
+  }
+
+  if (sessionsImport && !sessionBundleDir) {
+    throw new Error('sessions import requires a bundle directory path');
+  }
+
   return {
     tailscale,
     verbose,
@@ -190,6 +270,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
     deepClean,
     dryRun,
     mode,
+    sessionsExport,
+    sessionsImport,
+    sessionDays,
+    sessionOut,
+    sessionBundleDir,
+    sessionMerge,
   };
 }
 
@@ -220,6 +306,12 @@ export function printHelp(version: string): void {
   console.log(
     "  requests --watch          Refresh latest requests continuously",
   );
+  console.log(
+    "  sessions export --out DIR Export recent chat + Cursor session data",
+  );
+  console.log(
+    "  sessions import DIR       Import a bundle from sessions export",
+  );
   console.log("");
   console.log("Options:");
   console.log("  --tailscale     Bind to 0.0.0.0 for tailnet/LAN access");
@@ -230,5 +322,8 @@ export function printHelp(version: string): void {
   console.log("  --limit <n>     Requests to show (1-5000, default 20)");
   console.log("  --watch         Refresh requests continuously");
   console.log("  --interval <s>  Watch refresh interval (default 2)");
+  console.log("  --days <n>      Sessions export window in days (default 3)");
+  console.log("  --out <dir>     Output directory for sessions export");
+  console.log("  --no-merge      Overwrite existing Cursor files on import");
   console.log("  -h, --help      Show this help message");
 }

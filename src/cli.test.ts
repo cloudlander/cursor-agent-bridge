@@ -23,6 +23,12 @@ describe("parseArgs", () => {
     watch: false,
     watchIntervalMs: 2000,
     mode: undefined as undefined,
+    sessionsExport: false,
+    sessionsImport: false,
+    sessionDays: 3,
+    sessionOut: "",
+    sessionBundleDir: "",
+    sessionMerge: true,
   };
 
   it("parses empty argv", () => {
@@ -260,5 +266,43 @@ describe("parseArgs", () => {
       /positive number/,
     );
     expect(() => parseArgs(["--watch"])).toThrow(/require requests command/);
+  });
+
+  it("parses sessions export", () => {
+    expect(
+      parseArgs(["sessions", "export", "--days", "7", "--out", "./bundle"]),
+    ).toEqual({
+      ...base,
+      sessionsExport: true,
+      sessionDays: 7,
+      sessionOut: "./bundle",
+      tailscale: false,
+      help: false,
+      login: false,
+      logout: false,
+      accountsList: false,
+      accountName: "",
+      proxies: [],
+    });
+  });
+
+  it("parses sessions import with bundle path", () => {
+    expect(parseArgs(["sessions", "import", "./bundle", "--no-merge"])).toEqual({
+      ...base,
+      sessionsImport: true,
+      sessionBundleDir: "./bundle",
+      sessionMerge: false,
+      tailscale: false,
+      help: false,
+      login: false,
+      logout: false,
+      accountsList: false,
+      accountName: "",
+      proxies: [],
+    });
+  });
+
+  it("requires --out for sessions export", () => {
+    expect(() => parseArgs(["sessions", "export"])).toThrow(/requires --out/);
   });
 });

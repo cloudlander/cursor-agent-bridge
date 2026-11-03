@@ -57,6 +57,20 @@ cursor-api-proxy requests --limit 50
 cursor-api-proxy requests --watch --interval 1
 ```
 
+Export recent dashboard/API chat history plus Cursor CLI session artifacts
+(agent transcripts and ACP session stores) for migration to another machine or
+CAI home:
+
+```bash
+cursor-api-proxy sessions export --days 3 --out ./session-bundle
+# on the new environment (same CURSOR_BRIDGE_SESSIONS_LOG / HOME layout):
+cursor-api-proxy sessions import ./session-bundle
+```
+
+The bundle is a directory (`manifest.json`, `chat-store.partial.json`, and
+`cursor/` files under your Cursor config dir). Web threads merge by id; use
+`--no-merge` to overwrite newer on-disk Cursor files when importing.
+
 The command reads `CURSOR_BRIDGE_SESSIONS_LOG` (default
 `~/.cursor-api-proxy/sessions.log`) directly, so the proxy does not need to be
 running. It shows completion time, method, status, remote address, and path.

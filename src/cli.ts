@@ -12,6 +12,10 @@ import { handleAccountsList, handleLogout } from "./cli/accounts.js";
 import { handleLogin } from "./cli/login.js";
 import { handleRequests } from "./cli/requests.js";
 import { handleResetHwid } from "./cli/reset-hwid.js";
+import {
+  handleSessionsExport,
+  handleSessionsImport,
+} from "./cli/sessions.js";
 
 // Re-export parseArgs so src/cli.test.ts can import it without a separate path
 export { parseArgs } from "./cli/args.js";
@@ -47,6 +51,24 @@ async function main(): Promise<void> {
       watch: args.watch,
       intervalMs: args.watchIntervalMs,
     });
+    return;
+  }
+
+  if (args.sessionsExport || args.sessionsImport) {
+    const config = loadBridgeConfig({ env: process.env, mode: args.mode });
+    if (args.sessionsExport) {
+      await handleSessionsExport({
+        config,
+        outDir: args.sessionOut,
+        days: args.sessionDays,
+      });
+    } else {
+      await handleSessionsImport({
+        config,
+        bundleDir: args.sessionBundleDir,
+        merge: args.sessionMerge,
+      });
+    }
     return;
   }
 
