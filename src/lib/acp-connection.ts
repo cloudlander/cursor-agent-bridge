@@ -216,13 +216,16 @@ export class AcpConnection {
       this.#failPending(error);
     });
     this.child.once("close", (code) => {
+      const unexpected = !this.#closed;
       this.#closed = true;
       this.#lineReader.close();
       this.#opts.signal?.removeEventListener("abort", this.#abortHandler!);
-      this.#failPending(
-        this.#spawnError ??
-          new Error(`ACP child exited with code ${code ?? 1}`),
-      );
+      if (unexpected) {
+        this.#failPending(
+          this.#spawnError ??
+            new Error(`ACP child exited with code ${code ?? 1}`),
+        );
+      }
       this.#resolveExit(code ?? 1);
     });
 
@@ -351,11 +354,18 @@ export class AcpConnection {
     return this.#exitPromise;
   }
 
-  async close(signal: NodeJS.Signals = "SIGKILL"): Promise<void> {
+  async close(
+    signal: NodeJS.Signals = "SIGKILL",
+    opts?: { dropPending?: boolean },
+  ): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
     this.#opts.signal?.removeEventListener("abort", this.#abortHandler!);
-    this.#failPending(new Error("ACP connection closed"));
+    if (opts?.dropPending) {
+      this.#dropPending();
+    } else {
+      this.#failPending(new Error("ACP connection closed"));
+    }
     try {
       this.child.stdin?.end();
     } catch {
@@ -466,6 +476,14 @@ export class AcpConnection {
     const stdin = this.child.stdin;
     if (!stdin || this.#closed) return;
     stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
+  }
+
+  /** Drop in-flight RPC without rejecting (intentional proxy shutdown). */
+  #dropPending(): void {
+    for (const [id, waiter] of this.#pending) {
+      this.#pending.delete(id);
+      if (waiter.timer) clearTimeout(waiter.timer);
+    }
   }
 
   #failPending(error: Error): void {
