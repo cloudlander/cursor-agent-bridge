@@ -1,11 +1,31 @@
 import * as http from "node:http";
 
+function headerFirst(
+  req: http.IncomingMessage,
+  name: string,
+): string | undefined {
+  const h = req.headers[name];
+  if (!h) return undefined;
+  const val = Array.isArray(h) ? h[0] : h;
+  const trimmed = val.trim();
+  return trimmed || undefined;
+}
+
 export function extractBearerToken(req: http.IncomingMessage): string | undefined {
   const h = req.headers["authorization"];
   if (!h) return undefined;
   const val = Array.isArray(h) ? h[0] : h;
   const match = val.match(/^Bearer\s+(.+)$/i);
   return match ? match[1] : undefined;
+}
+
+/** API key from Anthropic `x-api-key` or OpenAI-style `Authorization: Bearer`. */
+export function extractBridgeApiKey(
+  req: http.IncomingMessage,
+): string | undefined {
+  const xApiKey = headerFirst(req, "x-api-key");
+  if (xApiKey) return xApiKey;
+  return extractBearerToken(req);
 }
 
 export function json(

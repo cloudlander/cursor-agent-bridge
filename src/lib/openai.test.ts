@@ -2,15 +2,14 @@ import { describe, it, expect } from "vitest";
 import {
   normalizeModelId,
   buildPromptFromMessages,
+  buildAgentPromptForCompletion,
+  normalizeCompletionOutput,
+  normalizeCompletionPrompt,
+  isTokenizedCompletionPrompt,
   responsesInputToMessages,
   toolsToSystemText,
   type OpenAiChatCompletionRequest,
 } from "./openai.js";
-import {
-  parseAnthropicFunctionTools,
-  parseOpenAiFunctionTools,
-  resolveToolChoice,
-} from "./tool-types.js";
 
 describe("normalizeModelId", () => {
   it("returns last part after slash for org/model format", () => {
@@ -144,259 +143,46 @@ describe("buildPromptFromMessages", () => {
 });
 
 describe("toolsToSystemText", () => {
-  const header =
-    "Tools defined by the client, for reference only. You cannot call them in this mode, so answer without them and do not write out calls to them.";
-  const budget = 8_000;
-  const lines = (text: string | undefined) => (text ?? "").split("\n");
-  const functionLines = (text: string | undefined) =>
-    lines(text).filter((line) => line.startsWith("Function:"));
-  /** Everything after the header and its blank line. */
-  const entries = (text: string | undefined) =>
-    (text ?? "").slice(header.length + 2);
+  it("returns undefined when no tools or functions", () => {
+    expect(toolsToSystemText()).toBeUndefined();
+    expect(toolsToSystemText([], [])).toBeUndefined();
+  });
 
-  const weather = {
-    type: "function",
-    function: {
-      name: "get_weather",
-      description: "Get current weather",
-      parameters: {
-        type: "object",
-        properties: { city: { type: "string" } },
-        required: ["city"],
+  it("serialises tools array into readable text", () => {
+    const tools = [
+      {
+        type: "function",
+        function: {
+          name: "get_weather",
+          description: "Get current weather",
+          parameters: { type: "object", properties: {} },
+        },
       },
-    },
-  };
-  const time = { type: "function", function: { name: "get_time" } };
-
-  it("returns undefined when no callable tool is left", () => {
-    expect(toolsToSystemText([])).toBeUndefined();
-    expect(
-      toolsToSystemText(
-        parseOpenAiFunctionTools([
-          { type: "web_search" },
-          { type: "namespace", name: "multi_agent_v1", tools: [] },
-        ]),
-      ),
-    ).toBeUndefined();
+    ];
+    const result = toolsToSystemText(tools);
+    expect(result).toBeDefined();
+    expect(result).toContain("get_weather");
+    expect(result).toContain("Get current weather");
+    expect(result).toContain("Available tools");
   });
 
-  it("renders Chat tools and legacy functions as reference only", () => {
-    const text = toolsToSystemText(
-      parseOpenAiFunctionTools(
-        [weather],
-        [
-          {
-            name: "legacy_add",
-            description: "Add two numbers",
-            parameters: { type: "object", properties: {} },
-          },
-        ],
-      ),
-    );
-    expect(text).toBe(
-      [
-        header,
-        "",
-        "Function: get_weather",
-        "Description: Get current weather",
-        'Parameters: {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}',
-        "Function: legacy_add",
-        "Description: Add two numbers",
-        'Parameters: {"type":"object","properties":{}}',
-      ].join("\n"),
-    );
-    expect(text).not.toMatch(/JSON object|respond with/i);
+  it("serialises legacy functions array", () => {
+    const functions = [
+      { name: "add", description: "Add two numbers", parameters: {} },
+    ];
+    const result = toolsToSystemText(undefined, functions);
+    expect(result).toContain("add");
+    expect(result).toContain("Add two numbers");
   });
 
-  it("renders flat Responses functions", () => {
-    expect(
-      entries(
-        toolsToSystemText(
-          parseOpenAiFunctionTools([
-            {
-              type: "function",
-              name: "lookup",
-              description: "Look up a record",
-              parameters: {
-                type: "object",
-                properties: { id: { type: "string" } },
-              },
-            },
-            { type: "function", name: "ping" },
-          ]),
-        ),
-      ),
-    ).toBe(
-      [
-        "Function: lookup",
-        "Description: Look up a record",
-        'Parameters: {"type":"object","properties":{"id":{"type":"string"}}}',
-        "Function: ping",
-        'Parameters: {"type":"object","properties":{}}',
-      ].join("\n"),
-    );
-  });
-
-  it("lists namespace members by flattened name and leaves out groups and builtins", () => {
-    const search = { type: "function", name: "search" };
-    const text = toolsToSystemText(
-      parseOpenAiFunctionTools([
-        { type: "web_search", external_web_access: true },
-        { type: "namespace", name: "mcp__docs", tools: [search] },
-        { type: "namespace", name: "mcp__wiki", tools: [search] },
-        { type: "file_search", vector_store_ids: ["vs_1"] },
-        { type: "custom", name: "apply_patch", format: { type: "text" } },
-        { description: "no name" },
-      ]),
-    );
-    expect(functionLines(text)).toEqual([
-      "Function: search",
-      "Function: mcp__wiki__search",
-    ]);
-    expect(text).not.toMatch(
-      /mcp__docs|web_search|file_search|apply_patch|undefined/,
-    );
-  });
-
-  it("renders Anthropic input_schema", () => {
-    expect(
-      entries(
-        toolsToSystemText(
-          parseAnthropicFunctionTools([
-            {
-              name: "lookup",
-              description: "Look up a record",
-              input_schema: {
-                type: "object",
-                properties: { id: { type: "string" } },
-              },
-            },
-            { type: "custom", name: "custom_tool", input_schema: { type: "object" } },
-          ]),
-        ),
-      ),
-    ).toBe(
-      [
-        "Function: lookup",
-        "Description: Look up a record",
-        'Parameters: {"type":"object","properties":{"id":{"type":"string"}}}',
-        "Function: custom_tool",
-        'Parameters: {"type":"object"}',
-      ].join("\n"),
-    );
-  });
-
-  it("renders nothing for tool_choice none and only the named tool otherwise", () => {
-    const openAi = parseOpenAiFunctionTools([weather, time]);
-    const anthropic = parseAnthropicFunctionTools([
-      { name: "get_weather" },
-      { name: "get_time" },
-    ]);
-    expect(
-      toolsToSystemText(resolveToolChoice(openAi, "none").tools),
-    ).toBeUndefined();
-    expect(
-      toolsToSystemText(
-        resolveToolChoice(anthropic, { type: "none" }, { anthropic: true })
-          .tools,
-      ),
-    ).toBeUndefined();
-    expect(
-      functionLines(
-        toolsToSystemText(
-          resolveToolChoice(openAi, {
-            type: "function",
-            function: { name: "get_time" },
-          }).tools,
-        ),
-      ),
-    ).toEqual(["Function: get_time"]);
-    expect(
-      functionLines(
-        toolsToSystemText(
-          resolveToolChoice(
-            anthropic,
-            { type: "tool", name: "get_weather" },
-            { anthropic: true },
-          ).tools,
-        ),
-      ),
-    ).toEqual(["Function: get_weather"]);
-  });
-
-  describe("size budget", () => {
-    const longText = (seed: string, length: number) =>
-      `${seed} `.repeat(Math.ceil(length / (seed.length + 1))).slice(0, length);
-    /** A Responses function with a long description and a sizeable schema. */
-    const bigTool = (index: number) => ({
-      type: "function",
-      name: `tool_${String(index).padStart(2, "0")}`,
-      description: longText(`Does task ${index}.\n`, 400),
-      parameters: {
-        type: "object",
-        properties: Object.fromEntries(
-          Array.from({ length: 12 }, (_, field) => [
-            `field_${field}`,
-            { type: "string", description: longText("A field.", 60) },
-          ]),
-        ),
-      },
-    });
-
-    it("lists every tool and spends the rest on full schemas, in order", () => {
-      const tools = parseOpenAiFunctionTools(
-        Array.from({ length: 17 }, (_, index) => bigTool(index)),
-      );
-      const fullSize = tools
-        .map((tool) => JSON.stringify(tool.inputSchema).length)
-        .reduce((sum, size) => sum + size, 0);
-      expect(fullSize).toBeGreaterThan(budget);
-
-      const text = toolsToSystemText(tools);
-      expect(lines(text)[0]).toBe(header);
-      expect(entries(text).length).toBeLessThanOrEqual(budget);
-      expect(functionLines(text)).toHaveLength(17);
-      expect(text).not.toContain("more tool");
-
-      const blocks = entries(text).split(/\n(?=Function: )/);
-      const full = blocks.map((block) => block.includes("\nParameters: "));
-      expect(full[0]).toBe(true);
-      expect(full[16]).toBe(false);
-      // Same-sized tools: upgrades stop at the first that no longer fits.
-      expect(full.slice(full.indexOf(false)).every((isFull) => !isFull)).toBe(
-        true,
-      );
-      // A full entry keeps its description whole; a brief one is cut short.
-      expect(blocks[0]).toContain(tools[0].description!.trim());
-      expect(lines(blocks[16])).toHaveLength(2);
-      const briefDescription = lines(blocks[16])[1];
-      expect(briefDescription.startsWith("Description: Does task 16. ")).toBe(
-        true,
-      );
-      expect(briefDescription.length).toBeLessThanOrEqual(
-        "Description: ".length + 200,
-      );
-      expect(briefDescription.endsWith("…")).toBe(true);
-    });
-
-    it("counts the tools that do not fit even as brief entries", () => {
-      const many = parseOpenAiFunctionTools(
-        Array.from({ length: 60 }, (_, index) => bigTool(index)),
-      );
-      const text = toolsToSystemText(many);
-      const listed = functionLines(text).length;
-      expect(listed).toBeGreaterThan(0);
-      expect(listed).toBeLessThan(60);
-      expect(lines(text).at(-1)).toBe(`(${60 - listed} more tools not listed)`);
-      expect(entries(text).length).toBeLessThanOrEqual(
-        budget + `\n(${60 - listed} more tools not listed)`.length,
-      );
-      expect(text).not.toContain("Parameters:");
-
-      expect(lines(toolsToSystemText(many.slice(0, listed + 1))).at(-1)).toBe(
-        "(1 more tool not listed)",
-      );
-    });
+  it("merges tools and functions together", () => {
+    const tools = [
+      { type: "function", function: { name: "foo", description: "foo fn" } },
+    ];
+    const functions = [{ name: "bar", description: "bar fn" }];
+    const result = toolsToSystemText(tools, functions);
+    expect(result).toContain("foo");
+    expect(result).toContain("bar");
   });
 });
 
@@ -438,5 +224,34 @@ describe("responsesInputToMessages", () => {
       input: [{ type: "function_call_output", call_id: "call_1", output: "42" }],
     });
     expect(result).toEqual([{ role: "tool", content: "42" }]);
+  });
+});
+
+describe("completions API helpers", () => {
+  it("normalizes string and string[] prompts", () => {
+    expect(normalizeCompletionPrompt("foo")).toBe("foo");
+    expect(normalizeCompletionPrompt(["a", "b"])).toBe("ab");
+    expect(normalizeCompletionPrompt([])).toBeUndefined();
+  });
+
+  it("detects token id prompts", () => {
+    expect(isTokenizedCompletionPrompt([1, 2, 3])).toBe(true);
+    expect(isTokenizedCompletionPrompt(["a"])).toBe(false);
+  });
+
+  it("builds fill-in-the-middle prompt when suffix is set", () => {
+    const prompt = buildAgentPromptForCompletion({
+      prefix: "const x = ",
+      suffix: ";",
+    });
+    expect(prompt).toContain("PREFIX:");
+    expect(prompt).toContain("const x = ");
+    expect(prompt).toContain("SUFFIX:");
+    expect(prompt).toContain(";");
+  });
+
+  it("strips echoed prefix and markdown fences from output", () => {
+    expect(normalizeCompletionOutput("prefixsuffix", "prefix")).toBe("suffix");
+    expect(normalizeCompletionOutput("```ts\nok()\n```", "")).toBe("ok()");
   });
 });

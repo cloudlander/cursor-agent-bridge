@@ -1,16 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import * as readline from "node:readline";
 import { debuglog } from "node:util";
-import type { AcpPromptBlock } from "./media-input.js";
 
-import {
-  ACP_CLIENT_CAPABILITIES,
-  configureAcpSessionModel,
-  formatAcpRpcError,
-  type AcpModelOptions,
-  type AcpModelPlan,
-  type AcpSessionModelState,
-} from "./acp-model.js";
 import { trackChildProcess } from "./process.js";
 import { DETACH_CHILDREN, killProcessTree } from "./process-tree-kill.js";
 
@@ -31,6 +22,8 @@ export type AcpMcpServer =
       env?: Array<{ name: string; value: string }>;
     };
 
+export type AcpAvailableModel = { modelId: string; name: string };
+
 export type AcpInitializeResult = {
   protocolVersion?: number;
   agentCapabilities?: {
@@ -39,7 +32,10 @@ export type AcpInitializeResult = {
   };
 };
 
-export type AcpSessionResult = { sessionId?: string } & AcpSessionModelState;
+export type AcpSessionResult = {
+  sessionId?: string;
+  models?: { availableModels?: AcpAvailableModel[] };
+};
 
 export type AcpPermissionParams = {
   sessionId?: string;
@@ -56,11 +52,7 @@ type JsonRpcMessage = {
   method?: string;
   params?: Record<string, unknown>;
   result?: unknown;
-  error?: {
-    code?: number;
-    message?: string;
-    data?: { message?: string } | string;
-  };
+  error?: { code?: number; message?: string };
 };
 
 type PendingRequest = {
@@ -131,7 +123,7 @@ function parseLine(line: string): JsonRpcMessage | null {
   }
 }
 
-function extractAcpContentText(content: unknown): string {
+export function extractAcpContentText(content: unknown): string {
   if (
     content &&
     typeof content === "object" &&
@@ -250,7 +242,10 @@ export class AcpConnection {
     debugAcp("ACP step: initialize");
     return (await this.request("initialize", {
       protocolVersion: 1,
-      clientCapabilities: ACP_CLIENT_CAPABILITIES,
+      clientCapabilities: {
+        fs: { readTextFile: false, writeTextFile: false },
+        terminal: false,
+      },
       clientInfo: { name: "cursor-api-proxy", version: "1.0.0" },
     })) as AcpInitializeResult;
   }
@@ -271,29 +266,30 @@ export class AcpConnection {
     })) as AcpSessionResult;
   }
 
-  /** Pick the session model through the decision the plain path shares. */
-  configureSessionModel(
-    sessionId: string,
-    request: AcpModelOptions,
-    session: AcpSessionModelState,
-  ): Promise<AcpModelPlan> {
-    return configureAcpSessionModel(request, session, (configId, value) =>
-      this.request("session/set_config_option", { sessionId, configId, value }),
-    );
+  async setSessionModel(sessionId: string, value: string): Promise<void> {
+    debugAcp("ACP step: session/set_config_option (model)");
+    await this.request("session/set_config_option", {
+      sessionId,
+      configId: "model",
+      value,
+    });
   }
 
   prompt(
     sessionId: string,
-    prompt: string,
+    prompt: import("./acp-client.js").AcpPromptInput,
     timeoutMs?: number,
-    mediaBlocks?: AcpPromptBlock[],
   ): Promise<unknown> {
     debugAcp("ACP step: session/prompt");
+    const blocks =
+      typeof prompt === "string"
+        ? [{ type: "text" as const, text: prompt }]
+        : [...prompt];
     return this.request(
       "session/prompt",
       {
         sessionId,
-        prompt: [{ type: "text", text: prompt }, ...(mediaBlocks ?? [])],
+        prompt: blocks,
       },
       timeoutMs,
     );
@@ -343,6 +339,10 @@ export class AcpConnection {
     this.notify("session/cancel", { sessionId });
   }
 
+  waitForExit(): Promise<number> {
+    return this.#exitPromise;
+  }
+
   async close(signal: NodeJS.Signals = "SIGKILL"): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
@@ -377,7 +377,7 @@ export class AcpConnection {
       this.#pending.delete(id);
       if (waiter.timer) clearTimeout(waiter.timer);
       if (message.error) {
-        waiter.reject(new Error(formatAcpRpcError(message.error)));
+        waiter.reject(new Error(message.error.message ?? "ACP error"));
       } else {
         waiter.resolve(message.result);
       }
@@ -478,4 +478,15 @@ export function permissionOption(
     kind,
     kind === "allow_once" ? "allow-once" : "reject-once",
   );
+}
+
+/** Resolve an ACP permission prompt (auto-approve, proxy-owned MCP, or reject). */
+export function resolvePermissionOption(
+  params: AcpPermissionParams,
+  opts: { autoApprove?: boolean; proxyOwned?: boolean },
+): string {
+  if (opts.autoApprove || opts.proxyOwned) {
+    return permissionOption(params, "allow_once");
+  }
+  return permissionOption(params, "reject_once");
 }

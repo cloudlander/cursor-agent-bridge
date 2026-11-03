@@ -27,16 +27,39 @@ export function writeCachedToken(configDir: string, token: string): void {
   }
 }
 
-/** Read the shared macOS Keychain slot used by the Cursor CLI. */
+/**
+ * Read the Cursor CLI's shared access token: the macOS Keychain slot, or
+ * `$XDG_CONFIG_HOME/cursor/auth.json` (default `~/.config/cursor`) elsewhere.
+ */
 export function readKeychainToken(): string | undefined {
+  if (process.platform === "darwin") {
+    try {
+      const t = execSync(
+        'security find-generic-password -s "cursor-access-token" -w',
+        { stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
+      )
+        .toString()
+        .trim();
+      if (t) return t;
+    } catch {
+      /* fall through */
+    }
+  }
+  return readAuthFileToken();
+}
+
+function readAuthFileToken(): string | undefined {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+  const configHome =
+    process.env.XDG_CONFIG_HOME || (home ? path.join(home, ".config") : "");
+  if (!configHome) return undefined;
   try {
-    const t = execSync(
-      'security find-generic-password -s "cursor-access-token" -w',
-      { stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
-    )
-      .toString()
-      .trim();
-    return t || undefined;
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(configHome, "cursor", "auth.json"), "utf-8"),
+    ) as { accessToken?: unknown };
+    return typeof raw.accessToken === "string" && raw.accessToken.trim()
+      ? raw.accessToken.trim()
+      : undefined;
   } catch {
     return undefined;
   }

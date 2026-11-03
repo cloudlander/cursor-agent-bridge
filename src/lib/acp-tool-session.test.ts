@@ -134,6 +134,19 @@ describe("AcpToolSession", () => {
     );
   });
 
+  it("auto-approves built-in permissions when force is enabled", async () => {
+    const session = createSession("builtin_permission", undefined, {
+      autoApprovePermissions: true,
+    });
+    await session.start("Try built-in");
+    const result = await session.collect();
+    expect(result.status).toBe("completed");
+    expect(result.text).toBe("Builtin handled");
+    expect(result.status === "completed" && result.stderr).toContain(
+      '"optionId":"allow-once"',
+    );
+  });
+
   it("fails clearly when ACP lacks HTTP MCP", async () => {
     const session = createSession("no_http");
     await expect(session.start("Use weather")).rejects.toThrow(
@@ -143,8 +156,7 @@ describe("AcpToolSession", () => {
 
   it("maps CLI display name to ACP model id", async () => {
     const session = createSession("display_model", undefined, {
-      model: "gpt-5.6-sol-high",
-      modelAliases: ["GPT-5.6 Sol High"],
+      modelCandidates: ["gpt-5.6-sol-high", "GPT-5.6 Sol High"],
       strictModel: true,
     });
     await session.start("Hello");
@@ -152,31 +164,6 @@ describe("AcpToolSession", () => {
     expect(result.status).toBe("completed");
     expect(result.status === "completed" && result.stderr).toContain(
       '"value":"gpt-5.6-sol[reasoning=high]"',
-    );
-  });
-
-  it("maps a cursor-prefixed Grok id onto the ACP base row", async () => {
-    const session = createSession("grok_models", undefined, {
-      model: "cursor-grok-4.6-medium",
-      modelAliases: ["Grok 4.6 Medium"],
-      strictModel: true,
-    });
-    await session.start("Hello");
-    const result = await session.collect();
-    expect(result.status).toBe("completed");
-    const stderr = result.status === "completed" ? result.stderr : "";
-    expect(stderr).toContain('"configId":"model","value":"grok-4.6"');
-    expect(stderr).toContain('"configId":"fast","value":"false"');
-  });
-
-  it("names the requested public id when an option is not offered", async () => {
-    const session = createSession("grok_models", undefined, {
-      model: "cursor-grok-4.5-xhigh",
-      modelAliases: ["Grok 4.5 Extra High"],
-      strictModel: true,
-    });
-    await expect(session.start("Hello")).rejects.toThrow(
-      'Requested public model: cursor-grok-4.5-xhigh; matched ACP base model: grok-4.5; does not offer reasoning "xhigh"',
     );
   });
 

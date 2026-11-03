@@ -3,7 +3,6 @@ import * as http from "node:http";
 
 import type { AnthropicMessagesRequest } from "../anthropic.js";
 import { buildPromptFromAnthropicMessages } from "../anthropic.js";
-import { prepareRequestMedia } from "../media-input.js";
 import {
   buildBridgeContextPreamble,
   BRIDGE_AGENT_PROMPT_SEPARATOR,
@@ -17,6 +16,7 @@ import {
 } from "../agent-runner.js";
 import type { ToolTurnEvent, ToolTurnResult } from "../acp-tool-session.js";
 import { createStreamParser } from "../cli-stream-parser.js";
+import { createGuardedAssistantTextEmitter } from "../assistant-stream-dedupe.js";
 import type { BridgeConfig } from "../config.js";
 import type { CursorExecutionMode } from "../execution-mode.js";
 import type { ModelCacheRef } from "./models.js";
@@ -33,6 +33,8 @@ import {
   logTrafficResponse,
   type TrafficMessage,
 } from "../request-log.js";
+import { normalizeAssistantReplyText } from "../assistant-text-dedupe.js";
+import { recordProxyUsage } from "../token-usage.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
 import { resolveRequestMode } from "../resolve-mode.js";
 import { resolveWorkspace } from "../workspace.js";
@@ -52,7 +54,6 @@ import {
 } from "../win-cmdline-limit.js";
 import { abortOnClientDisconnect } from "../client-disconnect.js";
 import {
-  anthropicBuiltinToolNames,
   anthropicToolOutputs,
   parseAnthropicFunctionTools,
   resolveToolChoice,
@@ -76,10 +77,6 @@ export type AnthropicMessagesCtx = {
   toolSessions: ToolSessionRegistry;
 };
 
-// Current Anthropic SDKs model `caller` as required on tool_use blocks; the official
-// C# SDK silently drops a block that omits it.
-const DIRECT_CALLER = { type: "direct" } as const;
-
 function anthropicToolUse(call: PendingClientToolCall) {
   let input: unknown = {};
   try {
@@ -92,7 +89,6 @@ function anthropicToolUse(call: PendingClientToolCall) {
     id: call.callId,
     name: call.name,
     input,
-    caller: DIRECT_CALLER,
   };
 }
 
@@ -139,23 +135,31 @@ async function writeStructuredAnthropicTurn(opts: {
   id: string;
   model: string | undefined;
   promptLength: number;
+  usageLogPath?: string;
+  usagePathname?: string;
   run: (
     listener?: (event: ToolTurnEvent) => void,
   ) => Promise<ToolTurnResult>;
 }): Promise<ToolTurnResult> {
   if (!opts.stream) {
     const result = await opts.run();
-    json(
-      opts.res,
-      200,
-      structuredAnthropicResponse({
-        body: opts.body,
-        id: opts.id,
-        model: opts.model,
-        result,
-        promptLength: opts.promptLength,
-      }),
-    );
+    const responseBody = structuredAnthropicResponse({
+      body: opts.body,
+      id: opts.id,
+      model: opts.model,
+      result,
+      promptLength: opts.promptLength,
+    });
+    if (opts.usageLogPath && opts.usagePathname) {
+      recordProxyUsage(
+        opts.usageLogPath,
+        opts.usagePathname,
+        opts.model,
+        responseBody.usage.input_tokens,
+        responseBody.usage.output_tokens,
+      );
+    }
+    json(opts.res, 200, responseBody);
     return result;
   }
 
@@ -217,7 +221,6 @@ async function writeStructuredAnthropicTurn(opts: {
             id: call.callId,
             name: call.name,
             input: {},
-            caller: DIRECT_CALLER,
           },
         });
         writeAnthropicEvent(opts.res, "content_block_delta", {
@@ -227,6 +230,17 @@ async function writeStructuredAnthropicTurn(opts: {
         writeAnthropicEvent(opts.res, "content_block_stop", { index });
       }
     }
+    const outputTokens = Math.max(1, Math.round(result.text.length / 4));
+    const inputTokens = Math.max(1, Math.round(opts.promptLength / 4));
+    if (opts.usageLogPath && opts.usagePathname) {
+      recordProxyUsage(
+        opts.usageLogPath,
+        opts.usagePathname,
+        opts.model,
+        inputTokens,
+        outputTokens,
+      );
+    }
     writeAnthropicEvent(opts.res, "message_delta", {
       delta: {
         stop_reason:
@@ -234,7 +248,7 @@ async function writeStructuredAnthropicTurn(opts: {
         stop_sequence: null,
       },
       usage: {
-        output_tokens: Math.max(1, Math.round(result.text.length / 4)),
+        output_tokens: outputTokens,
       },
     });
     writeAnthropicEvent(opts.res, "message_stop", {});
@@ -330,12 +344,11 @@ export async function handleAnthropicMessages(
     config.useAcp &&
     selectedTools.length > 0 &&
     submittedToolOutputs.length === 0;
-  const builtinToolNames = anthropicBuiltinToolNames(body.tools);
   const toolsText = structuredToolStart
     ? undefined
-    : toolsToSystemText(
-        selectedTools.filter((tool) => !builtinToolNames.has(tool.name)),
-      );
+    : body.tool_choice?.type === "none"
+      ? undefined
+      : toolsToSystemText(body.tools);
   const cleanSystemText =
     typeof cleanSystem === "string"
       ? cleanSystem
@@ -345,16 +358,14 @@ export async function handleAnthropicMessages(
           )
           .map((part: { type?: string; text?: string }) => part.text ?? "")
           .join("\n");
-  // Like Chat and Responses, only a structured ACP turn can satisfy the
-  // tool_choice instruction; in a text prompt it would demand a call that
-  // nothing returns.
-  const systemWithTools = [
-    cleanSystemText,
-    toolsText,
-    structuredToolStart ? toolInstruction : undefined,
-  ]
+  const systemWithTools = [cleanSystemText, toolsText, toolInstruction]
     .filter(Boolean)
     .join("\n\n");
+  const prompt = buildPromptFromAnthropicMessages(
+    cleanMessages,
+    systemWithTools as AnthropicMessagesRequest["system"],
+  );
+
   if (body.max_tokens == null || typeof body.max_tokens !== "number") {
     json(res, 400, {
       error: {
@@ -364,27 +375,6 @@ export async function handleAnthropicMessages(
     });
     return;
   }
-
-  const resumesToolSession = config.useAcp && submittedToolOutputs.length > 0;
-  const media = await prepareRequestMedia(cleanMessages, {
-    useAcp: config.useAcp,
-    resumesToolSession,
-  });
-  if (!media.ok) {
-    json(res, 422, {
-      error: {
-        type: "invalid_request_error",
-        message: media.error,
-        code: "unsupported_media",
-      },
-    });
-    return;
-  }
-  const mediaBlocks = media.blocks;
-  const prompt = buildPromptFromAnthropicMessages(
-    media.items,
-    systemWithTools as AnthropicMessagesRequest["system"],
-  );
 
   const trafficMessages: TrafficMessage[] = [];
   if (cleanSystem) {
@@ -410,12 +400,13 @@ export async function handleAnthropicMessages(
   }
   logTrafficRequest(
     config.verbose,
+    config.verboseFull,
     model ?? cursorModel,
     trafficMessages,
     !!body.stream,
   );
 
-  if (resumesToolSession) {
+  if (config.useAcp && submittedToolOutputs.length > 0) {
     const record = ctx.toolSessions.findByCallIds(
       "anthropic",
       ownerKey,
@@ -450,12 +441,15 @@ export async function handleAnthropicMessages(
         id: msgId,
         model: displayModel,
         promptLength: prompt.length,
+        usageLogPath: config.sessionsLogPath,
+        usagePathname: pathname,
         run: (listener) =>
           ctx.toolSessions.resume(record, submittedToolOutputs, listener),
       });
       reportRequestSuccess(configDir, Date.now() - startedAt);
       logTrafficResponse(
         config.verbose,
+        config.verboseFull,
         model ?? cursorModel,
         result.text,
         !!body.stream,
@@ -589,7 +583,6 @@ export async function handleAnthropicMessages(
         effectiveChatOnly,
         cmdArgs,
         prompt: agentPrompt,
-        mediaBlocks,
         tools: selectedTools,
         tempDir,
         configDir,
@@ -617,6 +610,8 @@ export async function handleAnthropicMessages(
         id: msgId,
         model: displayModel,
         promptLength: agentPrompt.length,
+        usageLogPath: config.sessionsLogPath,
+        usagePathname: pathname,
         run: (listener) => ctx.toolSessions.collect(record!, listener),
       });
       reportRequestSuccess(configDir, Date.now() - startedAt);
@@ -629,6 +624,7 @@ export async function handleAnthropicMessages(
       }
       logTrafficResponse(
         config.verbose,
+        config.verboseFull,
         model ?? cursorModel,
         result.text,
         !!body.stream,
@@ -699,27 +695,27 @@ export async function handleAnthropicMessages(
 
     if (config.useAcp && typeof promptForAgent === "string") {
       let accumulated = "";
+      const pushAssistantText = createGuardedAssistantTextEmitter((text) => {
+        accumulated += text;
+        writeEvent({
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text },
+        });
+      });
       runAgentStream(
         config,
         workspaceDir,
         effectiveChatOnly,
         cmdArgs,
-        (chunk) => {
-          accumulated += chunk;
-          writeEvent({
-            type: "content_block_delta",
-            index: 0,
-            delta: { type: "text_delta", text: chunk },
-          });
-        },
+        pushAssistantText,
         tempDir,
         promptForAgent,
         configDir,
         abortController.signal,
         modelCatalogName,
-        mediaBlocks,
       )
-        .then(({ code, stderr: stderrOut, error }) => {
+        .then(({ code, stderr: stderrOut }) => {
           stopKeepalive();
           const latencyMs = Date.now() - streamStart;
           reportRequestEnd(configDir);
@@ -738,7 +734,6 @@ export async function handleAnthropicMessages(
                 remoteAddress,
                 code,
                 stderrOut,
-                error,
               );
               writeEvent({
                 type: "error",
@@ -746,11 +741,21 @@ export async function handleAnthropicMessages(
               });
             } else {
               reportRequestSuccess(configDir, latencyMs);
+              const normalizedAccumulated =
+                normalizeAssistantReplyText(accumulated);
               logTrafficResponse(
                 config.verbose,
+                config.verboseFull,
                 model ?? cursorModel,
-                accumulated,
+                normalizedAccumulated,
                 true,
+              );
+              recordProxyUsage(
+                config.sessionsLogPath,
+                pathname,
+                displayModel ?? cursorModel,
+                Math.max(1, Math.round(agentPrompt.length / 4)),
+                Math.max(1, Math.round(normalizedAccumulated.length / 4)),
               );
               writeEvent({ type: "content_block_stop", index: 0 });
               writeEvent({
@@ -789,21 +794,32 @@ export async function handleAnthropicMessages(
     }
 
     let accumulated = "";
+    const pushAssistantText = createGuardedAssistantTextEmitter((text) => {
+      accumulated += text;
+      writeEvent({
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "text_delta", text },
+      });
+    });
     const parseLine = createStreamParser(
-      (text) => {
-        accumulated += text;
-        writeEvent({
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text },
-        });
-      },
+      pushAssistantText,
       () => {
+        const normalizedAccumulated =
+          normalizeAssistantReplyText(accumulated);
         logTrafficResponse(
           config.verbose,
+          config.verboseFull,
           model ?? cursorModel,
-          accumulated,
+          normalizedAccumulated,
           true,
+        );
+        recordProxyUsage(
+          config.sessionsLogPath,
+          pathname,
+          displayModel ?? cursorModel,
+          Math.max(1, Math.round(agentPrompt.length / 4)),
+          Math.max(1, Math.round(normalizedAccumulated.length / 4)),
         );
         writeEvent({ type: "content_block_stop", index: 0 });
         writeEvent({
@@ -826,7 +842,6 @@ export async function handleAnthropicMessages(
       configDir,
       abortController.signal,
       modelCatalogName,
-      mediaBlocks,
     )
       .then(({ code, stderr: stderrOut }) => {
         stopKeepalive();
@@ -888,7 +903,6 @@ export async function handleAnthropicMessages(
     configDir,
     abortController.signal,
     modelCatalogName,
-    mediaBlocks,
   );
   const syncLatency = Date.now() - syncStart;
   reportRequestEnd(configDir);
@@ -907,7 +921,6 @@ export async function handleAnthropicMessages(
       remoteAddress,
       out.code,
       out.stderr,
-      out.error,
     );
     json(res, 500, {
       error: { type: "api_error", message: errMsg, code: "cursor_cli_error" },
@@ -917,10 +930,17 @@ export async function handleAnthropicMessages(
 
   reportRequestSuccess(configDir, syncLatency);
   const content = out.stdout.trim();
-  logTrafficResponse(config.verbose, model ?? cursorModel, content, false);
+  logTrafficResponse(config.verbose, config.verboseFull, model ?? cursorModel, content, false);
   logAccountStats(config.verbose, getAccountStats());
   const inTok = Math.max(1, Math.round(agentPrompt.length / 4));
   const outTok = Math.max(1, Math.round(content.length / 4));
+  recordProxyUsage(
+    config.sessionsLogPath,
+    pathname,
+    displayModel ?? cursorModel,
+    inTok,
+    outTok,
+  );
   json(
     res,
     200,

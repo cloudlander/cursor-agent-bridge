@@ -1,13 +1,17 @@
 import {
   AcpConnection,
-  permissionOption,
+  resolvePermissionOption,
   type AcpConnectionOptions,
   type AcpPermissionParams,
   type AcpSessionResult,
 } from "./acp-connection.js";
-import type { AcpModelOptions } from "./acp-model.js";
+import { createAssistantTextDeduper } from "./assistant-stream-dedupe.js";
+import {
+  acpArgsIncludeModel,
+  resolveAcpModelConfigValue,
+  shouldRejectUnresolvedAcpModel,
+} from "./acp-client.js";
 import { ClientToolBridge } from "./client-tool-bridge.js";
-import type { AcpPromptBlock } from "./media-input.js";
 import type {
   ClientToolDefinition,
   ClientToolOutput,
@@ -35,7 +39,7 @@ export type ToolTurnResult =
       stderr: string;
     };
 
-export type AcpToolSessionOptions = AcpModelOptions & {
+export type AcpToolSessionOptions = {
   command: string;
   args: readonly string[];
   cwd: string;
@@ -45,9 +49,13 @@ export type AcpToolSessionOptions = AcpModelOptions & {
   skipAuthenticate?: boolean;
   rawDebug?: boolean;
   signal?: AbortSignal;
+  modelCandidates?: string[];
+  strictModel?: boolean;
   tools: readonly ClientToolDefinition[];
   requireToolCall?: boolean;
   maxParallelToolCalls?: number;
+  /** When true, auto-approve all tool permissions (same as --force / CURSOR_BRIDGE_FORCE). */
+  autoApprovePermissions?: boolean;
   onClose?: () => void | Promise<void>;
 };
 
@@ -71,6 +79,10 @@ export class AcpToolSession {
   #sessionId?: string;
   #promptDone?: Promise<{ ok: true } | { ok: false; error: Error }>;
   #text = "";
+  #pushAgentText = createAssistantTextDeduper((delta) => {
+    this.#text += delta;
+    this.#listener?.({ type: "text", text: delta });
+  });
   #reasoning = "";
   #listener?: (event: ToolTurnEvent) => void;
   #ttl?: ReturnType<typeof setTimeout>;
@@ -82,7 +94,7 @@ export class AcpToolSession {
     this.bridge = new ClientToolBridge(opts.tools);
   }
 
-  async start(prompt: string, mediaBlocks?: AcpPromptBlock[]): Promise<void> {
+  async start(prompt: string): Promise<void> {
     await this.bridge.start();
     try {
       const connectionOptions: AcpConnectionOptions = {
@@ -93,8 +105,7 @@ export class AcpToolSession {
         rawDebug: this.#opts.rawDebug,
         signal: this.#opts.signal,
         onAgentTextChunk: (text) => {
-          this.#text += text;
-          this.#listener?.({ type: "text", text });
+          this.#pushAgentText(text);
         },
         onAgentThoughtChunk: (text) => {
           this.#reasoning += text;
@@ -130,7 +141,7 @@ export class AcpToolSession {
       await this.#setModel(session);
       this.#armTtl();
       this.#promptDone = this.#connection
-        .prompt(this.#sessionId, prompt, 0, mediaBlocks)
+        .prompt(this.#sessionId, prompt, 0)
         .then(() => ({ ok: true }) as const)
         .catch((error: unknown) => ({
           ok: false as const,
@@ -243,11 +254,30 @@ export class AcpToolSession {
 
   async #setModel(session: AcpSessionResult): Promise<void> {
     if (!this.#connection || !this.#sessionId) return;
-    await this.#connection.configureSessionModel(
-      this.#sessionId,
-      this.#opts,
-      session,
+    const candidates = (this.#opts.modelCandidates ?? []).filter(Boolean);
+    if (candidates.length === 0) return;
+    const available = session.models?.availableModels;
+    const resolved = resolveAcpModelConfigValue(
+      candidates[0],
+      available,
+      candidates.slice(1),
     );
+    if (
+      shouldRejectUnresolvedAcpModel({
+        requested: candidates[0],
+        resolved,
+        strictModel: this.#opts.strictModel,
+        modelOnArgv:
+          acpArgsIncludeModel(this.#opts.args) ||
+          Boolean(candidates[0]?.trim()),
+      })
+    ) {
+      throw new Error(
+        `ACP model catalog has no match for ${JSON.stringify(candidates[0])}`,
+      );
+    }
+    if (resolved === "default" || resolved === "default[]") return;
+    await this.#connection.setSessionModel(this.#sessionId, resolved);
   }
 
   #permissionFor(params: AcpPermissionParams): string {
@@ -264,10 +294,10 @@ export class AcpToolSession {
       kind === "other" &&
       (title === "mcp: tool" ||
         payload.includes(this.bridge.serverName.toLowerCase()));
-    return permissionOption(
-      params,
-      proxyOwned ? "allow_once" : "reject_once",
-    );
+    return resolvePermissionOption(params, {
+      autoApprove: this.#opts.autoApprovePermissions,
+      proxyOwned,
+    });
   }
 
   #drainOutput(): { text: string; reasoning: string } {

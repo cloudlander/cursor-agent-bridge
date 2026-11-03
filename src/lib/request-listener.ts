@@ -1,19 +1,22 @@
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 
 import type { BridgeConfig } from "./config.js";
+import type { AcpModelCacheRef } from "./acp-model-catalog.js";
 import type { ModelCacheRef } from "./handlers/models.js";
+import { enforceBridgeApiKeyIfRequired } from "./bridge-api-auth.js";
 import { handleHealth } from "./handlers/health.js";
 import { handleModels } from "./handlers/models.js";
 import { handleChatCompletions } from "./handlers/chat-completions.js";
+import { handleCompletions } from "./handlers/completions.js";
 import { handleResponses } from "./handlers/responses.js";
 import { handleAnthropicMessages } from "./handlers/anthropic-messages.js";
 import {
   adminDashboardMatches,
   handleAdminDashboard,
 } from "./admin-dashboard.js";
-import { extractBearerToken, json, readBody } from "./http.js";
+import { handleAnthropicCountTokens } from "./handlers/anthropic-count-tokens.js";
+import { json, readBody } from "./http.js";
 import { appendSessionLine, logIncoming } from "./request-log.js";
 import type { ToolSessionRegistry } from "./tool-session-registry.js";
 
@@ -32,6 +35,7 @@ export function createRequestListener(
 ) {
   const { config } = opts;
   const modelCacheRef: ModelCacheRef = { current: undefined };
+  const acpModelCacheRef: AcpModelCacheRef = { current: undefined };
   const lastRequestedModelRef: { current?: string } = {};
 
   return async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -70,24 +74,42 @@ export function createRequestListener(
         return;
       }
 
+      if (req.method === "GET" && pathname === "/api/agent/models") {
+        await handleModels(res, {
+          config,
+          modelCacheRef,
+          acpModelCacheRef,
+          filterForAcpCatalog: true,
+        });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/api/agent/chat") {
+        const raw = await readBody(req);
+        await handleChatCompletions(
+          req,
+          res,
+          {
+            config,
+            lastRequestedModelRef,
+            modelCacheRef,
+            toolSessions: runtime.toolSessions,
+          },
+          raw,
+          method,
+          pathname,
+          remoteAddress,
+        );
+        return;
+      }
+
       if (isAdminDashboardReq) {
         handleAdminDashboard(req, res, opts);
         return;
       }
 
-      if (config.requiredKey) {
-        const token = extractBearerToken(req) ?? "";
-        const expected = config.requiredKey;
-        const a = Buffer.from(token, "utf8");
-        const b = Buffer.from(expected, "utf8");
-        const match =
-          a.length === b.length && crypto.timingSafeEqual(a, b);
-        if (!match) {
-          json(res, 401, {
-            error: { message: "Invalid API key", code: "unauthorized" },
-          });
-          return;
-        }
+      if (!enforceBridgeApiKeyIfRequired(req, res, config, pathname)) {
+        return;
       }
 
       if (req.method === "GET" && pathname === "/health") {
@@ -97,6 +119,24 @@ export function createRequestListener(
 
       if (req.method === "GET" && pathname === "/v1/models") {
         await handleModels(res, { config, modelCacheRef });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/v1/completions") {
+        const raw = await readBody(req);
+        await handleCompletions(
+          req,
+          res,
+          {
+            config,
+            lastRequestedModelRef,
+            modelCacheRef,
+          },
+          raw,
+          method,
+          pathname,
+          remoteAddress,
+        );
         return;
       }
 
@@ -138,6 +178,12 @@ export function createRequestListener(
         return;
       }
 
+      if (req.method === "POST" && pathname === "/v1/messages/count_tokens") {
+        const raw = await readBody(req);
+        handleAnthropicCountTokens(res, raw);
+        return;
+      }
+
       if (req.method === "POST" && pathname === "/v1/messages") {
         const raw = await readBody(req);
         await handleAnthropicMessages(
@@ -157,18 +203,7 @@ export function createRequestListener(
         return;
       }
 
-      if (
-        (req.method === "POST" || req.method === "GET") &&
-        pathname === "/v1/completions"
-      ) {
-        json(res, 404, {
-          error: {
-            message:
-              "Legacy completions endpoint is not supported. Use POST /v1/chat/completions instead.",
-            code: "not_found",
-          },
-        });
-      } else if (pathname === "/v1/embeddings") {
+      if (pathname === "/v1/embeddings") {
         json(res, 404, {
           error: {
             message: "Embeddings are not supported by this proxy.",

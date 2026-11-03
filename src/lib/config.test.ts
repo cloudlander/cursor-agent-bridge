@@ -41,6 +41,7 @@ describe("loadBridgeConfig", () => {
         CURSOR_BRIDGE_TIMEOUT_MS: "60000",
         CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE: "false",
         CURSOR_BRIDGE_VERBOSE: "1",
+        CURSOR_BRIDGE_VERBOSE_FULL: "true",
         CURSOR_BRIDGE_TLS_CERT: "./certs/test.crt",
         CURSOR_BRIDGE_TLS_KEY: "./certs/test.key",
       },
@@ -61,6 +62,7 @@ describe("loadBridgeConfig", () => {
     expect(config.chatOnlyWorkspace).toBe(false);
     expect(config.chatOnlyWorkspaceExplicit).toBe(true);
     expect(config.verbose).toBe(true);
+    expect(config.verboseFull).toBe(true);
     expect(config.tlsCertPath).toBe(
       path.resolve("/tmp/project", "./certs/test.crt"),
     );

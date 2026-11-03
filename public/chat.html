@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Agent chat — cursor-api-proxy</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body class="chat-page">
+  <div class="chat-shell" id="chat-shell">
+    <div class="chat-backdrop" id="chat-backdrop"></div>
+    <aside class="chat-sidebar" id="chat-sidebar">
+      <div class="chat-sidebar-brand">
+        <span class="chat-brand-dot" aria-hidden="true"></span>
+        <span class="chat-brand-name">Agent</span>
+        <a href="/" class="chat-back-icon" title="Dashboard">⌂</a>
+      </div>
+      <div class="chat-sidebar-head">
+        <button type="button" class="btn small primary chat-new-btn" id="chat-new" title="New chat (Ctrl/Cmd+Shift+O)">
+          <span class="chat-new-icon">+</span> New chat
+        </button>
+        <input
+          type="search"
+          id="chat-search"
+          class="chat-search"
+          placeholder="Search chats…  (Ctrl/Cmd+K)"
+          autocomplete="off"
+        />
+      </div>
+      <ul class="chat-thread-list" id="chat-thread-list"></ul>
+      <div class="chat-sidebar-foot">
+        <span class="mono" id="chat-sidebar-meta">…</span>
+        <button type="button" class="chat-foot-btn" id="chat-clear-all" title="Delete all chats">Clear all</button>
+      </div>
+    </aside>
+    <div class="chat-main">
+      <header class="chat-toolbar">
+        <button type="button" class="chat-sidebar-toggle btn small" id="chat-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
+        <h1 class="chat-toolbar-title" id="chat-title">New chat</h1>
+        <div class="chat-toolbar-actions">
+          <select id="chat-model" class="chat-mode-select chat-model-select" title="Model" aria-label="Model"></select>
+          <select id="chat-mode" class="chat-mode-select" title="Mode" aria-label="Mode">
+            <option value="agent">agent</option>
+            <option value="plan">plan</option>
+            <option value="ask">ask</option>
+          </select>
+          <button type="button" class="btn small" id="chat-export" title="Export as Markdown">Export</button>
+          <button type="button" class="btn small" id="chat-theme" title="Toggle theme">☀️</button>
+        </div>
+      </header>
+      <div class="chat-messages-wrap" id="chat-messages-wrap">
+        <div class="chat-messages" id="chat-messages"></div>
+        <button type="button" class="chat-scroll-bottom hidden" id="chat-scroll-bottom" title="Scroll to bottom">↓</button>
+      </div>
+      <div class="chat-composer-wrap">
+        <div class="chat-attachments" id="chat-attachments" hidden></div>
+        <div class="chat-composer" id="chat-composer">
+          <input type="file" id="chat-file-input" class="chat-file-input" multiple accept="image/*,.pdf,.txt,.md,.json,.csv,.yaml,.yml,.ts,.tsx,.js,.jsx,.py,.sh,.html,.css,.xml,.sql,.toml,.ini,.log" hidden />
+          <button type="button" class="btn chat-attach-btn" id="chat-attach" title="Attach files" aria-label="Attach files">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M16.5 6.5L9 14a2.5 2.5 0 103.5 3.5L17.5 8.5a4 4 0 10-5.7 5.7L7.8 18.2a5.5 5.5 0 107.8-7.8l.8-.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </button>
+          <textarea
+            id="chat-input"
+            class="chat-input"
+            rows="1"
+            placeholder="Message the agent…"
+          ></textarea>
+          <button type="button" class="btn primary chat-send" id="chat-send" title="Send (Enter)" aria-label="Send">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8-8-8z" fill="currentColor" transform="rotate(-90 12 12)"/>
+            </svg>
+          </button>
+          <button type="button" class="btn danger chat-send hidden" id="chat-stop" title="Stop (Esc)" aria-label="Stop generating">
+            <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3" fill="currentColor"/></svg>
+          </button>
+        </div>
+        <p class="chat-hint muted-text">Internal session on this proxy — no API key. Attach images or files for multimodal models. <kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>↑</kbd> edit last</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/highlight.min.js"></script>
+  <script src="/static/vendor/marked.min.js"></script>
+  <script src="/static/chat-app.js"></script>
+</body>
+</html>

@@ -1,3 +1,5 @@
+import { createAssistantTextDeduper } from "./assistant-stream-dedupe.js";
+
 /**
  * Create a stateful stream parser for Cursor CLI stream-json output.
  *
@@ -9,7 +11,7 @@ export function createStreamParser(
   onText: (text: string) => void,
   onDone: () => void,
 ): (line: string) => void {
-  let accumulated = "";
+  const pushAssistantText = createAssistantTextDeduper(onText);
   let done = false;
 
   return (line: string) => {
@@ -28,16 +30,8 @@ export function createStreamParser(
           .join("");
         if (!text) return;
 
-        if (text === accumulated) return;
-
-        if (text.startsWith(accumulated) && accumulated.length > 0) {
-          const delta = text.slice(accumulated.length);
-          if (delta) onText(delta);
-          accumulated = text;
-        } else {
-          onText(text);
-          accumulated += text;
-        }
+        pushAssistantText(text);
+        return;
       }
 
       if (obj.type === "result" && obj.subtype === "success") {

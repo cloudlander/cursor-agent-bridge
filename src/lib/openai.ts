@@ -1,9 +1,9 @@
-import type { ClientToolDefinition } from "./tool-types.js";
-
 export type OpenAiChatCompletionRequest = {
   model?: string;
   /** Cursor CLI mode override: agent | ask | plan */
   mode?: string;
+  /** Web UI thread id — enables background generation across page refresh. */
+  threadId?: string;
   messages: any[];
   stream?: boolean;
   tools?: any[];
@@ -11,6 +11,25 @@ export type OpenAiChatCompletionRequest = {
   parallel_tool_calls?: boolean;
   functions?: any[];
   function_call?: any;
+  reasoning_effort?: string;
+};
+
+/** OpenAI legacy text completions (Codex / inline autocomplete clients). */
+export type OpenAiCompletionRequest = {
+  model?: string;
+  /** Cursor CLI mode override: agent | ask | plan (default ask for completions). */
+  mode?: string;
+  prompt?: string | string[] | number[] | number[][];
+  suffix?: string | null;
+  max_tokens?: number | null;
+  temperature?: number | null;
+  top_p?: number | null;
+  stream?: boolean;
+  stop?: string | string[] | null;
+  echo?: boolean | null;
+  logprobs?: number | null;
+  best_of?: number | null;
+  n?: number | null;
   reasoning_effort?: string;
 };
 
@@ -165,89 +184,39 @@ export function responsesInputToMessages(
 }
 
 /**
- * Opens the CLI-mode tool block. Only ACP turns model output into client
- * tool calls, so here the tools are context and nothing parses a call the
- * model writes out.
- */
-const TOOLS_TEXT_HEADER =
-  "Tools defined by the client, for reference only. You cannot call them in this mode, so answer without them and do not write out calls to them.";
-
-/**
- * Character budget for the tool entries, which every request repeats. Small
- * tool sets fit whole, but in full Codex's 17 tools take about 19K
- * characters and Claude Code's 23 about 64K. 8K (about 2K tokens) still
- * fits a brief entry for some 35 tools and keeps the block from crowding
- * argv prompt limits: on Windows the proxy keeps only the prompt's tail, so
- * the system prompt and this block are cut first.
- */
-const TOOLS_TEXT_BUDGET = 8_000;
-
-/** Longest description a tool listed without its schema keeps. */
-const BRIEF_DESCRIPTION_MAX = 200;
-
-function fullToolEntry(tool: ClientToolDefinition): string {
-  const description = tool.description?.trim();
-  return [
-    `Function: ${tool.name}`,
-    ...(description ? [`Description: ${description}`] : []),
-    `Parameters: ${JSON.stringify(tool.inputSchema)}`,
-  ].join("\n");
-}
-
-function briefToolEntry(tool: ClientToolDefinition): string {
-  const description = tool.description?.replace(/\s+/g, " ").trim();
-  if (!description) return `Function: ${tool.name}`;
-  const short =
-    description.length > BRIEF_DESCRIPTION_MAX
-      ? `${description.slice(0, BRIEF_DESCRIPTION_MAX - 1).trimEnd()}…`
-      : description;
-  return `Function: ${tool.name}\nDescription: ${short}`;
-}
-
-/**
- * Describe the request's tools in a CLI-mode prompt, where the model can
- * see them but not call them.
- *
- * Takes the parsed definitions, so every API renders alike: Chat and flat
- * Responses functions, legacy `functions`, namespace members under their
- * flattened names, and Anthropic `input_schema`. Host-side builtins and
- * namespace groups never reach it, and `tool_choice` has already narrowed
- * the list.
- *
- * The entries stay within TOOLS_TEXT_BUDGET. Every tool first gets a brief
- * entry (name and a description cut to BRIEF_DESCRIPTION_MAX) while those
- * fit, and the rest are only counted. Leftover budget then upgrades brief
- * entries, in request order, to the full description and JSON schema, so a
- * set that fits whole renders in full.
+ * Serialise tool/function schemas into a text block for the system prompt.
+ * This allows the model to be aware of available tools even though we can't
+ * return tool_call deltas natively.
  */
 export function toolsToSystemText(
-  tools: readonly ClientToolDefinition[],
+  tools?: any[],
+  functions?: any[],
 ): string | undefined {
-  if (tools.length === 0) return undefined;
-  const briefs = tools.map(briefToolEntry);
-  // Each entry costs its length plus the newline that joins it.
-  let used = 0;
-  let listed = 0;
-  while (
-    listed < briefs.length &&
-    used + briefs[listed].length + 1 <= TOOLS_TEXT_BUDGET
-  ) {
-    used += briefs[listed].length + 1;
-    listed += 1;
+  const defs: any[] = [];
+
+  if (tools && tools.length > 0) {
+    for (const t of tools) {
+      const fn = t?.type === "function" ? t.function : t;
+      if (fn) defs.push(fn);
+    }
   }
-  const entries = briefs.slice(0, listed).map((brief, index) => {
-    const full = fullToolEntry(tools[index]);
-    const extra = full.length - brief.length;
-    if (used + extra > TOOLS_TEXT_BUDGET) return brief;
-    used += extra;
-    return full;
-  });
-  const omitted = tools.length - listed;
-  if (omitted > 0) {
-    const noun = omitted === 1 ? "tool" : "tools";
-    entries.push(`(${omitted} more ${noun} not listed)`);
+  if (functions && functions.length > 0) {
+    defs.push(...functions);
   }
-  return [TOOLS_TEXT_HEADER, "", ...entries].join("\n");
+
+  if (defs.length === 0) return undefined;
+
+  const lines = [
+    "Available tools (respond with a JSON object to call one):",
+    "",
+    ...defs.map((fn) => {
+      const params = fn.parameters
+        ? JSON.stringify(fn.parameters, null, 2)
+        : "{}";
+      return `Function: ${fn.name}\nDescription: ${fn.description ?? ""}\nParameters: ${params}`;
+    }),
+  ];
+  return lines.join("\n");
 }
 
 export function buildPromptFromMessages(messages: any[]): string {
@@ -256,7 +225,14 @@ export function buildPromptFromMessages(messages: any[]): string {
 
   for (const m of messages || []) {
     const role = m?.role;
-    const text = messageContentToText(m?.content);
+    let text = messageContentToText(m?.content);
+    if (Array.isArray(m?.attachments) && m.attachments.length > 0) {
+      const names = m.attachments
+        .map((a: { name?: string; path?: string }) => a?.name ?? a?.path ?? "file")
+        .join(", ");
+      const tag = `[Attachments: ${names}]`;
+      text = text ? `${text}\n${tag}` : tag;
+    }
     if (!text) continue;
 
     if (role === "system" || role === "developer") {
@@ -282,4 +258,107 @@ export function buildPromptFromMessages(messages: any[]): string {
     : "";
   const transcript = convo.join("\n\n");
   return system + transcript + "\n\nAssistant:";
+}
+
+function normalizeStopSequences(
+  stop: string | string[] | null | undefined,
+): string[] {
+  if (stop == null) return [];
+  if (typeof stop === "string") return stop ? [stop] : [];
+  return stop.filter((s) => typeof s === "string" && s.length > 0);
+}
+
+/**
+ * Normalize OpenAI `prompt` for legacy completions (string or string batch).
+ * Token id arrays are not supported — callers should decode tokens first.
+ */
+export function normalizeCompletionPrompt(
+  prompt: OpenAiCompletionRequest["prompt"],
+): string | undefined {
+  if (prompt == null) return undefined;
+  if (typeof prompt === "string") {
+    const trimmed = prompt;
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (Array.isArray(prompt)) {
+    if (prompt.length === 0) return undefined;
+    if (typeof prompt[0] === "string") {
+      const joined = (prompt as string[]).join("");
+      return joined.length > 0 ? joined : undefined;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
+export function isTokenizedCompletionPrompt(
+  prompt: OpenAiCompletionRequest["prompt"],
+): boolean {
+  return (
+    Array.isArray(prompt) &&
+    prompt.length > 0 &&
+    typeof prompt[0] === "number"
+  );
+}
+
+const CODE_COMPLETION_RULES = `You are a coding autocomplete engine. Continue code from the cursor position.
+Rules:
+- Output ONLY the text that should be inserted at the cursor.
+- Do NOT repeat the prefix/context already provided below.
+- Do NOT wrap output in markdown code fences or add explanations.
+- Prefer minimal, syntactically valid completions (finish the current token/line when possible).`;
+
+/** Build the Cursor agent prompt for POST /v1/completions. */
+export function buildAgentPromptForCompletion(opts: {
+  prefix: string;
+  suffix?: string | null;
+  stop?: string | string[] | null;
+  maxTokens?: number | null;
+}): string {
+  const stops = normalizeStopSequences(opts.stop);
+  let instructions = CODE_COMPLETION_RULES;
+  if (typeof opts.maxTokens === "number" && opts.maxTokens > 0) {
+    instructions += `\n- Keep the completion under roughly ${opts.maxTokens} tokens.`;
+  }
+  if (stops.length > 0) {
+    instructions += `\n- Do not emit these literal substrings: ${stops.map((s) => JSON.stringify(s)).join(", ")}.`;
+  }
+
+  const suffix =
+    typeof opts.suffix === "string" ? opts.suffix.trim() : "";
+  if (suffix) {
+    return `${instructions}
+
+Fill in the missing code between PREFIX (already in the editor) and SUFFIX (already in the editor).
+
+PREFIX:
+${opts.prefix}
+
+SUFFIX:
+${suffix}
+
+Insert ONLY the code that belongs between PREFIX and SUFFIX:`;
+  }
+
+  return `${instructions}
+
+Code before the cursor (PREFIX — do not repeat in your output):
+${opts.prefix}
+
+Completion:`;
+}
+
+/** Strip common model formatting mistakes from a completion result. */
+export function normalizeCompletionOutput(
+  raw: string,
+  prefix: string,
+): string {
+  let text = raw.trim();
+  if (prefix && text.startsWith(prefix)) {
+    text = text.slice(prefix.length);
+  }
+  const fence = /^```[\w-]*\n?([\s\S]*?)```\s*$/;
+  const m = text.match(fence);
+  if (m) text = m[1].trim();
+  return text;
 }

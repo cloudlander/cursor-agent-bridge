@@ -1,5 +1,10 @@
 import * as http from "node:http";
 
+import {
+  filterCliModelsForAcpCatalog,
+  getCachedAcpAvailableModels,
+  type AcpModelCacheRef,
+} from "../acp-model-catalog.js";
 import type { BridgeConfig } from "../config.js";
 import type { CursorCliModel } from "../cursor-cli.js";
 import { listCursorCliModels } from "../cursor-cli.js";
@@ -17,6 +22,9 @@ export type ModelCacheRef = {
 export type HandleModelsOpts = {
   config: BridgeConfig;
   modelCacheRef: ModelCacheRef;
+  acpModelCacheRef?: AcpModelCacheRef;
+  /** When true, drop CLI rows that cannot be mapped to the ACP session catalog. */
+  filterForAcpCatalog?: boolean;
 };
 
 export async function getCachedCursorModels(
@@ -58,8 +66,25 @@ export async function handleModels(
   res: http.ServerResponse,
   opts: HandleModelsOpts,
 ): Promise<void> {
-  const { config, modelCacheRef } = opts;
-  const models = await getCachedCursorModels(config, modelCacheRef);
+  const { config, modelCacheRef, acpModelCacheRef, filterForAcpCatalog } = opts;
+  let models = await getCachedCursorModels(config, modelCacheRef);
+  if (
+    filterForAcpCatalog &&
+    config.useAcp &&
+    config.strictModel &&
+    acpModelCacheRef
+  ) {
+    try {
+      const acpModels = await getCachedAcpAvailableModels(
+        config,
+        config.workspace,
+        acpModelCacheRef,
+      );
+      models = filterCliModelsForAcpCatalog(models, acpModels);
+    } catch {
+      /* keep full CLI catalog when ACP probe fails */
+    }
+  }
   const cursorModels = models.map((m) => ({
     id: m.id,
     object: "model" as const,

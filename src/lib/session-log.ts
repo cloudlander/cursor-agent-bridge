@@ -1,5 +1,8 @@
 import * as fs from "node:fs";
 
+import type { AggregatedTokenUsage } from "./token-usage.js";
+import { aggregateTokenUsage } from "./token-usage.js";
+
 const SESSION_LINE_RE =
   /^(\S+) (GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS) (\S+) (\S+) (\d{3})$/;
 
@@ -17,6 +20,7 @@ export type SessionStats = {
   errors: number;
   byPath: Record<string, number>;
   recent: Omit<SessionRequest, "remoteAddress">[];
+  usage: AggregatedTokenUsage;
 };
 
 export function readLastLines(
@@ -82,6 +86,7 @@ export function computeSessionStats(
     errors: 0,
     byPath: {},
     recent: [],
+    usage: aggregateTokenUsage([], hours),
   };
 
   for (const line of lines) {
@@ -101,5 +106,6 @@ export function computeSessionStats(
   }
 
   stats.recent = stats.recent.slice(-40).reverse();
+  stats.usage = aggregateTokenUsage(lines, hours);
   return stats;
 }

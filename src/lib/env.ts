@@ -40,6 +40,8 @@ export type LoadedEnv = {
   dshSystemMarker?: string;
   dshPlanMarker?: string;
   verbose: boolean;
+  /** When true with verbose, log full request/response bodies (no preview truncation). */
+  verboseFull: boolean;
   /** When true, set maxMode in cli-config.json before each run (larger context, more tools). */
   maxMode: boolean;
   /** When true, pass the user prompt via stdin instead of argv (avoids Windows argv truncation). */
@@ -326,6 +328,55 @@ function discoverAccountDirs(homeDir: string | undefined): string[] {
   }
 }
 
+export type InboundApiKeySource = "CURSOR_BRIDGE_API_KEY" | "CDSW_API_KEY";
+
+export type InboundApiKeyDetails = {
+  key?: string;
+  source?: InboundApiKeySource;
+};
+
+/**
+ * Key for `/v1/*` and `/health` when configured. Dashboard, `/chat`, and `/plugins` never require it.
+ * In Cloudera AI applications, `CDSW_API_KEY` is used automatically so operators need not set
+ * `CURSOR_BRIDGE_API_KEY` separately.
+ */
+export function resolveInboundApiKeyDetails(
+  env: EnvSource,
+): InboundApiKeyDetails {
+  const explicit = envString(env, ["CURSOR_BRIDGE_API_KEY"]);
+  if (explicit != null) {
+    return { key: explicit, source: "CURSOR_BRIDGE_API_KEY" };
+  }
+  if (envBool(env, ["CURSOR_BRIDGE_DISABLE_CDSW_INBOUND_KEY"], false)) {
+    return {};
+  }
+  if (envString(env, ["CDSW_APP_PORT"])) {
+    const key = envString(env, ["CDSW_API_KEY"]);
+    return key != null
+      ? { key, source: "CDSW_API_KEY" }
+      : { source: "CDSW_API_KEY" };
+  }
+  return {};
+}
+
+function resolveInboundApiKey(env: EnvSource): string | undefined {
+  return resolveInboundApiKeyDetails(env).key;
+}
+
+/** Single-line startup message for stdout (env var name and value). */
+export function formatInboundAuthStartupLog(env: EnvSource): string {
+  const { key, source } = resolveInboundApiKeyDetails(env);
+  if (!source) {
+    return "LLM /v1 auth: none (plugins UI needs no bridge key)";
+  }
+  const value = key ?? "(not set)";
+  const suffix =
+    source === "CDSW_API_KEY"
+      ? " (automatic; plugins UI needs no bridge key)"
+      : "";
+  return `LLM /v1 auth: ${source}=${value}${suffix}`;
+}
+
 export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
   const env = getEnvSource(opts.env);
   const cwd = getCwd(opts.cwd);
@@ -400,7 +451,7 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     commandShell: envString(env, ["COMSPEC"]) ?? "cmd.exe",
     host,
     port,
-    requiredKey: envString(env, ["CURSOR_BRIDGE_API_KEY"]),
+    requiredKey: resolveInboundApiKey(env),
     defaultModel: normalizeModelId(
       envString(env, ["CURSOR_BRIDGE_DEFAULT_MODEL"]),
     ),
@@ -431,15 +482,31 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     dshSystemMarker: envString(env, ["CURSOR_BRIDGE_DSH_SYSTEM_MARKER"]),
     dshPlanMarker: envString(env, ["CURSOR_BRIDGE_DSH_PLAN_MARKER"]),
     verbose: envBool(env, ["CURSOR_BRIDGE_VERBOSE"], false),
+    verboseFull: envBool(env, ["CURSOR_BRIDGE_VERBOSE_FULL"], false),
     maxMode: envBool(env, ["CURSOR_BRIDGE_MAX_MODE"], false),
     promptViaStdin: envBool(env, ["CURSOR_BRIDGE_PROMPT_VIA_STDIN"], false),
-    useAcp: envBool(env, ["CURSOR_BRIDGE_USE_ACP"], false),
+    useAcp: envBool(env, ["CURSOR_BRIDGE_USE_ACP"], true),
     configDirs,
     multiPort: envBool(env, ["CURSOR_BRIDGE_MULTI_PORT"], false),
     winCmdlineMax,
     contextPreamble,
     contextExtra,
   };
+}
+
+/**
+ * The env an agent CLI child starts with: the command's env, the agent
+ * layout's config dir when that env sets none, then `overrides`.
+ */
+export function agentChildEnv(
+  command: AgentCommand,
+  overrides?: Record<string, string>,
+): EnvSource {
+  const env = { ...command.env };
+  if (command.configDir && !env.CURSOR_CONFIG_DIR) {
+    env.CURSOR_CONFIG_DIR = command.configDir;
+  }
+  return { ...env, ...overrides };
 }
 
 export function resolveAgentCommand(

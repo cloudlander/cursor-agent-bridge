@@ -1,7 +1,7 @@
 {
-  "name": "cursor-api-proxy",
+  "name": "cursor-agent-bridge",
   "version": "1.7.0",
-  "description": "OpenAI-compatible proxy for Cursor CLI — use Cursor models from any LLM client on localhost",
+  "description": "Cursor Agent Bridge — OpenAI-compatible HTTP bridge to Cursor CLI agent mode (CAI-optimized deploy profile)",
   "private": false,
   "type": "module",
   "files": [
@@ -40,7 +40,10 @@
   "keywords": [
     "cursor",
     "openai",
-    "proxy",
+    "anthropic",
+    "claude-code",
+    "bridge",
+    "agent",
     "llm",
     "api"
   ],

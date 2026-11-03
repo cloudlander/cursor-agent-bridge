@@ -1,8 +1,12 @@
-# cursor-api-proxy
+# Cursor Agent Bridge (`cursor-agent-bridge`)
 
-OpenAI-compatible proxy for Cursor CLI. Run it on localhost and point any LLM client (OpenAI SDK, LiteLLM, LangChain, etc.) at it like a normal chat API.
+> **Inspired by** [cursor-api-proxy](https://github.com/anyrobert/cursor-api-proxy) (npm `cursor-api-proxy`). This repo adds a hosted agent surface—dashboard, web chat, plugins, CDSW inbound auth, and a **CAI Application** profile (`app.sh`, bootstrap scripts).
+>
+> **Coding agents:** start with [AGENTS.md](./AGENTS.md). For Cloudera AI deploys, see [docs/CAI-DEPLOYMENT.md](./docs/CAI-DEPLOYMENT.md).
 
-One npm package, two uses: import it as an SDK, or run the CLI to start the server. Same behavior either way.
+OpenAI-compatible bridge for Cursor CLI agent mode. Run it on localhost or as a CAI Application and point any LLM client (OpenAI SDK, LiteLLM, LangChain, etc.) at it like a normal chat API.
+
+One npm package, two uses: import it as an SDK, or run the CLI to start the server (`cursor-api-proxy` bin). Same behavior either way.
 
 This is not the Cursor IDE. The HTTP API will not attach your repo, `@codebase`, or host shell the way the desktop app does. See [Local workspace and agent frameworks](#local-workspace-and-agent-frameworks).
 
@@ -64,7 +68,32 @@ To expose on your network (e.g. Tailscale):
 npx cursor-api-proxy --tailscale
 ```
 
-By default the server listens on http://127.0.0.1:8765. Set `CURSOR_BRIDGE_API_KEY` to require `Authorization: Bearer <key>` on requests.
+By default the server listens on http://127.0.0.1:8765. Set `CURSOR_BRIDGE_API_KEY` to require `Authorization: Bearer <key>` on **`/v1/*`** and **`/health`** (dashboard, chat, and plugins stay open on the same listener).
+
+### Admin dashboard and plugin marketplace
+
+While the proxy is running, open:
+
+- **Dashboard:** http://127.0.0.1:8765/
+- **Plugins (marketplace):** http://127.0.0.1:8765/plugins
+
+The **Plugins** page lets you browse and search the official Cursor marketplace ([cursor/plugins](https://github.com/cursor/plugins) **plus** the [cursor.com marketplace](https://cursor.com/marketplace) catalog shown in IDE Customize — e.g. **Browserbase**), add custom marketplace Git repos, install plugins, and configure credentials (env vars, HTTP headers, per-MCP-server overrides, OAuth login helper). Installed plugins are materialized into Cursor config directories so the spawned `agent` CLI can load **skills** and **MCP servers** (same layout as IDE plugins, without relying on `--plugin-dir`).
+
+**Deploy targets:** `~/.cursor`, each entry in `CURSOR_CONFIG_DIRS`, and an internal runtime directory under the plugin store. On **chat-only** sandboxes (default), that runtime tree is copied into each request’s temporary `.cursor` so skills/MCP from installed plugins still load.
+
+**Storage (default):** `<dirname(CURSOR_BRIDGE_SESSIONS_LOG)>/plugins/` (`registry.json`, cloned marketplaces, installed plugin trees). Override with `CURSOR_BRIDGE_PLUGINS_DIR`.
+
+**Security:** The Plugins page and `/api/plugins/*` work **without** any bridge API key (same as the dashboard and `/chat`). When `CURSOR_BRIDGE_API_KEY` is set, it applies only to **`/v1/*`** and **`/health`**. On Cloudera AI, `/v1` auth uses **`CDSW_API_KEY` automatically** — you do not need to set `CURSOR_BRIDGE_API_KEY` for plugins. Do not expose the service on untrusted networks without TLS and appropriate edge auth.
+
+**Tips:**
+
+- On startup the proxy **auto-imports** plugins already in Cursor CLI’s `plugins/cache/` (disable with `CURSOR_BRIDGE_PLUGINS_AUTO_SYNC_CLI=0`).
+- For CLI-only MCP (e.g. Atlassian already in your local `mcp.json`), use **OAuth login** on the catalog row or `POST /api/plugins/mcp-login` — no Import and no bridge API key.
+- Set `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` and point `CURSOR_BRIDGE_WORKSPACE` at your vault/repo if you also want **project** `.cursor/skills` in addition to proxy-deployed plugins.
+- Use **Redeploy all** after changing account pool dirs or moving the plugin store.
+- MCP OAuth **Start login** runs `agent mcp login`, waits for the authorize URL, and shows it in the Plugins UI (also logged as `[cursor-api-proxy] MCP OAuth URL`). OAuth callback uses `http://localhost:8787/callback` on the machine running the proxy — port-forward from your laptop when the app runs on Cloudera AI.
+
+REST API (same auth rules): `/api/plugins/marketplaces`, `/api/plugins/catalog?q=…`, `/api/plugins/install`, `/api/plugins/installed/:id`, etc.
 
 ### HTTPS with Tailscale (MagicDNS)
 
@@ -110,19 +139,16 @@ The model only sees what you send: `messages`, optional tool schemas, and tool r
 
 File reads, shell commands, and directory listings only happen when your agent framework implements tools, runs them on the host, and sends outputs back in follow-up messages. The proxy does not do that for you.
 
-Optional server-side workspace: the Cursor CLI may run with a workspace directory (`CURSOR_BRIDGE_WORKSPACE`, per-request `X-Cursor-Workspace`). By default, `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=true` runs the CLI in an empty temp directory so it does not read or write your real project. The proxy also overrides `HOME`, `USERPROFILE`, and `CURSOR_CONFIG_DIR` so the agent does not load global or project rules from elsewhere. That temp home is a separate directory next to the empty workspace, never inside it. On macOS it links your real `~/Library/Keychains` so the CLI can still read and save its login, and keeping it outside the workspace keeps that link out of anything the agent lists, searches, or edits as the project. Set it to `false` if you want the CLI to see a path on the machine where the proxy runs. That is still not IDE indexing. See the env table below.
+Optional server-side workspace: the Cursor CLI may run with a workspace directory (`CURSOR_BRIDGE_WORKSPACE`, per-request `X-Cursor-Workspace`). By default, `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=true` runs the CLI in an empty temp directory so it does not read or write your real project. The proxy also overrides `HOME`, `USERPROFILE`, and `CURSOR_CONFIG_DIR` so the agent does not load global or project rules from elsewhere. Set it to `false` if you want the CLI to see a path on the machine where the proxy runs. That is still not IDE indexing. See the env table below.
 
 For agents that need local context: use client-side tools (`read_file`, `run_terminal_cmd`) and pass results as tool messages; add RAG or retrieval and inject snippets into `user` content; or paste relevant files into the prompt. There is no built-in way to sync an entire workspace through the proxy today.
 
 ### Client tool passthrough (ACP)
 
-Without ACP (the default CLI mode), responses never contain tool calls. The proxy lists the request's function tools in the prompt for reference only and tells the model it cannot call them. Large tool sets are trimmed to about 8,000 characters: each tool gets its name and a description of up to 200 characters while they fit (any beyond that are only counted), and full schemas fill the space left, in request order.
-
-Set `CURSOR_BRIDGE_USE_ACP=true` to receive structured client tool calls. Tool-bearing requests require a Cursor ACP build that advertises HTTP MCP support. The proxy supports:
+ACP is **on by default** (`CURSOR_BRIDGE_USE_ACP=true`; set `false` to use legacy argv/stdin delivery). Tool-bearing requests require a Cursor ACP build that advertises HTTP MCP support. The proxy supports:
 
 - Chat Completions `tools` / legacy `functions` → `message.tool_calls`; resume with `role: "tool"` and `tool_call_id`.
-- Responses flat function tools → `function_call` output items; resume with `previous_response_id` and `function_call_output`, or resend the whole conversation with the `function_call_output` items appended and no `previous_response_id` (Codex CLI does this with `store: false`).
-- Responses `namespace` tool groups (Codex CLI) are flattened for the agent and reported back as the member's bare `name` plus `namespace`. Host-side builtins such as `web_search` are dropped, and `tool_choice: "required"` with no callable tool left returns `400`.
+- Responses flat function tools → `function_call` output items; resume with `previous_response_id` and `function_call_output`.
 - Anthropic tools with `input_schema` → `tool_use`; resume with `tool_result`.
 - Sync and streaming output, mixed text plus tools, parallel calls, multiple rounds, named/required/none choices.
 
@@ -132,7 +158,6 @@ Tool loops are stateful and in-process:
 
 - Keep the same proxy process alive between the call and its result.
 - Submit results before `CURSOR_BRIDGE_TIMEOUT_MS`. Expiration, restart, unknown IDs, or wrong API-key owner return HTTP `409`.
-- Responses requests without `previous_response_id` are matched on `call_id` instead: only the `function_call_output` items after the latest user message resume a parked call, so outputs from finished turns stay history. If none of them is parked (expired, restarted, another API-key owner), the proxy starts a new ACP session from the conversation you sent, which already holds the tool results, instead of returning `409`. Outputs sent with no user message still return `409`. A new user turn also closes any parked call that the conversation has moved past.
 - Parallel results may arrive together or incrementally. The original account/profile and temporary workspace stay attached until the turn finishes.
 - A client disconnect while a turn is active cancels the ACP child and removes temporary state.
 - Responses API objects remain externally `completed` while an internal ACP turn waits for `function_call_output`.
@@ -167,17 +192,6 @@ for (const call of assistant.tool_calls ?? []) {
 }
 const final = await client.chat.completions.create({ model: "auto", messages });
 ```
-
-### Image and video input (ACP)
-
-With `CURSOR_BRIDGE_USE_ACP=true`, images are forwarded to the model as native ACP image blocks:
-
-- Chat Completions `image_url`, Responses `input_image`, and Anthropic `image` (base64 or URL sources).
-- `data:` URLs and public `https://` URLs on port 443. Remote URLs that resolve to loopback, private, link-local, or other non-public addresses are rejected, every redirect is re-checked, and downloads are capped at 10 MiB per image (40 MiB per video) with a 30 s deadline.
-- PNG, JPEG, WebP, and GIF images. MP4, QuickTime, and WebM video is sampled into up to 3 frames (about 5 s apart), which needs `ffmpeg` on the proxy host (included in the Docker image).
-- At most 12 images per request, newest first; each video counts as 3. Older images in the history become text placeholders, so long conversations keep working. Only a latest message that cannot fit on its own returns `422`.
-
-Without ACP, media stays a text placeholder in the prompt and the proxy logs a warning; the request still succeeds.
 
 ## Use as SDK in another project
 
@@ -248,6 +262,24 @@ const client = new OpenAI({
 | POST   | `/v1/chat/completions` | Chat + native `tool_calls`; supports `stream: true`                    |
 | POST   | `/v1/responses`        | Responses text + `function_call`; supports semantic SSE streaming     |
 | POST   | `/v1/messages`         | Anthropic Messages + `tool_use`; supports `stream: true`              |
+| POST   | `/v1/messages/count_tokens` | Anthropic-compatible input token estimate (heuristic)            |
+
+### Claude Code
+
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) uses the Anthropic Messages API. Point it at this proxy instead of `api.anthropic.com`:
+
+```bash
+export ANTHROPIC_BASE_URL="http://127.0.0.1:8765"   # no /v1 suffix
+export ANTHROPIC_API_KEY="${CURSOR_BRIDGE_API_KEY:-unused}"
+# Optional: pick a Cursor-backed alias from GET /v1/models
+export ANTHROPIC_MODEL="claude-sonnet-4-5-20250929"
+npx cursor-api-proxy   # in another terminal
+claude
+```
+
+Auth accepts either `x-api-key` (Anthropic / Claude Code) or `Authorization: Bearer` (OpenAI-style clients). When `CURSOR_BRIDGE_API_KEY` is set, use the same value for `ANTHROPIC_API_KEY`. Failed auth on `/v1/messages` returns Anthropic-shaped `authentication_error` JSON.
+
+Tool loops use the same ACP passthrough as Chat Completions (ACP is default). Set header `X-Cursor-Invoke-From: claude-cli` if you want the bridge preamble to label the client.
 
 ### Reasoning effort
 
@@ -276,7 +308,8 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 |----------|---------|-------------|
 | `CURSOR_BRIDGE_HOST` | `127.0.0.1` | Bind address |
 | `CURSOR_BRIDGE_PORT` | `8765` | Port |
-| `CURSOR_BRIDGE_API_KEY` | — | If set, require `Authorization: Bearer <key>` on requests |
+| `CURSOR_BRIDGE_API_KEY` | — | If set, require `Authorization: Bearer <key>` (or `x-api-key`) on **`/v1/*`** and **`/health`** only |
+| `CURSOR_BRIDGE_DISABLE_CDSW_INBOUND_KEY` | — | When `1`, do not auto-use `CDSW_API_KEY` for `/v1` auth in CAI applications |
 | `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` | — | Cursor access token passed to spawned CLI/ACP children (automation, headless). Same value can be used for both names. |
 | `CURSOR_BRIDGE_WORKSPACE` | process cwd | Base workspace directory for Cursor CLI. With `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false`, header `X-Cursor-Workspace` must point to an existing directory under this path (after resolving real paths). |
 | `CURSOR_BRIDGE_MODE` | — | Server default for Cursor CLI `--mode`: `agent`, `ask`, or `plan`. If unset, default is `ask`. Env wins over CLI `--mode` when both are set. Per request, JSON body `mode` or header `X-Cursor-Mode` overrides (precedence: body → header → DSH auto-mode → this env → `--mode` → `ask`). Invalid value → startup error. With `agent` (or `plan`) and real workspace, the CLI may read/write files under `CURSOR_BRIDGE_WORKSPACE` / cwd. See `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE`. |
@@ -291,18 +324,24 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 | `CURSOR_BRIDGE_TLS_CERT` | — | Path to TLS certificate file (e.g. Tailscale cert). Use with `CURSOR_BRIDGE_TLS_KEY` for HTTPS. |
 | `CURSOR_BRIDGE_TLS_KEY` | — | Path to TLS private key file. Use with `CURSOR_BRIDGE_TLS_CERT` for HTTPS. |
 | `CURSOR_BRIDGE_SESSIONS_LOG` | `~/.cursor-api-proxy/sessions.log` | Path to log file; each request is appended as a line (timestamp, method, path, IP, status). |
+| `CURSOR_BRIDGE_PLUGINS_DIR` | `<sessions-log-dir>/plugins` | Root for plugin marketplace data (registry, marketplace clones, installed trees, runtime materialization). |
 | `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE` | `true` | When `true` (default), the CLI runs in an empty temp dir so it cannot read or write your project; pure chat only. The proxy also overrides `HOME`, `USERPROFILE`, and `CURSOR_CONFIG_DIR` so the agent cannot load rules from `~/.cursor` or project rules from elsewhere. Set to `false` to pass the real workspace (e.g. for `X-Cursor-Workspace`). Mode interaction: for a request whose effective mode is not `ask`, if this variable was not set in the environment (left at default), the proxy uses the real workspace for that request so `agent` / `plan` can touch files. If you did set this variable in the environment (to `true` or `false`), that choice is always honored for every request. |
 | `CURSOR_BRIDGE_CONTEXT_PREAMBLE` | `true` | When `true` (default), prepends 1–3 short lines to the agent prompt: one line stating the request went through `cursor-api-proxy` → Cursor CLI, the effective `CURSOR_BRIDGE_WORKSPACE` / agent cwd (deduped when they match), CLI mode, and whether the agent cwd is a temp sandbox; optional `X-Cursor-Workspace=` from that header; optional `client=` from `X-Cursor-Invoke-From` or `X-Cursor-Proxy-Client` only (User-Agent is not echoed); optional `CURSOR_BRIDGE_CONTEXT_EXTRA`. Set to `false` to disable. |
 | `CURSOR_BRIDGE_CONTEXT_EXTRA` | — | Optional free-text (max 400 characters, NUL stripped) on its own line after the above. Use for a single short fact if needed. Do not put secrets here (tokens, API keys). |
-| `CURSOR_BRIDGE_VERBOSE` | `false` | When `true`, print full request messages and response content to stdout for every completion (both stream and sync). |
+| `CURSOR_BRIDGE_VERBOSE` | `false` | When `true`, print request/response traffic to stdout for every completion (both stream and sync). Bodies are shortened previews unless `CURSOR_BRIDGE_VERBOSE_FULL` is also set. |
+| `CURSOR_BRIDGE_VERBOSE_FULL` | `false` | When `true` (requires `CURSOR_BRIDGE_VERBOSE=true`), log entire request message bodies and assistant responses with no truncation. |
 | `CURSOR_BRIDGE_MAX_MODE` | `false` | When `true`, enable Cursor Max Mode for all requests (larger context window, higher tool-call limits). The proxy writes `maxMode: true` to `cli-config.json` before each run. Works when using `CURSOR_AGENT_NODE`/`CURSOR_AGENT_SCRIPT`, the versioned layout (`versions/YYYY.MM.DD-commit/`), or node.exe + index.js next to agent.cmd. |
 | `CURSOR_BRIDGE_WIN_CMDLINE_MAX` | `30000` | (Windows) Upper bound (UTF-16 units, pessimistic) for the full `CreateProcess` command line. If the prompt would exceed it, the proxy keeps the tail of the prompt and prepends a short omission notice, logs a warning, and sets `X-Cursor-Proxy-Prompt-Truncated: true` on the response. Clamped to `4096`–`32700`. |
 | `CURSOR_CONFIG_DIRS` | — | Comma-separated configuration directories for round-robin account rotation (alias: `CURSOR_ACCOUNT_DIRS`). Auto-discovers authenticated accounts under `~/.cursor-api-proxy/accounts/` when unset. |
 | `CURSOR_BRIDGE_MULTI_PORT` | `false` | When `true` and multiple config dirs are set, spawns a separate server per directory on incrementing ports starting from `CURSOR_BRIDGE_PORT`. |
 | `CURSOR_BRIDGE_PROMPT_VIA_STDIN` | `false` | When `true`, sends the user prompt via stdin instead of argv (helps on Windows if argv is truncated). |
-| `CURSOR_BRIDGE_USE_ACP` | `false` | When `true`, uses ACP (Agent Client Protocol) over stdio (`agent acp`). Required for structured client-tool passthrough and avoids Windows argv limits. The installed agent must advertise HTTP MCP support. See [Cursor ACP docs](https://cursor.com/docs/cli/acp). Set `NODE_DEBUG=cursor-api-proxy:acp` to debug. |
+| `CURSOR_BRIDGE_USE_ACP` | `true` | When `true`, uses ACP (Agent Client Protocol) over stdio (`agent acp`). Required for structured client-tool passthrough and avoids Windows argv limits. Set `false` for legacy argv/stdin prompt delivery. The installed agent must advertise HTTP MCP support. See [Cursor ACP docs](https://cursor.com/docs/cli/acp). Set `NODE_DEBUG=cursor-api-proxy:acp` to debug. |
 | `CURSOR_BRIDGE_ACP_SKIP_AUTHENTICATE` | auto | When `CURSOR_API_KEY` is set, skips the ACP authenticate step. Set to `true` to skip when using `agent login` instead. |
 | `CURSOR_BRIDGE_ACP_RAW_DEBUG` | `false` | When `1` or `true`, log raw JSON-RPC from ACP stdout (requires `NODE_DEBUG=cursor-api-proxy:acp`). |
+| `CURSOR_BRIDGE_AUTH_KEEPALIVE` | `true` | When the proxy runs idle, Cursor access tokens are only refreshed when the CLI starts. Set to `false` to disable the background timer that runs `agent status` per account before tokens expire (same 5-minute skew as the CLI). |
+| `CURSOR_BRIDGE_AUTH_KEEPALIVE_MS` | `240000` | Interval (ms) between auth keep-alive checks. |
+| `CURSOR_BRIDGE_AUTH_KEEPALIVE_SKEW_SEC` | `300` | Refresh when the access JWT expires within this many seconds (matches cursor-agent). |
+| `CURSOR_BRIDGE_AUTH_KEEPALIVE_MODE` | `refresh` | `refresh` — run `agent status` only when a token is near expiry (or an API key is configured and refresh may be needed). `always` — run every interval whenever credentials exist. |
 | `CURSOR_AGENT_BIN` | auto | Path to Cursor CLI binary. Explicit alias precedence: `CURSOR_AGENT_BIN`, then `CURSOR_CLI_BIN`, then `CURSOR_CLI_PATH`; otherwise prefer executable `cursor-agent` on `PATH`, then executable `agent`. |
 | `CURSOR_AGENT_NODE` | — | (Windows) Path to Node.js. With `CURSOR_AGENT_SCRIPT`, spawns Node directly and bypasses cmd.exe's ~8191 limit (CreateProcess ~32K still applies; see `CURSOR_BRIDGE_WIN_CMDLINE_MAX`). |
 | `CURSOR_AGENT_SCRIPT` | — | (Windows) Path to the agent script (e.g. `agent.cmd` or `.js`). Use with `CURSOR_AGENT_NODE` for long prompts. |
@@ -400,7 +439,9 @@ account1 on 8765, account2 on 8766, and so on.
 
 ## Streaming
 
-The proxy supports `stream: true` on `POST /v1/chat/completions`, `POST /v1/responses`, and `POST /v1/messages`. Chat Completions and Messages return Server-Sent Events (SSE) in OpenAI/Anthropic streaming formats. Responses uses OpenAI Responses semantic SSE events (`response.created`, `response.output_text.delta`, …). Cursor CLI emits incremental deltas plus a final full message; the proxy deduplicates output so clients receive each chunk only once.
+The proxy supports `stream: true` on `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/responses`, and `POST /v1/messages`.
+
+**Code completion:** `POST /v1/completions` implements the OpenAI legacy text completions API for coding agents (prefix/suffix infill, `echo`, `stop`). Defaults to Cursor **ask** mode for low-latency insertions; override with `mode` or `X-Cursor-Mode`. Chat Completions and Messages return Server-Sent Events (SSE) in OpenAI/Anthropic streaming formats. Responses uses OpenAI Responses semantic SSE events (`response.created`, `response.output_text.delta`, …). Cursor CLI emits incremental deltas plus a final full message; the proxy deduplicates output so clients receive each chunk only once.
 
 While the agent is silent (thinking / tools, no tokens yet), the proxy writes SSE comment heartbeats (`: keepalive`) every 15s so clients with idle timeouts — notably Codex CLI — do not drop the stream. Codex `stream_idle_timeout_ms` is usually unnecessary. Long turns still need `CURSOR_BRIDGE_TIMEOUT_MS` above the run wall-clock.
 

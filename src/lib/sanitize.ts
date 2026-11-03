@@ -1,3 +1,9 @@
+import {
+  dedupeConsecutiveAssistantSections,
+  dedupeConsecutiveAssistantMessages,
+  dedupeConsecutiveUserMessages,
+} from "./assistant-text-dedupe.js";
+
 /**
  * Sanitizes prompts passed to the Cursor CLI agent by stripping/replacing
  * third-party AI branding, telemetry headers, and identifying metadata that
@@ -44,17 +50,25 @@ export const sanitizePrompt = sanitizeText;
  * Handles both string and array content parts.
  */
 export function sanitizeMessages(messages: any[]): any[] {
-  return (messages ?? []).map((m: any) => {
+  const mapped = (messages ?? []).map((m: any) => {
     if (!m) return m;
     if (typeof m.content === "string") {
-      return { ...m, content: sanitizeText(m.content) };
+      let content = sanitizeText(m.content);
+      if (m.role === "user") {
+        content = dedupeConsecutiveAssistantSections(content);
+      }
+      return { ...m, content };
     }
     if (Array.isArray(m.content)) {
       return {
         ...m,
         content: m.content.map((p: any) => {
           if (p?.type === "text" && typeof p.text === "string") {
-            return { ...p, text: sanitizeText(p.text) };
+            let text = sanitizeText(p.text);
+            if (m.role === "user") {
+              text = dedupeConsecutiveAssistantSections(text);
+            }
+            return { ...p, text };
           }
           return p;
         }),
@@ -62,6 +76,9 @@ export function sanitizeMessages(messages: any[]): any[] {
     }
     return m;
   });
+  return dedupeConsecutiveUserMessages(
+    dedupeConsecutiveAssistantMessages(mapped),
+  );
 }
 
 /**

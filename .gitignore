@@ -1,7 +1,9 @@
 node_modules/
 dist/
-# Cursor / Claude local IDE settings
+.cai/
 .claude/
+.cursor-api-proxy/
+# Cursor / Claude local IDE settings
 *.log
 .env
 .DS_Store
@@ -13,5 +15,7 @@ sessions.log
 logs/
 # Local Cursor rules (no-pii etc.) — keep out of public fork
 .cursor/
+proxy.pid
+chat-store.json
 # SwiftPM build artifacts (widget)
 widget-mac/.build/

@@ -107,6 +107,27 @@ describe("createStreamParser", () => {
     expect(onText).toHaveBeenCalledWith("Full response");
   });
 
+  it("ignores stale shorter cumulative after a full snapshot", () => {
+    const onText = vi.fn();
+    const onDone = vi.fn();
+    const parse = createStreamParser(onText, onDone);
+
+    parse(
+      JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Hello world" }] },
+      }),
+    );
+    parse(
+      JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Hello" }] },
+      }),
+    );
+    expect(onText).toHaveBeenCalledTimes(1);
+    expect(onText).toHaveBeenCalledWith("Hello world");
+  });
+
   it("joins multiple text parts in one message", () => {
     const onText = vi.fn();
     const onDone = vi.fn();

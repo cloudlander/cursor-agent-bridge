@@ -6,6 +6,31 @@ import { fileURLToPath } from "node:url";
 
 import type { BridgeConfig } from "./config.js";
 import { computeSessionStats, readLastLines } from "./session-log.js";
+import {
+  fetchCursorAccountSnapshot,
+  type CursorAccountDashboardSnapshot,
+} from "./cursor-account-snapshot.js";
+import { chatApiMatches, handleChatApi } from "./chat-api.js";
+import { handlePluginApi, pluginApiMatches } from "./plugins/plugin-api.js";
+import {
+  handleMcpOAuthCallback,
+  mcpOAuthCallbackMatches,
+} from "./plugins/mcp-oauth-callback.js";
+import {
+  handleWorkspaceFile,
+  workspaceFileMatches,
+} from "./workspace-file.js";
+import {
+  cancelAgentLoginSession,
+  getAgentLoginSession,
+  resolveAgentAuthStatus,
+  startAgentLoginSession,
+} from "./agent-login.js";
+
+const ACCOUNT_USAGE_CACHE_MS = 45_000;
+let accountUsageCache:
+  | { key: string; snapshot: CursorAccountDashboardSnapshot }
+  | undefined;
 
 const PLIST_LABEL = "com.cursor-api-proxy";
 
@@ -141,6 +166,8 @@ function getStatus(
     pidFile,
     apiKeyConfigured: Boolean(env.CURSOR_API_KEY ?? env.CURSOR_AUTH_TOKEN),
     bridgeApiKeyRequired: Boolean(config.requiredKey),
+    /** Plugins UI and `/api/plugins/*` never require a bridge API key. */
+    pluginsRequireBridgeKey: false,
     node: process.version,
     platform: `${process.platform} ${process.arch}`,
     startedAt: new Date(START_TIME).toISOString(),
@@ -224,11 +251,21 @@ export type AdminDashboardOpts = {
 export function adminDashboardMatches(req: http.IncomingMessage): boolean {
   const url = req.url ?? "";
   const pathname = url.split("?")[0] ?? "";
-  if (req.method === "GET" && (pathname === "/" || pathname === "/wiki")) return true;
+  if (req.method === "GET" && (pathname === "/" || pathname === "/wiki" || pathname === "/chat" || pathname === "/plugins"))
+    return true;
+  if (mcpOAuthCallbackMatches(req)) return true;
+  if (pluginApiMatches(req)) return true;
   if (req.method === "GET" && pathname.startsWith("/static/")) return true;
+  if (workspaceFileMatches(req)) return true;
   if (req.method === "GET" && pathname.startsWith("/api/")) return true;
   if (req.method === "POST" && pathname === "/api/control") return true;
   if (req.method === "POST" && pathname === "/api/log/clear") return true;
+  if (req.method === "POST" && pathname === "/api/agent/chat") return true;
+  if (req.method === "GET" && pathname === "/api/agent-auth") return true;
+  if (req.method === "GET" && pathname === "/api/agent-login/status") return true;
+  if (req.method === "POST" && pathname === "/api/agent-login") return true;
+  if (req.method === "POST" && pathname === "/api/agent-login/cancel") return true;
+  if (chatApiMatches(req)) return true;
   return false;
 }
 
@@ -244,6 +281,14 @@ export function handleAdminDashboard(
   const url = req.url ?? "/";
   const pathname = url.split("?")[0] ?? "/";
   const q = parseQuery(url);
+  const protocol =
+    config.tlsCertPath && config.tlsKeyPath ? "https" : "http";
+  const reqUrl = new URL(url, `${protocol}://${req.headers.host || "localhost"}`);
+
+  if (mcpOAuthCallbackMatches(req)) {
+    handleMcpOAuthCallback(req, res, reqUrl);
+    return;
+  }
 
   if (req.method === "GET" && pathname === "/") {
     return serveFile(res, path.join(publicDir, "index.html"));
@@ -251,13 +296,82 @@ export function handleAdminDashboard(
   if (req.method === "GET" && pathname === "/wiki") {
     return serveFile(res, path.join(publicDir, "wiki.html"));
   }
+  if (req.method === "GET" && pathname === "/chat") {
+    return serveFile(res, path.join(publicDir, "chat.html"));
+  }
+  if (req.method === "GET" && pathname === "/plugins") {
+    return serveFile(res, path.join(publicDir, "plugins.html"));
+  }
+  if (pluginApiMatches(req)) {
+    void handlePluginApi(req, res, config);
+    return;
+  }
+  if (chatApiMatches(req)) {
+    void handleChatApi(req, res, config);
+    return;
+  }
   if (req.method === "GET" && pathname.startsWith("/static/")) {
     const rel = pathname.slice("/static/".length);
     const target = safeJoin(publicDir, rel);
     if (!target) return notFound(res);
     return serveFile(res, target);
   }
+  if (workspaceFileMatches(req)) {
+    return handleWorkspaceFile(req, res, config);
+  }
 
+  if (req.method === "GET" && pathname === "/api/agent-auth") {
+    return json(res, 200, resolveAgentAuthStatus(config));
+  }
+  if (req.method === "GET" && pathname === "/api/agent-login/status") {
+    const sessionId = q.session ?? q.id;
+    const session = getAgentLoginSession(sessionId);
+    if (!session) {
+      return json(res, 404, { error: "no active login session" });
+    }
+    if (session.status === "success") {
+      accountUsageCache = undefined;
+    }
+    return json(res, 200, session);
+  }
+  if (req.method === "POST" && pathname === "/api/agent-login/cancel") {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      let body: { sessionId?: string } = {};
+      try {
+        body = JSON.parse(raw || "{}") as { sessionId?: string };
+      } catch {
+        return json(res, 400, { error: "invalid json" });
+      }
+      cancelAgentLoginSession(body.sessionId);
+      json(res, 200, { ok: true });
+    });
+    return;
+  }
+  if (req.method === "POST" && pathname === "/api/agent-login") {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      let body: { accountName?: string } = {};
+      try {
+        body = JSON.parse(raw || "{}") as { accountName?: string };
+      } catch {
+        return json(res, 400, { error: "invalid json" });
+      }
+      void startAgentLoginSession(config, body.accountName).then((result) => {
+        if (!result.ok) {
+          json(res, 500, {
+            error: result.error,
+            session: result.session,
+          });
+          return;
+        }
+        json(res, 200, result.session);
+      });
+    });
+    return;
+  }
   if (req.method === "GET" && pathname === "/api/status") {
     return getStatus(config, version, (s) => json(res, 200, s));
   }
@@ -313,6 +427,31 @@ export function handleAdminDashboard(
       if (err) return json(res, 500, { error: String(err) });
       json(res, 200, computeSessionStats(lines, hours));
     });
+  }
+  if (req.method === "GET" && pathname === "/api/cursor-account") {
+    const cacheKey = config.configDirs.join("\0");
+    const now = Date.now();
+    if (
+      accountUsageCache &&
+      accountUsageCache.key === cacheKey &&
+      now - Date.parse(accountUsageCache.snapshot.fetchedAt) <
+        ACCOUNT_USAGE_CACHE_MS
+    ) {
+      return json(res, 200, accountUsageCache.snapshot);
+    }
+    void fetchCursorAccountSnapshot(
+      config.configDirs,
+      Math.round(ACCOUNT_USAGE_CACHE_MS / 1000),
+    )
+      .then((snapshot) => {
+        accountUsageCache = { key: cacheKey, snapshot };
+        json(res, 200, snapshot);
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        json(res, 500, { error: msg });
+      });
+    return;
   }
   if (req.method === "GET" && pathname === "/api/wiki") {
     fs.readFile(wikiFile, "utf8", (err, data) => {

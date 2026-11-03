@@ -3,6 +3,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { CursorExecutionMode } from "./execution-mode.js";
+import {
+  loadAuthKeepaliveOptions,
+  type AuthKeepaliveOptions,
+} from "./auth-token-keepalive.js";
 import { loadEnvConfig, resolveAgentCommand, type EnvOptions } from "./env.js";
 
 function readBridgePackageVersion(): string {
@@ -53,8 +57,10 @@ export type BridgeConfig = {
   chatOnlyWorkspace: boolean;
   /** True when CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE was set in the environment (any value). */
   chatOnlyWorkspaceExplicit: boolean;
-  /** When true, print full request/response content to stdout for each completion. */
+  /** When true, print request/response traffic to stdout for each completion (preview by default). */
   verbose: boolean;
+  /** When true with verbose, log entire bodies without truncation (CURSOR_BRIDGE_VERBOSE_FULL). */
+  verboseFull: boolean;
   /** When true, enable Cursor Max Mode (larger context, more tool calls) via cli-config.json preflight. */
   maxMode: boolean;
   /** When true, pass the user prompt via stdin instead of argv (avoids Windows argv issues). */
@@ -79,6 +85,8 @@ export type BridgeConfig = {
   bridgePackageVersion: string;
   /** Optional operator notes appended to the preamble (see CURSOR_BRIDGE_CONTEXT_EXTRA). */
   contextExtra?: string;
+  /** Background Cursor OAuth / API-key session refresh (see CURSOR_BRIDGE_AUTH_KEEPALIVE*). */
+  authKeepalive?: AuthKeepaliveOptions;
 };
 
 export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
@@ -118,6 +126,7 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     chatOnlyWorkspace: env.chatOnlyWorkspace,
     chatOnlyWorkspaceExplicit: env.chatOnlyWorkspaceExplicit,
     verbose: env.verbose,
+    verboseFull: env.verboseFull,
     maxMode: env.maxMode,
     promptViaStdin: env.promptViaStdin,
     useAcp: env.useAcp,
@@ -139,5 +148,6 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     contextPreamble: env.contextPreamble,
     bridgePackageVersion: readBridgePackageVersion(),
     contextExtra: env.contextExtra,
+    authKeepalive: loadAuthKeepaliveOptions(envSource),
   };
 }

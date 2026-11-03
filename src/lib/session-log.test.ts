@@ -82,16 +82,15 @@ describe("session log", () => {
       24,
     );
 
-    expect(stats).toEqual({
-      windowHours: 24,
-      total: 2,
-      errors: 1,
-      byPath: { "/health": 1, "/v1/messages": 1 },
-      recent: [
-        { ts: recent, method: "POST", pathname: "/v1/messages", status: 429 },
-        { ts: recent, method: "GET", pathname: "/health", status: 200 },
-      ],
-    });
+    expect(stats.windowHours).toBe(24);
+    expect(stats.total).toBe(2);
+    expect(stats.errors).toBe(1);
+    expect(stats.byPath).toEqual({ "/health": 1, "/v1/messages": 1 });
+    expect(stats.recent).toEqual([
+      { ts: recent, method: "POST", pathname: "/v1/messages", status: 429 },
+      { ts: recent, method: "GET", pathname: "/health", status: 200 },
+    ]);
+    expect(stats.usage.requestCount).toBe(0);
   });
 
   it("tails files and treats a missing file as empty", async () => {

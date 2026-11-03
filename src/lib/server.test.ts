@@ -1,6 +1,8 @@
 import * as http from "node:http";
 import * as https from "node:https";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { startBridgeServer } from "./server.js";
 import { appendSessionLine } from "./request-log.js";
@@ -43,7 +45,6 @@ vi.mock("./request-log.js", () => ({
   logTrafficRequest: vi.fn(),
   logTrafficResponse: vi.fn(),
   logModelResolution: vi.fn(),
-  logToolSession: vi.fn(),
   logAgentError: vi.fn().mockReturnValue("agent error"),
   appendSessionLine: vi.fn(),
   logAccountAssigned: vi.fn(),
@@ -71,6 +72,7 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     chatOnlyWorkspace: true,
     chatOnlyWorkspaceExplicit: false,
     verbose: false,
+    verboseFull: false,
     maxMode: false,
     promptViaStdin: false,
     useAcp: false,
@@ -81,6 +83,12 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: true,
     bridgePackageVersion: "0.0.0-test",
+    authKeepalive: {
+      enabled: false,
+      intervalMs: 240_000,
+      skewSec: 300,
+      mode: "refresh",
+    },
     ...overrides,
   };
 }
@@ -210,6 +218,121 @@ describe("startBridgeServer", () => {
     expect(body).toContain("cursor-api-proxy");
   });
 
+  it("GET /api/agent-auth reports unauthenticated without API key or accounts", async () => {
+    const prevKey = process.env.CURSOR_API_KEY;
+    const prevToken = process.env.CURSOR_AUTH_TOKEN;
+    const prevHome = process.env.HOME;
+    delete process.env.CURSOR_API_KEY;
+    delete process.env.CURSOR_AUTH_TOKEN;
+    process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "cap-auth-"));
+
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ configDirs: [] }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(servers[0], "/api/agent-auth");
+    expect(status).toBe(200);
+    const auth = JSON.parse(body) as { authenticated: boolean; viaApiKey: boolean };
+    expect(auth.authenticated).toBe(false);
+    expect(auth.viaApiKey).toBe(false);
+
+    if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+    else process.env.CURSOR_API_KEY = prevKey;
+    if (prevToken === undefined) delete process.env.CURSOR_AUTH_TOKEN;
+    else process.env.CURSOR_AUTH_TOKEN = prevToken;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+  });
+
+  it("serves GET /chat without Authorization when requiredKey is set", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ requiredKey: "secret123" }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(servers[0], "/chat");
+    expect(status).toBe(200);
+    expect(body).toContain("chat-app.js");
+  });
+
+  it("serves GET /plugins and plugin API without Authorization when requiredKey is set", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ requiredKey: "secret123" }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const page = await fetchServer(servers[0], "/plugins");
+    expect(page.status).toBe(200);
+    expect(page.body).toContain("plugins-app.js");
+
+    const marketplaces = await fetchServer(servers[0], "/api/plugins/marketplaces");
+    expect(marketplaces.status).toBe(200);
+    expect(JSON.parse(marketplaces.body).marketplaces).toBeDefined();
+
+    const sync = await fetchServer(servers[0], "/api/plugins/sync-cli-cache", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(sync.status).toBe(200);
+    expect(JSON.parse(sync.body).imported).toBeDefined();
+
+    const mcpLogin = await fetchServer(servers[0], "/api/plugins/mcp-login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ marketplaceId: "missing", name: "plugin" }),
+    });
+    expect(mcpLogin.status).not.toBe(401);
+    expect(mcpLogin.status).toBe(404);
+  });
+
+  it("GET /api/agent/models bypasses requiredKey", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ requiredKey: "secret123" }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(servers[0], "/api/agent/models");
+    expect(status).toBe(200);
+    expect(JSON.parse(body).object).toBe("list");
+  });
+
+  it("POST /api/agent/chat bypasses requiredKey and reaches the agent", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ requiredKey: "secret123" }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(servers[0], "/api/agent/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "default",
+        stream: false,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    expect(status).toBe(200);
+    const data = JSON.parse(body);
+    expect(data.choices[0].message.content).toBe("Hello from agent");
+  });
+
   it("does not append session logs for dashboard /api/status and /api/log polling", async () => {
     const appendSessionLineMock = vi.mocked(appendSessionLine);
     appendSessionLineMock.mockClear();
@@ -302,6 +425,68 @@ describe("startBridgeServer", () => {
     expect(status).toBe(200);
   });
 
+  it("accepts x-api-key when requiredKey is set (Claude Code)", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ requiredKey: "secret123" }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status } = await fetchServer(servers[0], "/health", {
+      headers: { "x-api-key": "secret123" },
+    });
+    expect(status).toBe(200);
+  });
+
+  it("returns Anthropic-shaped 401 for /v1/messages when key is wrong", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ requiredKey: "secret123" }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(servers[0], "/v1/messages", {
+      method: "POST",
+      body: JSON.stringify({ model: "claude-3-opus", max_tokens: 16, messages: [] }),
+      headers: { "content-type": "application/json", "x-api-key": "wrong" },
+    });
+    expect(status).toBe(401);
+    const data = JSON.parse(body);
+    expect(data.type).toBe("error");
+    expect(data.error.type).toBe("authentication_error");
+  });
+
+  it("POST /v1/messages/count_tokens returns input_tokens without calling the agent", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig(),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(
+      servers[0],
+      "/v1/messages/count_tokens",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model: "claude-3-opus",
+          messages: [{ role: "user", content: "Hello" }],
+        }),
+        headers: { "content-type": "application/json" },
+      },
+    );
+    expect(status).toBe(200);
+    const data = JSON.parse(body);
+    expect(typeof data.input_tokens).toBe("number");
+    expect(data.input_tokens).toBeGreaterThan(0);
+  });
+
   it("returns 404 for unknown path", async () => {
     servers = startBridgeServer({
       version: "1.0.0",
@@ -315,6 +500,28 @@ describe("startBridgeServer", () => {
     expect(status).toBe(404);
     const data = JSON.parse(body);
     expect(data.error.code).toBe("not_found");
+  });
+
+  it("returns 200 for POST /v1/completions (non-streaming)", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig(),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const { status, body } = await fetchServer(servers[0], "/v1/completions", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "claude-3-opus",
+        prompt: "function add(a, b) {\n  ",
+      }),
+    });
+    expect(status).toBe(200);
+    const data = JSON.parse(body);
+    expect(data.object).toBe("text_completion");
+    expect(data.choices[0].text).toBe("Hello from agent");
   });
 
   it("returns 200 for POST /v1/chat/completions (non-streaming)", async () => {
@@ -522,222 +729,6 @@ describe("startBridgeServer", () => {
     const [, args, opts] = runMock.mock.calls[0];
     expect(args.some((a: string) => a.includes(marker))).toBe(true);
     expect(opts?.stdinContent).toBeUndefined();
-  });
-
-  describe("media without ACP", () => {
-    const png =
-      "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NMQEAAAjDMMC/ZzDBvlRA01vZJvwHAAAAAAAAAAAAbx2jxAE/i2AjOgAAAABJRU5ErkJggg==";
-    // A private URL and an unsupported source would both be rejected with ACP
-    // on; without ACP they must stay plain transcript placeholders.
-    const cases = [
-      {
-        path: "/v1/chat/completions",
-        body: {
-          model: "claude-3-opus",
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "What color?" },
-                { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } },
-                { type: "image_url", image_url: { url: "https://127.0.0.1/private.png" } },
-                { type: "video_url", video_url: { url: "data:video/x-msvideo;base64,AAAA" } },
-              ],
-            },
-          ],
-        },
-        parts: 3,
-        placeholders: ["[Image: base64 image/png]", "[Image: https://127.0.0.1/private.png]"],
-      },
-      {
-        path: "/v1/responses",
-        body: {
-          model: "claude-3-opus",
-          input: [
-            {
-              role: "user",
-              content: [
-                { type: "input_text", text: "What color?" },
-                { type: "input_image", image_url: `data:image/png;base64,${png}` },
-                { type: "input_image", file_id: "file_123" },
-              ],
-            },
-          ],
-        },
-        parts: 2,
-        placeholders: ["[Image: base64 image/png]", "[Image]"],
-      },
-      {
-        path: "/v1/messages",
-        body: {
-          model: "claude-3-opus",
-          max_tokens: 100,
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "What color?" },
-                { type: "image", source: { type: "base64", media_type: "image/png", data: png } },
-                { type: "image", source: { type: "url", url: "https://127.0.0.1/private.png" } },
-              ],
-            },
-          ],
-        },
-        parts: 2,
-        placeholders: ["[Image: base64 image/png]", "[Image: https://127.0.0.1/private.png]"],
-      },
-    ];
-
-    it.each(cases)("$path answers with text placeholders and one warning", async ({ path, body, parts, placeholders }) => {
-      const runMock = vi.mocked(run);
-      runMock.mockClear();
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      try {
-        servers = startBridgeServer({
-          version: "1.0.0",
-          config: createTestConfig({ promptViaStdin: true }),
-        });
-        await new Promise<void>((resolve) =>
-          servers[0].on("listening", () => resolve()),
-        );
-
-        const { status } = await fetchServer(servers[0], path, {
-          method: "POST",
-          body: JSON.stringify(body),
-        });
-        expect(status).toBe(200);
-        expect(runMock).toHaveBeenCalledTimes(1);
-        const [, , opts] = runMock.mock.calls[0];
-        for (const placeholder of placeholders) {
-          expect(opts?.stdinContent).toContain(placeholder);
-        }
-        const mediaWarnings = warn.mock.calls.filter(([line]) =>
-          String(line).includes("CURSOR_BRIDGE_USE_ACP=true"),
-        );
-        expect(mediaWarnings).toHaveLength(1);
-        expect(String(mediaWarnings[0][0])).toContain(`${parts} image/video part(s)`);
-      } finally {
-        warn.mockRestore();
-      }
-    });
-  });
-
-  describe("tool prompt without ACP", () => {
-    const header =
-      "Tools defined by the client, for reference only. You cannot call them in this mode, so answer without them and do not write out calls to them.";
-    const weather = {
-      name: "get_weather",
-      description: "Current weather",
-      parameters: { type: "object", properties: { city: { type: "string" } } },
-    };
-    const time = {
-      name: "get_time",
-      parameters: { type: "object", properties: {} },
-    };
-    // Each API sends get_weather and get_time in its own shape, next to
-    // builtins and groups that must stay out of the prompt.
-    const apis = [
-      {
-        path: "/v1/chat/completions",
-        none: "none",
-        named: { type: "function", function: { name: "get_time" } },
-        body: (extra: object) => ({
-          model: "claude-3-opus",
-          messages: [{ role: "user", content: "Weather?" }],
-          tools: [{ type: "function", function: weather }],
-          functions: [time],
-          ...extra,
-        }),
-      },
-      {
-        path: "/v1/responses",
-        none: "none",
-        named: { type: "function", name: "get_time" },
-        body: (extra: object) => ({
-          model: "claude-3-opus",
-          input: "Weather?",
-          tools: [
-            { type: "web_search" },
-            { type: "function", ...weather },
-            {
-              type: "namespace",
-              name: "mcp__clock",
-              tools: [{ type: "function", ...time }],
-            },
-          ],
-          ...extra,
-        }),
-      },
-      {
-        path: "/v1/messages",
-        none: { type: "none" },
-        named: { type: "tool", name: "get_time" },
-        body: (extra: object) => ({
-          model: "claude-3-opus",
-          max_tokens: 100,
-          messages: [{ role: "user", content: "Weather?" }],
-          tools: [
-            { type: "web_search_20250305", name: "web_search", max_uses: 3 },
-            {
-              name: weather.name,
-              description: weather.description,
-              input_schema: weather.parameters,
-            },
-            { name: time.name, input_schema: time.parameters },
-          ],
-          ...extra,
-        }),
-      },
-    ];
-
-    async function agentPrompt(path: string, body: unknown): Promise<string> {
-      const runMock = vi.mocked(run);
-      runMock.mockClear();
-      const started = startBridgeServer({
-        version: "1.0.0",
-        config: createTestConfig({ promptViaStdin: true }),
-      });
-      servers.push(...started);
-      await new Promise<void>((resolve) =>
-        started[0].on("listening", () => resolve()),
-      );
-      const reply = await fetchServer(started[0], path, {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-      expect(reply.status, reply.body).toBe(200);
-      expect(runMock).toHaveBeenCalledTimes(1);
-      return String(runMock.mock.calls[0][2]?.stdinContent);
-    }
-
-    it.each(apis)("$path lists the client tools for reference only", async ({ path, body }) => {
-      const prompt = await agentPrompt(path, body({}));
-      expect(prompt).toContain(
-        [
-          header,
-          "",
-          "Function: get_weather",
-          "Description: Current weather",
-          'Parameters: {"type":"object","properties":{"city":{"type":"string"}}}',
-          "Function: get_time",
-          'Parameters: {"type":"object","properties":{}}',
-        ].join("\n"),
-      );
-      expect(prompt).not.toMatch(/web_search|mcp__clock|JSON object/);
-    });
-
-    it.each(apis)("$path lists no tools for tool_choice none", async ({ path, body, none }) => {
-      const prompt = await agentPrompt(path, body({ tool_choice: none }));
-      expect(prompt).not.toContain("Function:");
-      expect(prompt).not.toContain("Tools defined by the client");
-    });
-
-    it.each(apis)("$path lists only the named tool and demands no call", async ({ path, body, named }) => {
-      const prompt = await agentPrompt(path, body({ tool_choice: named }));
-      expect(prompt).toContain(`${header}\n\nFunction: get_time\n`);
-      expect(prompt).not.toContain("get_weather");
-      expect(prompt).not.toContain("You must call");
-    });
   });
 
   it("returns display model when request is default and defaultModel is set", async () => {

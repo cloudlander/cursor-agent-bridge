@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import * as http from "node:http";
 
 import { buildAgentFixedArgs } from "../agent-cmd-args.js";
-import { prepareRequestMedia } from "../media-input.js";
 import {
   getAccountStats,
   getNextAccountConfigDir,
@@ -25,7 +24,9 @@ import {
   startAgentToolSession,
 } from "../agent-runner.js";
 import type { ToolTurnEvent, ToolTurnResult } from "../acp-tool-session.js";
+import { normalizeAssistantReplyText } from "../assistant-text-dedupe.js";
 import { createStreamParser } from "../cli-stream-parser.js";
+import { createGuardedAssistantTextEmitter } from "../assistant-stream-dedupe.js";
 import {
   resolveModelForExecution,
   UnsupportedReasoningEffortError,
@@ -42,11 +43,11 @@ import {
   logAccountStats,
   logAgentError,
   logModelResolution,
-  logToolSession,
   logTrafficRequest,
   logTrafficResponse,
   type TrafficMessage,
 } from "../request-log.js";
+import { recordProxyUsage } from "../token-usage.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
 import { resolveRequestMode } from "../resolve-mode.js";
 import { sanitizeMessages } from "../sanitize.js";
@@ -59,10 +60,7 @@ import { abortOnClientDisconnect } from "../client-disconnect.js";
 import {
   parseOpenAiFunctionTools,
   resolveToolChoice,
-  responsesCallIds,
   responsesToolOutputs,
-  responsesTurnToolOutputs,
-  type ClientToolOutput,
   type PendingClientToolCall,
 } from "../tool-types.js";
 import {
@@ -86,127 +84,15 @@ export type ResponsesCtx = {
 
 type ResponseStatus = "in_progress" | "completed" | "failed";
 
-/**
- * A `namespace` member is reported as its bare name plus `namespace`, the
- * shape the Responses API uses and clients such as Codex route on, even when
- * the agent saw it under a `<namespace>__` prefix.
- */
-function functionCallItem(
-  call: PendingClientToolCall,
-  status: "in_progress" | "completed" = "completed",
-) {
+function functionCallItem(call: PendingClientToolCall) {
   return {
     id: call.itemId,
     type: "function_call",
-    status,
+    status: "completed",
     call_id: call.callId,
-    name: call.namespaced?.name ?? call.name,
-    ...(call.namespaced ? { namespace: call.namespaced.namespace } : {}),
-    arguments: status === "completed" ? call.arguments : "",
+    name: call.name,
+    arguments: call.arguments,
   };
-}
-
-function logToolTurn(
-  verbose: boolean,
-  record: ToolSessionRecord,
-  turn: ToolTurnResult,
-): void {
-  logToolSession(
-    verbose,
-    turn.status === "tool_calls"
-      ? `${record.id} parked ${turn.toolCalls.map((call) => `${call.name} ${call.callId}`).join(", ")}`
-      : `${record.id} completed`,
-  );
-}
-
-/** A parked session and the outputs that answer its calls. */
-type ParkedResume = {
-  record: ToolSessionRecord;
-  outputs: ClientToolOutput[];
-};
-
-/**
- * What a request from a client that resends its whole history does:
- * resume a parked call, continue a turn whose calls are no longer parked
- * from the transcript, or start a new turn.
- */
-type TranscriptTurn =
-  | ({ kind: "resume" } & ParkedResume)
-  | { kind: "rebuild" }
-  | { kind: "new" };
-
-/**
- * Tells a session rebuilt mid-turn that the calls in its transcript already
- * ran. Without it, a rebuilt session was seen repeating the last call,
- * which would run a client's side-effecting command twice.
- */
-const REBUILT_TURN_NOTE =
-  "This conversation is being continued in a new session. The tool calls " +
-  "in the transcript already ran and each result follows its call. Do not " +
-  "call a tool again for a result that is already there; continue from the " +
-  "latest result.";
-
-/**
- * Classifies a request from a client that resends its whole history (Codex
- * sends store=false and no previous_response_id). Its input also carries
- * the outputs of finished turns, so only the outputs after the latest user
- * message can answer a parked call.
- *
- * When none of them is parked (expired, restarted, another process), the
- * transcript already holds the tool results and the caller rebuilds the
- * turn in a new session; a 409 would leave a stateless client nothing to
- * retry with. Bare outputs with no user message leave nothing to rebuild,
- * so they still get 409. A new or rebuilt turn also closes parked sessions
- * the transcript has moved past instead of letting them idle until the TTL.
- */
-async function classifyTranscriptTurn(
-  registry: ToolSessionRegistry,
-  ownerKey: string,
-  input: unknown,
-  verbose: boolean,
-): Promise<TranscriptTurn> {
-  const turnOutputs = responsesTurnToolOutputs(input);
-  const match = registry.findPendingCalls(
-    "responses",
-    ownerKey,
-    turnOutputs.map((output) => output.callId),
-  );
-  if (match) {
-    const callIds = new Set(match.callIds);
-    return {
-      kind: "resume",
-      record: match.record,
-      outputs: turnOutputs.filter((output) => callIds.has(output.callId)),
-    };
-  }
-  if (turnOutputs.length > 0) {
-    const hasUserTurn = responsesInputToMessages({ input }).some(
-      (message) => message.role === "user",
-    );
-    if (!hasUserTurn) {
-      throw new ToolSessionError(
-        "Response tool session is missing or expired; resend the conversation",
-        409,
-        "tool_session_expired",
-      );
-    }
-    logToolSession(
-      verbose,
-      `no parked call for ${turnOutputs.map((output) => output.callId).join(", ")}; starting a new session from the transcript`,
-    );
-  }
-  const closed = await registry.closeSuperseded(
-    "responses",
-    ownerKey,
-    responsesCallIds(input),
-  );
-  if (closed > 0) {
-    logToolSession(
-      verbose,
-      `closed ${closed} parked session(s) the transcript moved past`,
-    );
-  }
-  return { kind: turnOutputs.length > 0 ? "rebuild" : "new" };
 }
 
 function structuredResponseObject(opts: {
@@ -236,7 +122,7 @@ function structuredResponseObject(opts: {
     });
   }
   if (opts.result.status === "tool_calls") {
-    output.push(...opts.result.toolCalls.map((call) => functionCallItem(call)));
+    output.push(...opts.result.toolCalls.map(functionCallItem));
   }
   const inputTokens = Math.max(1, Math.round(opts.promptLength / 4));
   const outputTokens = Math.max(1, Math.round(opts.result.text.length / 4));
@@ -286,6 +172,8 @@ async function writeStructuredResponseTurn(opts: {
   model: string | undefined;
   previousResponseId?: string | null;
   promptLength: number;
+  usageLogPath?: string;
+  usagePathname?: string;
   run: (
     listener?: (event: ToolTurnEvent) => void,
   ) => Promise<ToolTurnResult>;
@@ -293,20 +181,26 @@ async function writeStructuredResponseTurn(opts: {
   const messageId = `msg_${randomUUID().replace(/-/g, "")}`;
   if (!opts.stream) {
     const result = await opts.run();
-    json(
-      opts.res,
-      200,
-      structuredResponseObject({
-        body: opts.body,
-        id: opts.id,
-        createdAt: opts.createdAt,
-        model: opts.model,
-        result,
-        previousResponseId: opts.previousResponseId,
-        promptLength: opts.promptLength,
-        messageId,
-      }),
-    );
+    const responseBody = structuredResponseObject({
+      body: opts.body,
+      id: opts.id,
+      createdAt: opts.createdAt,
+      model: opts.model,
+      result,
+      previousResponseId: opts.previousResponseId,
+      promptLength: opts.promptLength,
+      messageId,
+    });
+    if (opts.usageLogPath && opts.usagePathname) {
+      recordProxyUsage(
+        opts.usageLogPath,
+        opts.usagePathname,
+        opts.model,
+        responseBody.usage.input_tokens,
+        responseBody.usage.output_tokens,
+      );
+    }
+    json(opts.res, 200, responseBody);
     return result;
   }
 
@@ -325,6 +219,7 @@ async function writeStructuredResponseTurn(opts: {
     let textStarted = false;
     let emittedText = "";
     const emitText = (text: string) => {
+      if (!text) return;
       if (!textStarted) {
         textStarted = true;
         writeResponseEvent(opts.res, "response.output_item.added", {
@@ -355,11 +250,13 @@ async function writeStructuredResponseTurn(opts: {
         delta: text,
       });
     };
+    const pushStreamText = createGuardedAssistantTextEmitter(emitText);
     const result = await opts.run((event) => {
-      if (event.type === "text") emitText(event.text);
+      if (event.type === "text") pushStreamText(event.text);
     });
-    if (result.text.length > emittedText.length) {
-      emitText(result.text.slice(emittedText.length));
+    const normalizedText = normalizeAssistantReplyText(result.text);
+    if (normalizedText.length > emittedText.length) {
+      pushStreamText(normalizedText.slice(emittedText.length));
     }
     let outputIndex = textStarted ? 1 : 0;
     if (textStarted) {
@@ -368,14 +265,14 @@ async function writeStructuredResponseTurn(opts: {
         item_id: messageId,
         output_index: 0,
         content_index: 0,
-        text: result.text,
+        text: normalizedText,
       });
       writeResponseEvent(opts.res, "response.content_part.done", {
         response_id: opts.id,
         item_id: messageId,
         output_index: 0,
         content_index: 0,
-        part: { type: "output_text", text: result.text, annotations: [] },
+        part: { type: "output_text", text: normalizedText, annotations: [] },
       });
       writeResponseEvent(opts.res, "response.output_item.done", {
         response_id: opts.id,
@@ -386,7 +283,7 @@ async function writeStructuredResponseTurn(opts: {
           status: "completed",
           role: "assistant",
           content: [
-            { type: "output_text", text: result.text, annotations: [] },
+            { type: "output_text", text: normalizedText, annotations: [] },
           ],
         },
       });
@@ -396,7 +293,14 @@ async function writeStructuredResponseTurn(opts: {
         writeResponseEvent(opts.res, "response.output_item.added", {
           response_id: opts.id,
           output_index: outputIndex,
-          item: functionCallItem(call, "in_progress"),
+          item: {
+            id: call.itemId,
+            type: "function_call",
+            status: "in_progress",
+            call_id: call.callId,
+            name: call.name,
+            arguments: "",
+          },
         });
         writeResponseEvent(
           opts.res,
@@ -426,17 +330,27 @@ async function writeStructuredResponseTurn(opts: {
         outputIndex += 1;
       }
     }
+    const completed = structuredResponseObject({
+      body: opts.body,
+      id: opts.id,
+      createdAt: opts.createdAt,
+      model: opts.model,
+      result: { ...result, text: normalizedText },
+      previousResponseId: opts.previousResponseId,
+      promptLength: opts.promptLength,
+      messageId,
+    });
+    if (opts.usageLogPath && opts.usagePathname) {
+      recordProxyUsage(
+        opts.usageLogPath,
+        opts.usagePathname,
+        opts.model,
+        completed.usage.input_tokens,
+        completed.usage.output_tokens,
+      );
+    }
     writeResponseEvent(opts.res, "response.completed", {
-      response: structuredResponseObject({
-        body: opts.body,
-        id: opts.id,
-        createdAt: opts.createdAt,
-        model: opts.model,
-        result,
-        previousResponseId: opts.previousResponseId,
-        promptLength: opts.promptLength,
-        messageId,
-      }),
+      response: completed,
     });
     opts.res.write("data: [DONE]\n\n");
     opts.res.end();
@@ -592,14 +506,7 @@ export async function handleResponses(
     });
     return;
   }
-  // A stateful client names the response whose parked calls it answers.
-  // Every other client resends its transcript, and classifyTranscriptTurn
-  // matches the call ids its current turn answers instead.
-  const statefulResume =
-    config.useAcp &&
-    submittedToolOutputs.length > 0 &&
-    typeof body.previous_response_id === "string";
-  if (statefulResume) {
+  if (config.useAcp && submittedToolOutputs.length > 0) {
     if (
       Array.isArray(body.input) &&
       body.input.some(
@@ -632,30 +539,6 @@ export async function handleResponses(
     }
   }
   const ownerKey = toolSessionOwnerKey(req, remoteAddress);
-  let transcriptTurn: TranscriptTurn | undefined;
-  if (config.useAcp && !statefulResume) {
-    try {
-      transcriptTurn = await classifyTranscriptTurn(
-        ctx.toolSessions,
-        ownerKey,
-        body.input,
-        config.verbose,
-      );
-    } catch (error) {
-      if (!(error instanceof ToolSessionError)) throw error;
-      json(res, error.status, {
-        error: {
-          message: error.message,
-          code: error.code,
-          type: "invalid_request_error",
-        },
-      });
-      return;
-    }
-  }
-  const transcriptResume =
-    transcriptTurn?.kind === "resume" ? transcriptTurn : undefined;
-  const resuming = statefulResume || transcriptResume !== undefined;
   const requested = normalizeModelId(body.model);
   const model = resolveModel(requested, lastRequestedModelRef, config);
   const models = await getCachedCursorModels(config, modelCacheRef);
@@ -694,42 +577,33 @@ export async function handleResponses(
   const id = `resp_${randomUUID().replace(/-/g, "")}`;
   const createdAt = Math.floor(Date.now() / 1000);
 
+  const cleanMessages = sanitizeMessages(responsesInputToMessages(body));
   const structuredToolStart =
-    config.useAcp && selectedTools.length > 0 && !resuming;
-  const toolsText = structuredToolStart
-    ? undefined
-    : toolsToSystemText(selectedTools);
-  const media = await prepareRequestMedia(
-    Array.isArray(body.input) ? body.input : [],
-    { useAcp: config.useAcp, resumesToolSession: resuming },
-  );
-  if (!media.ok) {
-    json(res, 422, {
+    config.useAcp &&
+    selectedTools.length > 0 &&
+    submittedToolOutputs.length === 0;
+  if (structuredToolStart && body.store === false) {
+    json(res, 400, {
       error: {
-        message: media.error,
-        code: "unsupported_media",
+        message:
+          "store=false is incompatible with stateful ACP tool passthrough",
+        code: "invalid_store",
         type: "invalid_request_error",
       },
     });
     return;
   }
-  const mediaBlocks = media.blocks;
-  // Forwarded media is replaced by its "[Image n of N attached below]" label.
-  const cleanMessages = sanitizeMessages(
-    responsesInputToMessages(
-      Array.isArray(body.input) ? { ...body, input: media.items } : body,
-    ),
-  );
+  const toolsText = structuredToolStart
+    ? undefined
+    : body.tool_choice === "none"
+      ? undefined
+      : toolsToSystemText(body.tools);
   const messagesWithTools = [
     ...(toolInstruction && structuredToolStart
       ? [{ role: "system", content: toolInstruction }]
       : []),
     ...(toolsText ? [{ role: "system", content: toolsText }] : []),
     ...cleanMessages,
-    // Last among the system parts, so it sits next to the transcript.
-    ...(transcriptTurn?.kind === "rebuild"
-      ? [{ role: "system", content: REBUILT_TURN_NOTE }]
-      : []),
   ];
   const prompt = buildPromptFromMessages(messagesWithTools);
 
@@ -739,29 +613,25 @@ export async function handleResponses(
   }));
   logTrafficRequest(
     config.verbose,
+    config.verboseFull,
     model ?? cursorModel,
     trafficMessages,
     !!body.stream,
   );
 
-  if (resuming) {
+  if (config.useAcp && submittedToolOutputs.length > 0) {
     const previousResponseId = body.previous_response_id;
-    let resumed: ParkedResume | undefined = transcriptResume;
-    if (!resumed && typeof previousResponseId === "string") {
-      const found = ctx.toolSessions.findByResponseId(
-        ownerKey,
-        previousResponseId,
-      );
-      if (
-        found?.api === "responses" &&
-        submittedToolOutputs.every((output) =>
-          found.session.hasCall(output.callId),
-        )
-      ) {
-        resumed = { record: found, outputs: submittedToolOutputs };
-      }
-    }
-    if (!resumed) {
+    const record =
+      typeof previousResponseId === "string"
+        ? ctx.toolSessions.findByResponseId(ownerKey, previousResponseId)
+        : undefined;
+    if (
+      !record ||
+      record.api !== "responses" ||
+      !submittedToolOutputs.every((output) =>
+        record.session.hasCall(output.callId),
+      )
+    ) {
       json(res, 409, {
         error: {
           message:
@@ -772,11 +642,6 @@ export async function handleResponses(
       });
       return;
     }
-    const { record, outputs } = resumed;
-    logToolSession(
-      config.verbose,
-      `${record.id} resumed with ${outputs.map((output) => output.callId).join(", ")} (matched by ${transcriptResume ? "call_id" : "previous_response_id"})`,
-    );
     const configDir = record.configDir;
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
@@ -798,22 +663,24 @@ export async function handleResponses(
         model: displayModel,
         previousResponseId,
         promptLength: prompt.length,
+        usageLogPath: config.sessionsLogPath,
+        usagePathname: pathname,
         run: async (listener) => {
           const turn = await ctx.toolSessions.resume(
             record,
-            outputs,
+            submittedToolOutputs,
             listener,
           );
           if (turn.status === "tool_calls") {
             ctx.toolSessions.aliasResponse(record, id);
           }
-          logToolTurn(config.verbose, record, turn);
           return turn;
         },
       });
       reportRequestSuccess(configDir, Date.now() - startedAt);
       logTrafficResponse(
         config.verbose,
+        config.verboseFull,
         model ?? cursorModel,
         result.text,
         !!body.stream,
@@ -948,7 +815,6 @@ export async function handleResponses(
         effectiveChatOnly,
         cmdArgs,
         prompt: agentPrompt,
-        mediaBlocks,
         tools: selectedTools,
         tempDir,
         configDir,
@@ -978,12 +844,13 @@ export async function handleResponses(
         model: displayModel,
         previousResponseId: body.previous_response_id,
         promptLength: agentPrompt.length,
+        usageLogPath: config.sessionsLogPath,
+        usagePathname: pathname,
         run: async (listener) => {
           const turn = await ctx.toolSessions.collect(record!, listener);
           if (turn.status === "tool_calls") {
             ctx.toolSessions.aliasResponse(record!, id);
           }
-          logToolTurn(config.verbose, record!, turn);
           return turn;
         },
       });
@@ -997,6 +864,7 @@ export async function handleResponses(
       }
       logTrafficResponse(
         config.verbose,
+        config.verboseFull,
         model ?? cursorModel,
         result.text,
         !!body.stream,
@@ -1076,7 +944,9 @@ export async function handleResponses(
       part: { type: "output_text", text: "", annotations: [] },
     });
 
+    let wireDeltaChars = 0;
     const writeChunk = (chunk: string, accumulated: string) => {
+      if (chunk) wireDeltaChars += chunk.length;
       writeResponseEvent(res, "response.output_text.delta", {
         response_id: id,
         item_id: itemId,
@@ -1088,16 +958,32 @@ export async function handleResponses(
     };
 
     const finishStream = (accumulated: string) => {
-      logTrafficResponse(config.verbose, model ?? cursorModel, accumulated, true);
+      const rawAccumulatedChars = accumulated.length;
+      const normalizedText = normalizeAssistantReplyText(accumulated);
+      logTrafficResponse(
+        config.verbose,
+        config.verboseFull,
+        model ?? cursorModel,
+        normalizedText,
+        true,
+        { wireDeltaChars, rawAccumulatedChars },
+      );
       const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
-      const completionTokens = Math.max(1, Math.round(accumulated.length / 4));
-      const completedItem = createOutputItem(itemId, "completed", accumulated);
+      const completionTokens = Math.max(1, Math.round(normalizedText.length / 4));
+      recordProxyUsage(
+        config.sessionsLogPath,
+        pathname,
+        displayModel ?? cursorModel,
+        promptTokens,
+        completionTokens,
+      );
+      const completedItem = createOutputItem(itemId, "completed", normalizedText);
       writeResponseEvent(res, "response.output_text.done", {
         response_id: id,
         item_id: itemId,
         output_index: 0,
         content_index: 0,
-        text: accumulated,
+        text: normalizedText,
       });
       writeResponseEvent(res, "response.content_part.done", {
         response_id: id,
@@ -1119,7 +1005,7 @@ export async function handleResponses(
           createdAt,
           model: displayModel,
           status: "completed",
-          text: accumulated,
+          text: normalizedText,
           promptTokens,
           completionTokens,
         }),
@@ -1129,22 +1015,22 @@ export async function handleResponses(
 
     if (config.useAcp && typeof promptForAgent === "string") {
       let accumulated = "";
+      const pushAssistantText = createGuardedAssistantTextEmitter((text) => {
+        accumulated = writeChunk(text, accumulated);
+      });
       runAgentStream(
         config,
         workspaceDir,
         effectiveChatOnly,
         cmdArgs,
-        (chunk) => {
-          accumulated = writeChunk(chunk, accumulated);
-        },
+        pushAssistantText,
         tempDir,
         promptForAgent,
         configDir,
         abortController.signal,
         modelCatalogName,
-        mediaBlocks,
       )
-        .then(({ code, stderr: stderrOut, error }) => {
+        .then(({ code, stderr: stderrOut }) => {
           stopKeepalive();
           const latencyMs = Date.now() - streamStart;
           reportRequestEnd(configDir);
@@ -1164,7 +1050,6 @@ export async function handleResponses(
               remoteAddress,
               code,
               stderrOut,
-              error,
             );
             writeResponseEvent(res, "error", {
               error: { message: publicMsg, code: "cursor_cli_error" },
@@ -1204,10 +1089,11 @@ export async function handleResponses(
     }
 
     let accumulated = "";
+    const pushAssistantText = createGuardedAssistantTextEmitter((text) => {
+      accumulated = writeChunk(text, accumulated);
+    });
     const parseLine = createStreamParser(
-      (text) => {
-        accumulated = writeChunk(text, accumulated);
-      },
+      pushAssistantText,
       () => {
         finishStream(accumulated);
       },
@@ -1224,7 +1110,6 @@ export async function handleResponses(
       configDir,
       abortController.signal,
       modelCatalogName,
-      mediaBlocks,
     )
       .then(({ code, stderr: stderrOut }) => {
         stopKeepalive();
@@ -1286,7 +1171,6 @@ export async function handleResponses(
     configDir,
     abortController.signal,
     modelCatalogName,
-    mediaBlocks,
   );
   const syncLatency = Date.now() - syncStart;
   reportRequestEnd(configDir);
@@ -1305,7 +1189,6 @@ export async function handleResponses(
       remoteAddress,
       out.code,
       out.stderr,
-      out.error,
     );
     json(res, 500, {
       error: { message: errMsg, code: "cursor_cli_error" },
@@ -1315,10 +1198,17 @@ export async function handleResponses(
 
   reportRequestSuccess(configDir, syncLatency);
   const content = out.stdout.trim();
-  logTrafficResponse(config.verbose, model ?? cursorModel, content, false);
+  logTrafficResponse(config.verbose, config.verboseFull, model ?? cursorModel, content, false);
 
   const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
   const completionTokens = Math.max(1, Math.round(content.length / 4));
+  recordProxyUsage(
+    config.sessionsLogPath,
+    pathname,
+    displayModel ?? cursorModel,
+    promptTokens,
+    completionTokens,
+  );
 
   logAccountStats(config.verbose, getAccountStats());
   json(

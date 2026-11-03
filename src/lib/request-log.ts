@@ -16,6 +16,14 @@ export function logIncoming(
 
 export type TrafficMessage = { role: string; content: string };
 
+/** Optional stream audit fields (verbose logging). */
+export type TrafficResponseMeta = {
+  /** Total assistant `delta.content` characters written to SSE. */
+  wireDeltaChars?: number;
+  /** Accumulated assistant text before normalizeAssistantReplyText. */
+  rawAccumulatedChars?: number;
+};
+
 // ANSI color helpers
 const C = {
   reset: "\x1b[0m",
@@ -110,8 +118,14 @@ export function logAccountStats(verbose: boolean, stats: AccountStat[]): void {
   console.log(`${C.gray}└${"─".repeat(60)}┘${C.reset}`);
 }
 
+function formatTrafficText(text: string, verboseFull: boolean, max: number): string {
+  if (verboseFull) return text;
+  return truncate(text.replace(/\n/g, "↵ "), max);
+}
+
 export function logTrafficRequest(
   verbose: boolean,
+  verboseFull: boolean,
   model: string,
   messages: TrafficMessage[],
   isStream: boolean,
@@ -130,17 +144,20 @@ export function logTrafficRequest(
     const emoji = ROLE_EMOJI[m.role] ?? "💬";
     const label = `${roleColor}${C.bold}[${m.role}]${C.reset}`;
     const charCount = `${C.dim}(${m.content.length} chars)${C.reset}`;
-    const preview = truncate(m.content.replace(/\n/g, "↵ "), 280);
+    const preview = formatTrafficText(m.content, verboseFull, 280);
     console.log(`  ${emoji} ${label} ${charCount}`);
-    console.log(`     ${C.dim}${preview}${C.reset}`);
+    const bodyStyle = verboseFull ? C.reset : C.dim;
+    console.log(`     ${bodyStyle}${preview}${C.reset}`);
   }
 }
 
 export function logTrafficResponse(
   verbose: boolean,
+  verboseFull: boolean,
   model: string,
   text: string,
   isStream: boolean,
+  meta?: TrafficResponseMeta,
 ): void {
   if (!verbose) return;
   const modeTag = isStream
@@ -148,18 +165,33 @@ export function logTrafficResponse(
     : `${C.dim}sync${C.reset}`;
   const modelStr = `${C.bMagenta}✦ ${model}${C.reset}`;
   const charCount = `${C.bold}${text.length}${C.reset}${C.dim} chars${C.reset}`;
-  const preview = truncate(text.replace(/\n/g, "↵ "), 480);
+  const preview = formatTrafficText(text, verboseFull, 480);
   console.log(
     `${ts()} 📥 ${C.bGreen}${C.bold}RESPONSE${C.reset}  ${modelStr}  ${modeTag}  ${charCount}`,
   );
+  if (isStream && meta?.wireDeltaChars != null) {
+    console.log(
+      `  ${C.dim}SSE wire deltas: ${C.bold}${meta.wireDeltaChars}${C.reset}${C.dim} chars; raw accumulated: ${meta.rawAccumulatedChars ?? "—"}${C.reset}`,
+    );
+    if (
+      text.length > 0 &&
+      meta.wireDeltaChars >= Math.floor(text.length * 1.95)
+    ) {
+      console.log(
+        `  ${C.yellow}⚠ SSE payload is ~2× the normalized reply — UI duplication is likely from streamed bytes, not Cursor CLI output.${C.reset}`,
+      );
+    }
+  }
+  if (
+    meta?.rawAccumulatedChars != null &&
+    meta.rawAccumulatedChars !== text.length
+  ) {
+    console.log(
+      `  ${C.dim}(log text normalized ${meta.rawAccumulatedChars} → ${text.length} chars)${C.reset}`,
+    );
+  }
   console.log(`  🤖 ${C.green}${preview}${C.reset}`);
   console.log(hr("─", 60));
-}
-
-/** One step of a client-tool ACP turn: parked, resumed, rebuilt, closed. */
-export function logToolSession(verbose: boolean, message: string): void {
-  if (!verbose) return;
-  console.log(`${ts()} ${C.bold}${C.yellow}TOOL${C.reset} ${message}`);
 }
 
 export function logModelResolution(
@@ -204,8 +236,7 @@ export function appendSessionLine(
 
 /**
  * Log an agent execution error to console and sessions log.
- * Returns the message for the API response: `reason` when the proxy knows
- * why the run failed (never raw CLI stderr), else a generic line.
+ * Returns the error message for use in API responses.
  */
 export function logAgentError(
   logPath: string,

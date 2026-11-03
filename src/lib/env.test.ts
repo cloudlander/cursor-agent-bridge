@@ -4,7 +4,11 @@ import * as path from "node:path";
 
 import { describe, expect, it, afterEach } from "vitest";
 
-import { loadEnvConfig, resolveAgentCommand } from "./env.js";
+import {
+  formatInboundAuthStartupLog,
+  loadEnvConfig,
+  resolveAgentCommand,
+} from "./env.js";
 
 describe("loadEnvConfig", () => {
   it("returns defaults when env is empty", () => {
@@ -23,10 +27,11 @@ describe("loadEnvConfig", () => {
     expect(loaded.chatOnlyWorkspaceExplicit).toBe(false);
     expect(loaded.mode).toBeUndefined();
     expect(loaded.verbose).toBe(false);
+    expect(loaded.verboseFull).toBe(false);
     expect(loaded.commandShell).toBe("cmd.exe");
     expect(loaded.maxMode).toBe(false);
     expect(loaded.promptViaStdin).toBe(false);
-    expect(loaded.useAcp).toBe(false);
+    expect(loaded.useAcp).toBe(true);
     expect(loaded.contextPreamble).toBe(true);
   });
 
@@ -67,6 +72,56 @@ describe("loadEnvConfig", () => {
     expect(loaded.strictModel).toBe(false);
     expect(loaded.timeoutMs).toBe(60000);
     expect(loaded.defaultModel).toBe("claude-3-opus");
+  });
+
+  it("uses CDSW_API_KEY for inbound LLM auth in CAI apps when bridge key unset", () => {
+    const loaded = loadEnvConfig({
+      env: { CDSW_APP_PORT: "8080", CDSW_API_KEY: "cai-secret" },
+      cwd: "/w",
+    });
+    expect(loaded.requiredKey).toBe("cai-secret");
+  });
+
+  it("prefers CURSOR_BRIDGE_API_KEY over CDSW_API_KEY", () => {
+    const loaded = loadEnvConfig({
+      env: {
+        CDSW_APP_PORT: "8080",
+        CDSW_API_KEY: "cai-secret",
+        CURSOR_BRIDGE_API_KEY: "bridge-secret",
+      },
+      cwd: "/w",
+    });
+    expect(loaded.requiredKey).toBe("bridge-secret");
+  });
+
+  it("skips CDSW inbound key when CURSOR_BRIDGE_DISABLE_CDSW_INBOUND_KEY=1", () => {
+    const loaded = loadEnvConfig({
+      env: {
+        CDSW_APP_PORT: "8080",
+        CDSW_API_KEY: "cai-secret",
+        CURSOR_BRIDGE_DISABLE_CDSW_INBOUND_KEY: "1",
+      },
+      cwd: "/w",
+    });
+    expect(loaded.requiredKey).toBeUndefined();
+  });
+
+  it("formatInboundAuthStartupLog includes env var name and key value", () => {
+    expect(
+      formatInboundAuthStartupLog({
+        CDSW_APP_PORT: "8080",
+        CDSW_API_KEY: "cai-secret",
+      }),
+    ).toBe(
+      "LLM /v1 auth: CDSW_API_KEY=cai-secret (automatic; plugins UI needs no bridge key)",
+    );
+    expect(
+      formatInboundAuthStartupLog({
+        CURSOR_BRIDGE_API_KEY: "bridge-secret",
+        CDSW_APP_PORT: "8080",
+        CDSW_API_KEY: "cai-secret",
+      }),
+    ).toBe("LLM /v1 auth: CURSOR_BRIDGE_API_KEY=bridge-secret");
   });
 
   it("parses CURSOR_BRIDGE_MODE and marks chat-only env as explicit", () => {
@@ -318,6 +373,9 @@ describe("loadEnvConfig", () => {
     ).toBe(true);
     expect(loadEnvConfig({ env: { CURSOR_BRIDGE_USE_ACP: "1" } }).useAcp).toBe(
       true,
+    );
+    expect(loadEnvConfig({ env: { CURSOR_BRIDGE_USE_ACP: "0" } }).useAcp).toBe(
+      false,
     );
   });
 });

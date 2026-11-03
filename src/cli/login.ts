@@ -3,16 +3,10 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { launch as launchChrome } from "chrome-launcher";
 
+import { extractAgentLoginUrl } from "../lib/agent-login.js";
 import { loadEnvConfig, resolveAgentCommand } from "../lib/env.js";
 import { ACCOUNTS_DIR } from "./constants.js";
 import { readKeychainToken, writeCachedToken } from "./usage.js";
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-const LOGIN_URL_RE =
-  /(https:\/\/cursor\.com\/loginDeepControl.*?redirectTarget=cli)/s;
 
 async function openIncognito(url: string, proxies: string[]): Promise<void> {
   const chromeFlags = [
@@ -122,13 +116,9 @@ export async function handleLogin(
       stdoutBuffer += text;
 
       // The agent prints the login URL across multiple chunks — buffer until complete
-      if (
-        !browserOpened &&
-        stdoutBuffer.includes("https://cursor.com/loginDeepControl")
-      ) {
-        const match = stdoutBuffer.match(LOGIN_URL_RE);
-        if (match?.[1]) {
-          const url = match[1].replace(/\s+/g, "");
+      if (!browserOpened) {
+        const url = extractAgentLoginUrl(stdoutBuffer);
+        if (url) {
           openIncognito(url, proxies).catch(() => {});
           browserOpened = true;
         }

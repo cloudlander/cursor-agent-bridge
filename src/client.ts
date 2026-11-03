@@ -48,6 +48,16 @@ export type CursorProxyChatMessage = {
   name?: string;
 };
 
+export type CursorProxyCompletionsParams = {
+  model?: string;
+  prompt: string;
+  suffix?: string | null;
+  max_tokens?: number | null;
+  stop?: string | string[] | null;
+  echo?: boolean | null;
+  stream?: false;
+};
+
 export type CursorProxyChatCompletionsParams = {
   model?: string;
   messages: CursorProxyChatMessage[];
@@ -433,6 +443,23 @@ export function createCursorProxyClient(options: CursorProxyClientOptions = {}) 
       return { data, ok: res.ok, status: res.status };
     },
 
+    /** OpenAI legacy text completions for inline / Codex-style clients (non-streaming). */
+    async completionsCreate(params: CursorProxyCompletionsParams) {
+      const { data, ok, status } = await this.request<{
+        choices?: Array<{ text?: string; finish_reason?: string }>;
+        error?: { message?: string };
+      }>("/v1/completions", {
+        ...params,
+        model: params.model ?? "default",
+        stream: false,
+      });
+      if (!ok) {
+        const err = data?.error?.message ?? JSON.stringify(data);
+        throw new Error(`cursor-api-proxy error (${status}): ${err}`);
+      }
+      return data;
+    },
+
     /** OpenAI-style chat completions (non-streaming). */
     async chatCompletionsCreate(params: CursorProxyChatCompletionsParams) {
       const { data, ok, status } = await this.request<{
@@ -507,7 +534,12 @@ export function createCursorProxyClient(options: CursorProxyClientOptions = {}) 
         : `${root}${path.startsWith("/") ? "" : "/"}${path}`;
       const merged = new Headers(init.headers);
       merged.set("Content-Type", "application/json");
-      if (apiKey) merged.set("Authorization", `Bearer ${apiKey}`);
+      if (apiKey) {
+        merged.set("Authorization", `Bearer ${apiKey}`);
+        if (path.includes("/messages")) {
+          merged.set("x-api-key", apiKey);
+        }
+      }
       return ensureThenRequest(url, { ...init, headers: merged });
     },
   };

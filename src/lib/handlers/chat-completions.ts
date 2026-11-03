@@ -13,6 +13,7 @@ import {
 } from "../agent-runner.js";
 import type { ToolTurnEvent, ToolTurnResult } from "../acp-tool-session.js";
 import { createStreamParser } from "../cli-stream-parser.js";
+import { createGuardedAssistantTextEmitter } from "../assistant-stream-dedupe.js";
 import { json, startSseKeepalive, writeSseHeaders } from "../http.js";
 import {
   resolveModelForExecution,
@@ -33,12 +34,13 @@ import {
   logTrafficResponse,
   type TrafficMessage,
 } from "../request-log.js";
+import { recordProxyUsage } from "../token-usage.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
 import { resolveRequestMode } from "../resolve-mode.js";
 import { resolveWorkspace } from "../workspace.js";
 import { buildBridgeContextPreamble, BRIDGE_AGENT_PROMPT_SEPARATOR } from "../bridge-context-preamble.js";
 import { sanitizeMessages } from "../sanitize.js";
-import { prepareRequestMedia } from "../media-input.js";
+import { normalizeAssistantReplyText } from "../assistant-text-dedupe.js";
 import {
   getNextAccountConfigDir,
   reportRequestStart,
@@ -59,15 +61,86 @@ import {
   resolveToolChoice,
   type PendingClientToolCall,
 } from "../tool-types.js";
+import { recordApiSession, syncWebThreadFromChatRequest } from "../chat-store.js";
 import {
   ToolSessionError,
   toolSessionOwnerKey,
   type ToolSessionRecord,
   type ToolSessionRegistry,
 } from "../tool-session-registry.js";
+import {
+  appendWebGenerationDelta,
+  detachWebChatClient,
+  finishWebGeneration,
+  startWebGeneration,
+  writeGenerationSse,
+} from "../web-chat-generation.js";
+import {
+  buildMultimodalAcpPrompt,
+  messagesHaveMultimodalContent,
+} from "../chat-attachments.js";
+import type { AcpPromptBlock } from "../acp-client.js";
+
+function maybeRecordProxyChatSession(
+  config: BridgeConfig,
+  pathname: string,
+  trafficMessages: TrafficMessage[],
+  assistantText: string,
+  model?: string,
+  mode?: CursorExecutionMode,
+): void {
+  if (pathname === "/api/agent/chat" || !assistantText.trim()) return;
+  void recordApiSession(config, {
+    api: "chat",
+    apiPath: pathname,
+    model,
+    mode,
+    messages: trafficMessages,
+    assistantText,
+  }).catch(() => undefined);
+}
 
 function isRateLimited(stderr: string): boolean {
   return /\b429\b|rate.?limit|too many requests/i.test(stderr);
+}
+
+/** OpenAI streaming: first chunk should carry `delta.role` so clients init one assistant message. */
+function createChatCompletionChunkWriter(
+  res: http.ServerResponse,
+  meta: { id: string; created: number; model: string | undefined },
+) {
+  let roleSent = false;
+  let wireDeltaChars = 0;
+  const write = (contentDelta: string) => {
+    if (!contentDelta) return;
+    wireDeltaChars += contentDelta.length;
+    if (!roleSent) {
+      roleSent = true;
+      res.write(
+        `data: ${JSON.stringify({
+          id: meta.id,
+          object: "chat.completion.chunk",
+          created: meta.created,
+          model: meta.model,
+          choices: [
+            { index: 0, delta: { role: "assistant" }, finish_reason: null },
+          ],
+        })}\n\n`,
+      );
+    }
+    res.write(
+      `data: ${JSON.stringify({
+        id: meta.id,
+        object: "chat.completion.chunk",
+        created: meta.created,
+        model: meta.model,
+        choices: [
+          { index: 0, delta: { content: contentDelta }, finish_reason: null },
+        ],
+      })}\n\n`,
+    );
+  };
+  return { write, wireDeltaChars: () => wireDeltaChars };
 }
 
 export type ChatCompletionsCtx = {
@@ -92,7 +165,7 @@ function chatToolResponse(opts: {
   result: ToolTurnResult;
   promptLength: number;
 }) {
-  const completionText = opts.result.text;
+  const completionText = normalizeAssistantReplyText(opts.result.text);
   const promptTokens = Math.max(1, Math.round(opts.promptLength / 4));
   const completionTokens = Math.max(
     1,
@@ -136,23 +209,31 @@ async function writeStructuredChatTurn(opts: {
   created: number;
   model: string | undefined;
   promptLength: number;
+  usageLogPath?: string;
+  usagePathname?: string;
   run: (
     listener?: (event: ToolTurnEvent) => void,
   ) => Promise<ToolTurnResult>;
 }): Promise<ToolTurnResult> {
   if (!opts.stream) {
     const result = await opts.run();
-    json(
-      opts.res,
-      200,
-      chatToolResponse({
-        id: opts.id,
-        created: opts.created,
-        model: opts.model,
-        result,
-        promptLength: opts.promptLength,
-      }),
-    );
+    const body = chatToolResponse({
+      id: opts.id,
+      created: opts.created,
+      model: opts.model,
+      result,
+      promptLength: opts.promptLength,
+    });
+    if (opts.usageLogPath && opts.usagePathname) {
+      recordProxyUsage(
+        opts.usageLogPath,
+        opts.usagePathname,
+        opts.model,
+        body.usage.prompt_tokens,
+        body.usage.completion_tokens,
+      );
+    }
+    json(opts.res, 200, body);
     return result;
   }
 
@@ -192,8 +273,9 @@ async function writeStructuredChatTurn(opts: {
         reasoning_content: result.reasoning.slice(emittedReasoning.length),
       });
     }
-    if (result.text.length > emittedText.length) {
-      writeChunk({ content: result.text.slice(emittedText.length) });
+    const normalizedText = normalizeAssistantReplyText(result.text);
+    if (normalizedText.length > emittedText.length) {
+      writeChunk({ content: normalizedText.slice(emittedText.length) });
     }
     if (result.status === "tool_calls") {
       result.toolCalls.forEach((call, index) => {
@@ -210,7 +292,10 @@ async function writeStructuredChatTurn(opts: {
       });
     }
     const promptTokens = Math.max(1, Math.round(opts.promptLength / 4));
-    const completionTokens = Math.max(1, Math.round(result.text.length / 4));
+    const completionTokens = Math.max(
+      1,
+      Math.round(normalizedText.length / 4),
+    );
     writeChunk(
       {},
       result.status === "tool_calls" ? "tool_calls" : "stop",
@@ -220,6 +305,15 @@ async function writeStructuredChatTurn(opts: {
         total_tokens: promptTokens + completionTokens,
       },
     );
+    if (opts.usageLogPath && opts.usagePathname) {
+      recordProxyUsage(
+        opts.usageLogPath,
+        opts.usagePathname,
+        opts.model,
+        promptTokens,
+        completionTokens,
+      );
+    }
     opts.res.write("data: [DONE]\n\n");
     opts.res.end();
     return result;
@@ -313,30 +407,15 @@ export async function handleChatCompletions(
     submittedToolOutputs.length === 0;
   const toolsText = structuredToolStart
     ? undefined
-    : toolsToSystemText(selectedTools);
-  const resumesToolSession = config.useAcp && submittedToolOutputs.length > 0;
-  const media = await prepareRequestMedia(cleanMessages, {
-    useAcp: config.useAcp,
-    resumesToolSession,
-  });
-  if (!media.ok) {
-    json(res, 422, {
-      error: {
-        message: media.error,
-        code: "unsupported_media",
-        type: "invalid_request_error",
-      },
-    });
-    return;
-  }
-  const mediaBlocks = media.blocks;
+    : body.tool_choice === "none"
+      ? undefined
+      : toolsToSystemText(body.tools, body.functions);
   const messagesWithTools = [
     ...(toolInstruction && structuredToolStart
       ? [{ role: "system", content: toolInstruction }]
       : []),
     ...(toolsText ? [{ role: "system", content: toolsText }] : []),
-    // Forwarded media is replaced by its "[Image n of N attached below]" label.
-    ...media.items,
+    ...cleanMessages,
   ];
   const prompt = buildPromptFromMessages(messagesWithTools);
 
@@ -354,12 +433,13 @@ export async function handleChatCompletions(
   });
   logTrafficRequest(
     config.verbose,
+    config.verboseFull,
     model ?? cursorModel,
     trafficMessages,
     !!body.stream,
   );
 
-  if (resumesToolSession) {
+  if (config.useAcp && submittedToolOutputs.length > 0) {
     const record = ctx.toolSessions.findByCallIds(
       "chat",
       ownerKey,
@@ -395,14 +475,17 @@ export async function handleChatCompletions(
         created,
         model: displayModel,
         promptLength: prompt.length,
+        usageLogPath: config.sessionsLogPath,
+        usagePathname: pathname,
         run: (listener) =>
           ctx.toolSessions.resume(record, submittedToolOutputs, listener),
       });
       reportRequestSuccess(configDir, Date.now() - startedAt);
       logTrafficResponse(
         config.verbose,
+        config.verboseFull,
         model ?? cursorModel,
-        result.text,
+        normalizeAssistantReplyText(result.text),
         !!body.stream,
       );
     } catch (error) {
@@ -508,11 +591,22 @@ export async function handleChatCompletions(
   // When the prompt is delivered via stdin (or ACP), keep it OUT of argv,
   // otherwise a long prompt still blows past the kernel ARG_MAX (spawn E2BIG
   // on Linux). fit.args appends the full prompt for the argv path only.
-  const cmdArgs =
-    config.promptViaStdin || config.useAcp ? fixedArgs : fit.args;
+  const multimodal = messagesHaveMultimodalContent(cleanMessages);
+  let acpPromptBlocks: AcpPromptBlock[] | undefined;
+  if (multimodal) {
+    acpPromptBlocks = buildMultimodalAcpPrompt(
+      cleanMessages,
+      agentPrompt,
+      workspaceDir,
+    );
+  }
 
-  const promptForAgent =
-    config.promptViaStdin || config.useAcp ? agentPrompt : undefined;
+  const usePromptDelivery = config.promptViaStdin || config.useAcp || multimodal;
+  const cmdArgs = usePromptDelivery ? fixedArgs : fit.args;
+
+  const promptForAgent: string | AcpPromptBlock[] | undefined = usePromptDelivery
+    ? acpPromptBlocks ?? agentPrompt
+    : undefined;
 
   const truncatedHeaders = fit.truncated
     ? { "X-Cursor-Proxy-Prompt-Truncated": "true" }
@@ -533,7 +627,6 @@ export async function handleChatCompletions(
         effectiveChatOnly,
         cmdArgs,
         prompt: agentPrompt,
-        mediaBlocks,
         tools: selectedTools,
         tempDir,
         configDir,
@@ -561,6 +654,8 @@ export async function handleChatCompletions(
         created,
         model: displayModel,
         promptLength: agentPrompt.length,
+        usageLogPath: config.sessionsLogPath,
+        usagePathname: pathname,
         run: (listener) => ctx.toolSessions.collect(record!, listener),
       });
       reportRequestSuccess(configDir, Date.now() - startedAt);
@@ -573,8 +668,9 @@ export async function handleChatCompletions(
       }
       logTrafficResponse(
         config.verbose,
+        config.verboseFull,
         model ?? cursorModel,
-        result.text,
+        normalizeAssistantReplyText(result.text),
         !!body.stream,
       );
     } catch (error) {
@@ -611,13 +707,35 @@ export async function handleChatCompletions(
   }
 
   if (body.stream) {
+    const webThreadId =
+      pathname === "/api/agent/chat" && typeof body.threadId === "string"
+        ? body.threadId.trim() || undefined
+        : undefined;
+
+    let agentSignal: AbortSignal;
+    if (webThreadId) {
+      await syncWebThreadFromChatRequest(config, webThreadId, {
+        model: displayModel,
+        mode,
+        messages: trafficMessages,
+      }).catch(() => undefined);
+      const reg = startWebGeneration(config, webThreadId);
+      if (reg.existed) {
+        writeGenerationSse(res, webThreadId);
+        return;
+      }
+      agentSignal = reg.signal;
+      res.on("close", () => detachWebChatClient(webThreadId));
+    } else {
+      const abortController = new AbortController();
+      abortOnClientDisconnect(res, abortController);
+      agentSignal = abortController.signal;
+    }
+
     const configDir = getNextAccountConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const streamStart = Date.now();
-
-    const abortController = new AbortController();
-    abortOnClientDisconnect(res, abortController);
 
     writeSseHeaders(res, truncatedHeaders);
     const stopKeepalive = startSseKeepalive(res);
@@ -625,35 +743,42 @@ export async function handleChatCompletions(
       /* client disconnected mid-stream */
     });
 
-    if (config.useAcp && typeof promptForAgent === "string") {
-      let accumulated = "";
+    const chunkWriter = createChatCompletionChunkWriter(res, {
+      id,
+      created,
+      model: displayModel,
+    });
+    const writeContentDelta = (delta: string) => {
+      chunkWriter.write(delta);
+      if (webThreadId) appendWebGenerationDelta(webThreadId, { content: delta });
+    };
+    const finishWeb = (outcome: { ok: true } | { ok: false; error: string }) => {
+      if (webThreadId) finishWebGeneration(webThreadId, outcome);
+    };
+    const streamResponseMeta = () => ({
+      wireDeltaChars: chunkWriter.wireDeltaChars(),
+      rawAccumulatedChars: accumulated.length,
+    });
+    let accumulated = "";
+
+    if (config.useAcp || Array.isArray(promptForAgent)) {
+      const pushAssistantText = createGuardedAssistantTextEmitter((text) => {
+        accumulated += text;
+        writeContentDelta(text);
+      });
       runAgentStream(
         config,
         workspaceDir,
         effectiveChatOnly,
         cmdArgs,
-        (chunk) => {
-          accumulated += chunk;
-          res.write(
-            `data: ${JSON.stringify({
-              id,
-              object: "chat.completion.chunk",
-              created,
-              model: displayModel,
-              choices: [
-                { index: 0, delta: { content: chunk }, finish_reason: null },
-              ],
-            })}\n\n`,
-          );
-        },
+        pushAssistantText,
         tempDir,
         promptForAgent,
         configDir,
-        abortController.signal,
+        agentSignal,
         modelCatalogName,
-        mediaBlocks,
       )
-        .then(({ code, stderr: stderrOut, error }) => {
+        .then(({ code, stderr: stderrOut }) => {
           stopKeepalive();
           const latencyMs = Date.now() - streamStart;
           reportRequestEnd(configDir);
@@ -662,8 +787,8 @@ export async function handleChatCompletions(
             reportRateLimit(configDir, 60000);
           }
 
-          if (abortController.signal.aborted) {
-            /* client disconnected — do not count as success or failure */
+          if (agentSignal.aborted) {
+            /* stopped explicitly — background job already finalized */
           } else if (code !== 0) {
             reportRequestError(configDir, latencyMs);
             const publicMsg = logAgentError(
@@ -673,31 +798,53 @@ export async function handleChatCompletions(
               remoteAddress,
               code,
               stderrOut,
-              error,
             );
-            res.write(
-              `data: ${JSON.stringify({
-                error: { message: publicMsg, code: "cursor_cli_error" },
-              })}\n\n`,
-            );
-            res.write("data: [DONE]\n\n");
-            logAccountStats(config.verbose, getAccountStats());
-            res.end();
+            finishWeb({ ok: false, error: publicMsg });
+            if (!res.writableEnded) {
+              res.write(
+                `data: ${JSON.stringify({
+                  error: { message: publicMsg, code: "cursor_cli_error" },
+                })}\n\n`,
+              );
+              res.write("data: [DONE]\n\n");
+              logAccountStats(config.verbose, getAccountStats());
+              res.end();
+            }
             return;
           } else {
             reportRequestSuccess(configDir, latencyMs);
           }
           logAccountStats(config.verbose, getAccountStats());
+          const normalizedAccumulated =
+            normalizeAssistantReplyText(accumulated);
+          finishWeb({ ok: true });
           logTrafficResponse(
             config.verbose,
+            config.verboseFull,
             model ?? cursorModel,
-            accumulated,
+            normalizedAccumulated,
             true,
+            streamResponseMeta(),
+          );
+          maybeRecordProxyChatSession(
+            config,
+            pathname,
+            trafficMessages,
+            normalizedAccumulated,
+            displayModel ?? cursorModel,
+            mode,
           );
           const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
           const completionTokens = Math.max(
             1,
-            Math.round(accumulated.length / 4),
+            Math.round(normalizedAccumulated.length / 4),
+          );
+          recordProxyUsage(
+            config.sessionsLogPath,
+            pathname,
+            displayModel ?? cursorModel,
+            promptTokens,
+            completionTokens,
           );
           res.write(
             `data: ${JSON.stringify({
@@ -719,71 +866,89 @@ export async function handleChatCompletions(
         .catch((err) => {
           stopKeepalive();
           reportRequestEnd(configDir);
-          if (!abortController.signal.aborted) {
+          if (!agentSignal.aborted) {
             reportRequestError(configDir, Date.now() - streamStart);
-            res.write(
-              `data: ${JSON.stringify({
-                error: {
-                  message:
-                    "The Cursor agent stream failed. See server logs for details.",
-                  code: "cursor_cli_error",
-                },
-              })}\n\n`,
-            );
-            res.write("data: [DONE]\n\n");
+            finishWeb({
+              ok: false,
+              error: "The Cursor agent stream failed. See server logs for details.",
+            });
+            if (!res.writableEnded) {
+              res.write(
+                `data: ${JSON.stringify({
+                  error: {
+                    message:
+                      "The Cursor agent stream failed. See server logs for details.",
+                    code: "cursor_cli_error",
+                  },
+                })}\n\n`,
+              );
+              res.write("data: [DONE]\n\n");
+            }
           }
           console.error(
             `[${new Date().toISOString()}] Agent stream error:`,
             err,
           );
-          res.end();
+          if (!res.writableEnded) res.end();
         });
       return;
     }
 
-    let accumulated = "";
+    const pushAssistantText = createGuardedAssistantTextEmitter((text) => {
+      accumulated += text;
+      writeContentDelta(text);
+    });
     const parseLine = createStreamParser(
-      (text) => {
-        accumulated += text;
-        res.write(
-          `data: ${JSON.stringify({
-            id,
-            object: "chat.completion.chunk",
-            created,
-            model: displayModel,
-            choices: [
-              { index: 0, delta: { content: text }, finish_reason: null },
-            ],
-          })}\n\n`,
-        );
-      },
+      pushAssistantText,
       () => {
+        const normalizedAccumulated =
+          normalizeAssistantReplyText(accumulated);
         logTrafficResponse(
           config.verbose,
+          config.verboseFull,
           model ?? cursorModel,
-          accumulated,
+          normalizedAccumulated,
           true,
+          streamResponseMeta(),
+        );
+        maybeRecordProxyChatSession(
+          config,
+          pathname,
+          trafficMessages,
+          normalizedAccumulated,
+          displayModel ?? cursorModel,
+          mode,
         );
         const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
         const completionTokens = Math.max(
           1,
-          Math.round(accumulated.length / 4),
+          Math.round(normalizedAccumulated.length / 4),
         );
-        res.write(
-          `data: ${JSON.stringify({
-            id,
-            object: "chat.completion.chunk",
-            created,
-            model: displayModel,
-            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-            usage: {
-              prompt_tokens: promptTokens,
-              completion_tokens: completionTokens,
-              total_tokens: promptTokens + completionTokens,
-            },
-          })}\n\n`,
+        recordProxyUsage(
+          config.sessionsLogPath,
+          pathname,
+          displayModel ?? cursorModel,
+          promptTokens,
+          completionTokens,
         );
-        res.write("data: [DONE]\n\n");
+        finishWeb({ ok: true });
+        if (!res.writableEnded) {
+          res.write(
+            `data: ${JSON.stringify({
+              id,
+              object: "chat.completion.chunk",
+              created,
+              model: displayModel,
+              choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+              usage: {
+                prompt_tokens: promptTokens,
+                completion_tokens: completionTokens,
+                total_tokens: promptTokens + completionTokens,
+              },
+            })}\n\n`,
+          );
+          res.write("data: [DONE]\n\n");
+        }
       },
     );
 
@@ -796,9 +961,8 @@ export async function handleChatCompletions(
       tempDir,
       promptForAgent,
       configDir,
-      abortController.signal,
+      agentSignal,
       modelCatalogName,
-      mediaBlocks,
     )
       .then(({ code, stderr: stderrOut }) => {
         stopKeepalive();
@@ -809,11 +973,11 @@ export async function handleChatCompletions(
           reportRateLimit(configDir, 60000);
         }
 
-        if (abortController.signal.aborted) {
-          /* client disconnected — do not count as success or failure */
+        if (agentSignal.aborted) {
+          /* stopped explicitly */
         } else if (code !== 0) {
           reportRequestError(configDir, latencyMs);
-          logAgentError(
+          const publicMsg = logAgentError(
             config.sessionsLogPath,
             method,
             pathname,
@@ -821,23 +985,28 @@ export async function handleChatCompletions(
             code,
             stderrOut,
           );
+          finishWeb({ ok: false, error: publicMsg });
         } else {
           reportRequestSuccess(configDir, latencyMs);
         }
         logAccountStats(config.verbose, getAccountStats());
-        res.end();
+        if (!res.writableEnded) res.end();
       })
       .catch((err) => {
         stopKeepalive();
         reportRequestEnd(configDir);
-        if (!abortController.signal.aborted) {
+        if (!agentSignal.aborted) {
           reportRequestError(configDir, Date.now() - streamStart);
+          finishWeb({
+            ok: false,
+            error: "The Cursor agent stream failed. See server logs for details.",
+          });
         }
         console.error(
           `[${new Date().toISOString()}] Agent stream error:`,
           err,
         );
-        res.end();
+        if (!res.writableEnded) res.end();
       });
     return;
   }
@@ -860,7 +1029,6 @@ export async function handleChatCompletions(
     configDir,
     abortController.signal,
     modelCatalogName,
-    mediaBlocks,
   );
   const syncLatency = Date.now() - syncStart;
   reportRequestEnd(configDir);
@@ -879,7 +1047,6 @@ export async function handleChatCompletions(
       remoteAddress,
       out.code,
       out.stderr,
-      out.error,
     );
     json(res, 500, {
       error: { message: errMsg, code: "cursor_cli_error" },
@@ -888,12 +1055,27 @@ export async function handleChatCompletions(
   }
 
   reportRequestSuccess(configDir, syncLatency);
-  const content = out.stdout.trim();
-  logTrafficResponse(config.verbose, model ?? cursorModel, content, false);
+  const content = normalizeAssistantReplyText(out.stdout.trim());
+  logTrafficResponse(config.verbose, config.verboseFull, model ?? cursorModel, content, false);
+  maybeRecordProxyChatSession(
+    config,
+    pathname,
+    trafficMessages,
+    content,
+    displayModel ?? cursorModel,
+    mode,
+  );
 
   const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
   const completionTokens = Math.max(1, Math.round(content.length / 4));
   const totalTokens = promptTokens + completionTokens;
+  recordProxyUsage(
+    config.sessionsLogPath,
+    pathname,
+    displayModel ?? cursorModel,
+    promptTokens,
+    completionTokens,
+  );
 
   logAccountStats(config.verbose, getAccountStats());
   json(

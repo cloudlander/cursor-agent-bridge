@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Plugins — cursor-api-proxy</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <span class="dot" id="status-dot"></span>
+      <span>cursor-api-proxy</span>
+      <span class="muted-text mono" id="status-summary" style="font-weight: 400; font-size: 12px;">…</span>
+    </div>
+    <nav class="site-nav">
+      <a href="/">Dashboard</a>
+      <a href="/plugins" class="active">Plugins</a>
+      <a href="/wiki">Wiki</a>
+      <a href="/chat" class="btn small primary">Agent chat</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <p class="muted-text" style="margin: 0 0 14px; font-size: 13px;">
+      Browse, import, and configure plugins here — no <code>CURSOR_BRIDGE_API_KEY</code> or dashboard API key. The catalog merges the git <code>cursor/plugins</code> index with the same <strong>cursor.com marketplace</strong> listings as Cursor IDE Customize (e.g. search <strong>browserbase</strong>). CLI-cached plugins are imported automatically on proxy start.
+    </p>
+    <div class="grid cols-2" style="margin-bottom: 16px;">
+      <section class="card">
+        <div class="card-head">
+          <span>Marketplace</span>
+          <div class="actions">
+            <button class="btn small" id="refresh-catalog-btn">Refresh</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
+            <input id="search-input" placeholder="Search plugins…" style="flex: 1; min-width: 160px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
+            <select id="marketplace-select" style="padding: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);"></select>
+          </div>
+          <div id="catalog-list" class="empty">Loading catalog…</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head">
+          <span>Installed on proxy</span>
+          <div class="actions">
+            <button class="btn small" id="sync-cli-btn" title="Import plugins already downloaded by Cursor CLI">Sync CLI cache</button>
+            <button class="btn small" id="redeploy-btn">Redeploy all</button>
+          </div>
+        </div>
+        <div class="card-body" id="installed-list">
+          <div class="empty">Loading…</div>
+        </div>
+      </section>
+    </div>
+
+    <section class="card">
+      <div class="card-head">
+        <span>Custom marketplaces</span>
+      </div>
+      <div class="card-body">
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+          <input id="mp-url" placeholder="https://github.com/org/plugins.git" style="flex: 2; min-width: 200px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
+          <input id="mp-name" placeholder="Display name (optional)" style="flex: 1; min-width: 120px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
+          <button class="btn small primary" id="add-mp-btn">Add</button>
+        </div>
+        <ul id="mp-list" class="mono" style="margin: 0; padding-left: 18px;"></ul>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="config-dialog" style="background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; max-width: 640px; width: 92vw; padding: 0;">
+    <form method="dialog" id="config-form" style="margin: 0;">
+      <div class="card-head" style="padding: 14px 16px;">
+        <span id="config-title">Configure plugin</span>
+        <button type="submit" class="btn small">Close</button>
+      </div>
+      <div class="card-body" id="config-body" style="max-height: 70vh; overflow: auto;"></div>
+      <div style="padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end;">
+        <button type="button" class="btn" id="config-cancel">Cancel</button>
+        <button type="button" class="btn primary" id="config-save">Save & redeploy</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="oauth-dialog" style="background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; max-width: 720px; width: 92vw; padding: 0;">
+    <div class="card-head" style="padding: 14px 16px;">
+      <span>MCP OAuth login</span>
+      <button type="button" class="btn small" id="oauth-close">Close</button>
+    </div>
+    <div class="card-body" style="padding: 14px 16px;">
+      <p id="oauth-hint" class="muted-text"></p>
+      <p class="muted-text" style="font-size: 12px;" id="oauth-callback-note"></p>
+      <div id="oauth-url-wrap" style="margin-top: 12px; display: none;">
+        <a id="oauth-url-link" class="mono" href="#" target="_blank" rel="noopener" style="word-break: break-all;"></a>
+        <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+          <button type="button" class="btn small primary" id="oauth-open">Open in browser</button>
+          <button type="button" class="btn small" id="oauth-copy">Copy URL</button>
+        </div>
+      </div>
+      <pre id="oauth-manual" class="mono muted-text" style="margin-top: 12px; white-space: pre-wrap; font-size: 11px;"></pre>
+    </div>
+  </dialog>
+
+  <script src="/static/plugins-app.js"></script>
+</body>
+</html>

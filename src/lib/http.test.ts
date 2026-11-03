@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { IncomingMessage, ServerResponse } from "node:http";
 import {
   extractBearerToken,
+  extractBridgeApiKey,
   json,
   readBody,
   setDefaultSseKeepaliveIntervalMsForTests,
@@ -44,6 +45,21 @@ describe("extractBearerToken", () => {
   it("handles array Authorization header", () => {
     const req = mockRequest({ authorization: ["Bearer token-from-array"] });
     expect(extractBearerToken(req)).toBe("token-from-array");
+  });
+});
+
+describe("extractBridgeApiKey", () => {
+  it("prefers x-api-key for Anthropic / Claude Code clients", () => {
+    const req = mockRequest({
+      "x-api-key": "sk-ant-test",
+      authorization: "Bearer other",
+    });
+    expect(extractBridgeApiKey(req)).toBe("sk-ant-test");
+  });
+
+  it("falls back to Bearer when x-api-key is absent", () => {
+    const req = mockRequest({ authorization: "Bearer openai-style" });
+    expect(extractBridgeApiKey(req)).toBe("openai-style");
   });
 });
 
