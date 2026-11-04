@@ -1,9 +1,36 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { logAgentError } from "./request-log.js";
+import {
+  appendSessionLine,
+  logAgentError,
+  logIncoming,
+} from "./request-log.js";
+
+describe("request logging noise filters", () => {
+  const dir = mkdtempSync(join(tmpdir(), "request-log-filter-"));
+  const logPath = join(dir, "sessions.log");
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("skips favicon and health probes for stdout and sessions log", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    for (const pathname of ["/favicon.ico", "/health", "/healthz"]) {
+      logIncoming("GET", pathname, "::1");
+      appendSessionLine(logPath, "GET", pathname, "::1", 200);
+    }
+
+    expect(logSpy).not.toHaveBeenCalled();
+    expect(existsSync(logPath)).toBe(false);
+
+    logSpy.mockRestore();
+  });
+});
 
 describe("logAgentError", () => {
   const dir = mkdtempSync(join(tmpdir(), "request-log-test-"));
