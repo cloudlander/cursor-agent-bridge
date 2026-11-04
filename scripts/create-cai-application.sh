@@ -8,7 +8,17 @@ set -euo pipefail
 : "${CDSW_PROJECT_ID:?CDSW_PROJECT_ID is not set}"
 
 APP_NAME="${CAI_APP_NAME:-Cursor Agent}"
-APP_SUBDOMAIN="${CAI_APP_SUBDOMAIN:-agent-cai}"
+
+# Subdomain: CAI_APP_SUBDOMAIN or APP_SUBDOMAIN override; else agent-cai-XXXX (4 random alnum).
+if [[ -n "${CAI_APP_SUBDOMAIN:-}" ]]; then
+  APP_SUBDOMAIN="${CAI_APP_SUBDOMAIN}"
+elif [[ -n "${APP_SUBDOMAIN:-}" ]]; then
+  APP_SUBDOMAIN="${APP_SUBDOMAIN}"
+else
+  APP_SUBDOMAIN="agent-cai-$(python3 -c "import secrets,string; a=string.ascii_lowercase+string.digits; print(''.join(secrets.choice(a) for _ in range(4)))")"
+  echo "Generated application subdomain: ${APP_SUBDOMAIN}"
+fi
+
 APP_SCRIPT="${CAI_APP_SCRIPT:-app.py}"
 
 RUNTIME_ID="$(
@@ -28,7 +38,7 @@ existing_id="$(
 
 if [[ -n "${existing_id}" ]]; then
   echo "Application subdomain '${APP_SUBDOMAIN}' already exists (id=${existing_id})."
-  echo "Stop/delete it in the CAI UI or pick another CAI_APP_SUBDOMAIN."
+  echo "Stop/delete it in the CAI UI or set CAI_APP_SUBDOMAIN / APP_SUBDOMAIN to another value."
   exit 1
 fi
 

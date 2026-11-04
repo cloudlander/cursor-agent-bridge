@@ -5,19 +5,16 @@ date: '2026-11-01'
 specification_version: 1.0
 prototype_version: 1.0
 environment_variables:
-  APP_NAME:
+  CAI_APP_NAME:
     default: "Cursor Agent"
     required: false
-  APP_SUBDOMAIN:
-    default: "agent-cai"
-    required: false
-  APP_SCRIPT:
+  CAI_APP_SCRIPT:
     default: "app.py"
     required: false
-  APP_CPU:
+  CAI_APP_CPU:
     default: "1"
     required: false
-  APP_MEMORY_GB:
+  CAI_APP_MEMORY_GB:
     default: "4"
     required: false
 runtimes:
@@ -44,19 +41,9 @@ tasks:
     name: build-project
     entity_label: build-project
     script: scripts/bootstrap-cai-application.py
-    short_summary: Creating the build job
-  - type: create_job
-    name: setup-app
-    entity_label: setup-app
-    script: scripts/create-cai-application.py
-    short_summary: Creating the setup job.
+    short_summary: Creating the build and deploy job
   - type: run_job
     entity_label: build-project
-    short_summary: Building...
+    short_summary: Building and deploying...
     long_summary: >-
-      Building the Cursor Agent Bridge
-  - type: run_job
-    entity_label: setup-app
-    short_summary: Deploying...
-    long_summary: >-
-      Deploying Cursor Agent on Cloudera AI.
+      Bootstrap runtime, build cursor-agent-bridge, and register the CAI application.
