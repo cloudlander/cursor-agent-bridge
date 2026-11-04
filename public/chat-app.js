@@ -732,7 +732,7 @@
     markActiveIdDirty();
     renderAll();
     void ensureExternalSessionLoaded(id).then(() => updateSessionSnapshot(id));
-    if (window.matchMedia('(max-width: 768px)').matches) setSidebar(false);
+    if (isMobileChatLayout()) setSidebar(false);
   }
 
   function newChat() {
@@ -744,7 +744,7 @@
     markActiveIdDirty();
     renderAll();
     $('chat-input')?.focus();
-    if (window.matchMedia('(max-width: 768px)').matches) setSidebar(false);
+    if (isMobileChatLayout()) setSidebar(false);
   }
 
   async function deleteThread(id) {
@@ -1773,7 +1773,7 @@
       const saved = localStorage.getItem(SIDEBAR_KEY);
       if (saved != null) open = saved === '1';
     } catch { /* ignore */ }
-    if (window.matchMedia('(max-width: 768px)').matches) open = false;
+    if (isMobileChatLayout()) open = false;
     return open;
   }
 
@@ -1929,6 +1929,11 @@
     bindChatViewportHeight();
     setSidebar(resolveSidebarOpen());
     bind();
+    try {
+      MOBILE_LAYOUT_MQ.addEventListener('change', e => {
+        if (e.matches) setSidebar(false);
+      });
+    } catch { /* ignore */ }
     renderAll();
     const activeGens = await loadThreads();
     ensureActiveThread();
@@ -1950,10 +1955,16 @@
     updateScrollButton();
   }
 
+  const MOBILE_LAYOUT_MQ = window.matchMedia('(max-width: 768px)');
+
+  function isMobileChatLayout() {
+    return MOBILE_LAYOUT_MQ.matches;
+  }
+
   /** Collapse sidebar on mobile before paint/async work (avoids full-screen backdrop). */
   (function initMobileSidebarCollapsed() {
     try {
-      if (!window.matchMedia('(max-width: 768px)').matches) return;
+      if (!isMobileChatLayout()) return;
       document.getElementById('chat-shell')?.classList.add('sidebar-collapsed');
     } catch { /* ignore */ }
   })();
