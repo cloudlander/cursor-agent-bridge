@@ -83,14 +83,30 @@ describe("session log", () => {
     );
 
     expect(stats.windowHours).toBe(24);
-    expect(stats.total).toBe(2);
+    expect(stats.total).toBe(1);
     expect(stats.errors).toBe(1);
-    expect(stats.byPath).toEqual({ "/health": 1, "/v1/messages": 1 });
+    expect(stats.byPath).toEqual({ "/v1/messages": 1 });
     expect(stats.recent).toEqual([
       { ts: recent, method: "POST", pathname: "/v1/messages", status: 429 },
-      { ts: recent, method: "GET", pathname: "/health", status: 200 },
     ]);
     expect(stats.usage.requestCount).toBe(0);
+  });
+
+  it("excludes favicon and health probes from dashboard stats", () => {
+    const recent = new Date(Date.now() - 60_000).toISOString();
+    const stats = computeSessionStats(
+      [
+        `${recent} GET /favicon.ico ::1 404`,
+        `${recent} GET /healthz ::1 200`,
+        `${recent} GET /health ::1 200`,
+        `${recent} POST /v1/chat/completions ::1 200`,
+      ],
+      24,
+    );
+
+    expect(stats.total).toBe(1);
+    expect(stats.errors).toBe(0);
+    expect(stats.byPath).toEqual({ "/v1/chat/completions": 1 });
   });
 
   it("tails files and treats a missing file as empty", async () => {
