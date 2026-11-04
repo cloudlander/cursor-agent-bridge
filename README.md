@@ -12,7 +12,7 @@ This is not the Cursor IDE. The HTTP API will not attach your repo, `@codebase`,
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 22+ (CI runs on Node 22; Node 24+ also supported)
 - Cursor agent CLI (`cursor-agent` or `agent`). This package does not install or bundle the CLI. Install and set it up separately. The proxy prefers `cursor-agent` on `PATH`, then falls back to `agent`. Set `CURSOR_AGENT_BIN` when another vendor also installs an `agent` command.
 
   ```bash

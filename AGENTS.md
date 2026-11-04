@@ -70,7 +70,7 @@ npm test
 - If you add or change env vars, update **README.md** env table and, when CAI-relevant, **docs/CAI-DEPLOYMENT.md**.
 - If you change HTTP routes or auth behavior, update **README.md** and this file’s map if paths move.
 - Run **`npm run build`** after `src/` edits so `dist/` stays publishable (this repo ships `dist/` in npm `files`).
-- **GitHub Actions** (`.github/workflows/ci.yml`): on push/PR to `main`, runs `npm ci`, `typecheck`, `build`, and `npm test` on Node 18 / 20 / 22. Keep CI green when changing tests or flaky timing suites.
+- **GitHub Actions** (`.github/workflows/ci.yml`): on push/PR to `main`, runs `npm ci`, `typecheck`, `build`, and `npm test` on **Node 22** (minimum supported runtime; Node 18/20 are not tested). Keep CI green when changing flaky timing suites.
 
 ### Security (public repo)
 
@@ -175,7 +175,7 @@ Open a PR titled e.g. `chore: sync cursor-api-proxy @ v1.x.x` with a file-level 
 
 ## CAI runtime (production profile)
 
-Optional deploy path; same codebase runs on any Node 18+ host.
+Optional deploy path; same codebase runs on any Node 22+ host.
 
 | Piece | Path / command |
 |-------|----------------|

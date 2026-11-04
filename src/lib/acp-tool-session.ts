@@ -213,6 +213,7 @@ export class AcpToolSession {
     }
     this.#terminal = true;
     const { text, reasoning } = this.#drainOutput();
+    await this.#connection?.whenPermissionsIdle();
     const stderr = this.#connection?.stderr ?? "";
     await this.close();
     return {

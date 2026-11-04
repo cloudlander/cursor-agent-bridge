@@ -10,7 +10,7 @@ Short checklist for agents operating this bridge on a **CAI Application** engine
 
 ## Bootstrap sequence
 
-1. **Build TypeScript** (in a session with Node 18+): `npm install && npm run build`, or run the prototype **build-project** job (`scripts/bootstrap-cai-application.sh`).
+1. **Build TypeScript** (in a session with Node 22+): `npm install && npm run build`, or run the prototype **build-project** job (`scripts/bootstrap-cai-application.sh`).
 2. **Install Cursor CLI into isolated home**: same bootstrap script (installs npm via bundled Node when the session has no npm).
 
 Bootstrap and `app.sh` **rebuild automatically** when any `src/` or `public/` file is newer than `dist/cli.js`. Set `CAI_FORCE_BUILD=1` to force a full rebuild after git pull.

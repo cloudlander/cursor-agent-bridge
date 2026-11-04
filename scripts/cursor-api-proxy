@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # cursor-api-proxy — launcher (install to ~/.local/bin/cursor-api-proxy).
-# Requires: Node 18+, built dist/cli.js under CURSOR_API_PROXY_ROOT.
+# Requires: Node 22+, built dist/cli.js under CURSOR_API_PROXY_ROOT.
 
 set -euo pipefail
 
@@ -90,7 +90,7 @@ _entry() {
     done
   fi
   if [[ -z "$node_bin" || ! -x "$node_bin" ]]; then
-    echo "node not found. Install Node 18+ or set CURSOR_API_PROXY_NODE." >&2
+    echo "node not found. Install Node 22+ or set CURSOR_API_PROXY_NODE." >&2
     return 1
   fi
   echo "$node_bin|$cli"
