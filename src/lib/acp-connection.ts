@@ -178,6 +178,7 @@ export class AcpConnection {
   readonly #exitPromise: Promise<number>;
   #resolveExit!: (code: number) => void;
   #stderr = "";
+  readonly #permissionTasks = new Set<Promise<void>>();
   #closed = false;
   #spawnError?: Error;
   #abortHandler?: () => void;
@@ -244,6 +245,14 @@ export class AcpConnection {
 
   get stderr(): string {
     return this.#stderr.trim();
+  }
+
+  /** Wait for in-flight permission RPCs and one event-loop turn (stderr flush). */
+  async whenPermissionsIdle(): Promise<void> {
+    if (this.#permissionTasks.size > 0) {
+      await Promise.all([...this.#permissionTasks]);
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 
   get closed(): boolean {
@@ -419,7 +428,9 @@ export class AcpConnection {
     }
 
     if (message.method === "session/request_permission" && message.id != null) {
-      void this.#handlePermission(message);
+      const task = this.#handlePermission(message);
+      this.#permissionTasks.add(task);
+      void task.finally(() => this.#permissionTasks.delete(task));
       return;
     }
 
