@@ -782,7 +782,23 @@ html:has(body.chat-page) {
   background: var(--panel);
 }
 
-.chat-sidebar-toggle { display: none; }
+.chat-sidebar-toggle {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+  z-index: 2;
+}
+
+/* Collapsed sidebar with no toggle (e.g. phone landscape >768px) traps the user. */
+.chat-shell.sidebar-collapsed .chat-sidebar-toggle {
+  display: inline-flex;
+}
 
 .chat-toolbar-title {
   margin: 0;
@@ -799,6 +815,8 @@ html:has(body.chat-page) {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
+  min-width: 0;
 }
 
 .chat-mode-select-wrap {
@@ -1218,8 +1236,10 @@ html:has(body.chat-page) {
 @media (max-width: 768px) {
   .chat-sidebar-toggle { display: inline-flex; }
   .chat-toolbar {
+    padding-top: max(12px, env(safe-area-inset-top, 0px));
     padding-left: max(12px, env(safe-area-inset-left, 0px));
     padding-right: max(12px, env(safe-area-inset-right, 0px));
+    gap: 8px;
   }
   .chat-sidebar {
     position: fixed;
