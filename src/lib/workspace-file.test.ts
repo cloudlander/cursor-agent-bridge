@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import type { BridgeConfig } from "./config.js";
 import {
+  classifyWorkspaceFile,
   isAllowedWorkspaceFile,
   resolveWorkspaceFilePath,
   workspaceFileUrlForPath,
@@ -67,12 +68,23 @@ describe("workspace-file", () => {
     expect(isAllowedWorkspaceFile(resolved!, config)).toBe(true);
   });
 
-  it("rejects non-image extensions", () => {
-    const secret = path.join(tmpDir, "secret.txt");
-    fs.writeFileSync(secret, "nope");
-    const resolved = resolveWorkspaceFilePath(secret, config);
+  it("allows downloadable text under workspace", () => {
+    const doc = path.join(tmpDir, "notes.txt");
+    fs.writeFileSync(doc, "hello");
+    const resolved = resolveWorkspaceFilePath(doc, config);
     expect(resolved).toBeTruthy();
     expect(isAllowedWorkspaceFile(resolved!, config)).toBe(false);
+    expect(classifyWorkspaceFile(resolved!, config)).toBe("download");
+  });
+
+  it("allows files under managed outputs dir", () => {
+    const outDir = path.join(tmpDir, ".cursor-api-proxy", "outputs");
+    fs.mkdirSync(outDir, { recursive: true });
+    const report = path.join(outDir, "report.pdf");
+    fs.writeFileSync(report, "%PDF-1.4");
+    const resolved = resolveWorkspaceFilePath(report, config);
+    expect(resolved).toBeTruthy();
+    expect(classifyWorkspaceFile(resolved!, config)).toBe("download");
   });
 
   it("rejects paths outside workspace", () => {
@@ -90,5 +102,18 @@ describe("workspace-file", () => {
   it("builds proxy URL for absolute paths", () => {
     const url = workspaceFileUrlForPath("/home/user/proj/assets/a.png");
     expect(url).toBe("/api/workspace-file?path=%2Fhome%2Fuser%2Fproj%2Fassets%2Fa.png");
+  });
+
+  it("blocks sensitive basenames under workspace", () => {
+    const envFile = path.join(tmpDir, ".env");
+    fs.writeFileSync(envFile, "SECRET=1");
+    const resolved = resolveWorkspaceFilePath(envFile, config);
+    expect(resolved).toBeTruthy();
+    expect(classifyWorkspaceFile(resolved!, config)).toBeNull();
+  });
+
+  it("builds download URL when requested", () => {
+    const url = workspaceFileUrlForPath("/tmp/report.pdf", true);
+    expect(url).toContain("download=1");
   });
 });

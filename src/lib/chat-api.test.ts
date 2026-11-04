@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { resetMaxUploadBytesCacheForTests } from "./chat-attachments.js";
 import type { BridgeConfig } from "./config.js";
 import { createRequestListener } from "./request-listener.js";
 import type { ToolSessionRegistry } from "./tool-session-registry.js";
@@ -116,6 +117,126 @@ describe("chat API", () => {
     expect(body.threads[0]?.messages[0]?.content).toBe("hi");
     } finally {
       process.env.HOME = prevHome;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("POST /api/chat/upload accepts multipart file", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-upload-"));
+    tmpDirs.push(dir);
+    const isolatedHome = path.join(dir, "home");
+    fs.mkdirSync(isolatedHome, { recursive: true });
+    const prevHome = process.env.HOME;
+    process.env.HOME = isolatedHome;
+    const config = testConfig(dir);
+    const toolSessions = { closeAll: async () => undefined } as ToolSessionRegistry;
+    const server = http.createServer(
+      createRequestListener({ version: "test", config }, { toolSessions }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+
+    const boundary = "----cursorbridge";
+    const body =
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="note.txt"\r\n` +
+      `Content-Type: text/plain\r\n\r\n` +
+      `hi there\r\n` +
+      `--${boundary}--\r\n`;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/chat/upload`, {
+        method: "POST",
+        headers: {
+          "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+      });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as {
+        attachment: { name: string; path: string; url: string };
+      };
+      expect(json.attachment.name).toBe("note.txt");
+      expect(fs.existsSync(json.attachment.path)).toBe(true);
+      expect(json.attachment.url).toContain("/api/workspace-file");
+    } finally {
+      process.env.HOME = prevHome;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("POST /api/chat/upload accepts JSON base64", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-upload-json-"));
+    tmpDirs.push(dir);
+    const isolatedHome = path.join(dir, "home");
+    fs.mkdirSync(isolatedHome, { recursive: true });
+    const prevHome = process.env.HOME;
+    process.env.HOME = isolatedHome;
+    const config = testConfig(dir);
+    const toolSessions = { closeAll: async () => undefined } as ToolSessionRegistry;
+    const server = http.createServer(
+      createRequestListener({ version: "test", config }, { toolSessions }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      const data = Buffer.from("legacy base64").toString("base64");
+      const res = await fetch(`http://127.0.0.1:${port}/api/chat/upload`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          filename: "legacy.txt",
+          mimeType: "text/plain",
+          data,
+        }),
+      });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { attachment: { path: string } };
+      expect(fs.existsSync(json.attachment.path)).toBe(true);
+    } finally {
+      process.env.HOME = prevHome;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("POST /api/chat/upload returns 413 for oversized multipart", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-upload-413-"));
+    tmpDirs.push(dir);
+    const isolatedHome = path.join(dir, "home");
+    fs.mkdirSync(isolatedHome, { recursive: true });
+    const prevHome = process.env.HOME;
+    const prevMax = process.env.CURSOR_BRIDGE_MAX_UPLOAD_BYTES;
+    process.env.HOME = isolatedHome;
+    process.env.CURSOR_BRIDGE_MAX_UPLOAD_BYTES = "32";
+    resetMaxUploadBytesCacheForTests();
+    const config = testConfig(dir);
+    const toolSessions = { closeAll: async () => undefined } as ToolSessionRegistry;
+    const server = http.createServer(
+      createRequestListener({ version: "test", config }, { toolSessions }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+    const boundary = "----413test";
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/chat/upload`, {
+        method: "POST",
+        headers: {
+          "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body:
+          `--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="file"; filename="big.bin"\r\n\r\n` +
+          `${"a".repeat(64)}\r\n` +
+          `--${boundary}--\r\n`,
+      });
+      expect(res.status).toBe(413);
+    } finally {
+      process.env.HOME = prevHome;
+      if (prevMax === undefined) delete process.env.CURSOR_BRIDGE_MAX_UPLOAD_BYTES;
+      else process.env.CURSOR_BRIDGE_MAX_UPLOAD_BYTES = prevMax;
+      resetMaxUploadBytesCacheForTests();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });

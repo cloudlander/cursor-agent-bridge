@@ -5,7 +5,9 @@ import {
   extractBearerToken,
   extractBridgeApiKey,
   json,
+  BodyTooLargeError,
   readBody,
+  readBodyLimited,
   setDefaultSseKeepaliveIntervalMsForTests,
   startSseKeepalive,
 } from "./http.js";
@@ -88,6 +90,13 @@ describe("json", () => {
     expect(res.end).toHaveBeenCalledWith(
       JSON.stringify({ error: { message: "Unauthorized", code: "unauthorized" } }),
     );
+  });
+});
+
+describe("readBodyLimited", () => {
+  it("rejects bodies over the limit", async () => {
+    const req = mockRequestBody("x".repeat(20));
+    await expect(readBodyLimited(req, 10)).rejects.toBeInstanceOf(BodyTooLargeError);
   });
 });
 

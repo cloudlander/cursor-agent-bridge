@@ -1,16 +1,29 @@
 import type * as http from "node:http";
 
 import type { BridgeConfig } from "./config.js";
-import { MAX_UPLOAD_BYTES, saveChatUpload } from "./chat-attachments.js";
+import {
+  collectReferencedManagedPaths,
+  finalizeChatUpload,
+  getMaxUploadBytes,
+  maxJsonUploadBodyChars,
+  pruneManagedStorage,
+  saveChatUpload,
+  tempChatUploadPath,
+} from "./chat-attachments.js";
 import {
   deleteWebThread,
   getChatSession,
   listChatSessions,
   migrateLocalThreads,
+  readChatStore,
   saveWebThreads,
   type WebChatThread,
 } from "./chat-store.js";
-import { json, readBody } from "./http.js";
+import { BodyTooLargeError, json, readBody, readBodyLimited } from "./http.js";
+import {
+  MultipartUploadError,
+  saveMultipartFieldToFile,
+} from "./multipart-upload.js";
 import { resolveWorkspace } from "./workspace.js";
 import {
   abortWebGeneration,
@@ -32,6 +45,19 @@ export function chatApiMatches(req: http.IncomingMessage): boolean {
 
 function attachmentPublicUrl(filePath: string): string {
   return `/api/workspace-file?path=${encodeURIComponent(filePath)}`;
+}
+
+async function pruneChatManagedStorage(
+  config: BridgeConfig,
+  workspaceDir: string,
+  extraThreads?: WebChatThread[],
+): Promise<void> {
+  const store = await readChatStore(config);
+  const threads = extraThreads?.length
+    ? [...store.threads, ...extraThreads]
+    : store.threads;
+  const keepPaths = collectReferencedManagedPaths(threads, workspaceDir);
+  pruneManagedStorage(workspaceDir, { keepPaths });
 }
 
 function sessionIdFromPath(pathname: string): string | null {
@@ -135,53 +161,17 @@ export async function handleChatApi(
       activeId: body.activeId ?? null,
       threads: body.threads,
     });
+    try {
+      const workspaceDir = resolveWorkspace(config, undefined, false).workspaceDir;
+      await pruneChatManagedStorage(config, workspaceDir, body.threads);
+    } catch {
+      /* non-fatal */
+    }
     json(res, 200, { ok: true });
     return;
   }
 
   if (req.method === "POST" && pathname === "/api/chat/upload") {
-    let body: { filename?: string; mimeType?: string; data?: string };
-    try {
-      body = JSON.parse(await readBody(req)) as typeof body;
-    } catch {
-      json(res, 400, { error: { message: "Invalid JSON", code: "invalid_json" } });
-      return;
-    }
-    const filename = typeof body.filename === "string" ? body.filename.trim() : "";
-    const dataB64 = typeof body.data === "string" ? body.data.trim() : "";
-    if (!filename || !dataB64) {
-      json(res, 400, {
-        error: {
-          message: "filename and base64 data required",
-          code: "invalid_request",
-        },
-      });
-      return;
-    }
-    let data: Buffer;
-    try {
-      data = Buffer.from(dataB64, "base64");
-    } catch {
-      json(res, 400, {
-        error: { message: "Invalid base64 data", code: "invalid_request" },
-      });
-      return;
-    }
-    if (data.length === 0) {
-      json(res, 400, {
-        error: { message: "Empty file", code: "invalid_request" },
-      });
-      return;
-    }
-    if (data.length > MAX_UPLOAD_BYTES) {
-      json(res, 413, {
-        error: {
-          message: `File exceeds ${MAX_UPLOAD_BYTES} byte limit`,
-          code: "payload_too_large",
-        },
-      });
-      return;
-    }
     let workspaceDir: string;
     try {
       workspaceDir = resolveWorkspace(config, undefined, false).workspaceDir;
@@ -190,13 +180,92 @@ export async function handleChatApi(
       json(res, 400, { error: { message: msg, code: "invalid_workspace" } });
       return;
     }
+
+    const maxBytes = getMaxUploadBytes();
+    const contentType = req.headers["content-type"] ?? "";
+    const isMultipart = contentType.toLowerCase().includes("multipart/form-data");
+
     try {
-      const saved = saveChatUpload(
-        workspaceDir,
-        filename,
-        typeof body.mimeType === "string" ? body.mimeType : "",
-        data,
-      );
+      let saved;
+      if (isMultipart) {
+        const hintName =
+          typeof req.headers["x-filename"] === "string"
+            ? req.headers["x-filename"]
+            : "upload";
+        const dest = tempChatUploadPath(workspaceDir, hintName);
+        const streamed = await saveMultipartFieldToFile(req, "file", dest, maxBytes);
+        saved = finalizeChatUpload(
+          dest,
+          streamed.filename,
+          streamed.mimeType,
+          streamed.bytesWritten,
+        );
+      } else {
+        let body: { filename?: string; mimeType?: string; data?: string };
+        try {
+          body = JSON.parse(await readBodyLimited(req, maxJsonUploadBodyChars())) as typeof body;
+        } catch (e) {
+          if (e instanceof BodyTooLargeError) {
+            json(res, 413, {
+              error: {
+                message: "Upload payload too large",
+                code: e.code,
+              },
+            });
+            return;
+          }
+          json(res, 400, { error: { message: "Invalid JSON", code: "invalid_json" } });
+          return;
+        }
+        const filename = typeof body.filename === "string" ? body.filename.trim() : "";
+        const dataB64 = typeof body.data === "string" ? body.data.trim() : "";
+        if (!filename || !dataB64) {
+          json(res, 400, {
+            error: {
+              message: "filename and base64 data required",
+              code: "invalid_request",
+            },
+          });
+          return;
+        }
+        let data: Buffer;
+        try {
+          data = Buffer.from(dataB64, "base64");
+        } catch {
+          json(res, 400, {
+            error: { message: "Invalid base64 data", code: "invalid_request" },
+          });
+          return;
+        }
+        if (data.length === 0) {
+          json(res, 400, {
+            error: { message: "Empty file", code: "invalid_request" },
+          });
+          return;
+        }
+        if (data.length > maxBytes) {
+          json(res, 413, {
+            error: {
+              message: `File exceeds ${maxBytes} byte limit`,
+              code: "payload_too_large",
+            },
+          });
+          return;
+        }
+        saved = saveChatUpload(
+          workspaceDir,
+          filename,
+          typeof body.mimeType === "string" ? body.mimeType : "",
+          data,
+        );
+      }
+
+      try {
+        await pruneChatManagedStorage(config, workspaceDir);
+      } catch {
+        /* non-fatal */
+      }
+
       json(res, 200, {
         attachment: {
           ...saved,
@@ -204,6 +273,18 @@ export async function handleChatApi(
         },
       });
     } catch (e) {
+      if (e instanceof BodyTooLargeError) {
+        json(res, 413, {
+          error: { message: e.message, code: e.code },
+        });
+        return;
+      }
+      if (e instanceof MultipartUploadError) {
+        json(res, e.statusCode, {
+          error: { message: e.message, code: e.code },
+        });
+        return;
+      }
       const msg = e instanceof Error ? e.message : String(e);
       json(res, 500, { error: { message: msg, code: "upload_failed" } });
     }

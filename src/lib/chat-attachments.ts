@@ -6,6 +6,37 @@ import type { AcpPromptBlock } from "./acp-client.js";
 
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export const UPLOADS_DIR = ".cursor-api-proxy/uploads";
+/** Agent / model artifacts saved for chat download links. */
+export const OUTPUTS_DIR = ".cursor-api-proxy/outputs";
+export const DEFAULT_UPLOAD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const DEFAULT_UPLOAD_DIR_QUOTA_BYTES = 500 * 1024 * 1024;
+
+let cachedMaxUploadBytes: number | undefined;
+
+/** Upper bound for user uploads (override with CURSOR_BRIDGE_MAX_UPLOAD_BYTES). */
+export function getMaxUploadBytes(): number {
+  if (cachedMaxUploadBytes !== undefined) return cachedMaxUploadBytes;
+  const raw = process.env.CURSOR_BRIDGE_MAX_UPLOAD_BYTES?.trim();
+  if (raw) {
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n > 0) {
+      cachedMaxUploadBytes = n;
+      return n;
+    }
+  }
+  cachedMaxUploadBytes = MAX_UPLOAD_BYTES;
+  return cachedMaxUploadBytes;
+}
+
+/** @internal Vitest only — env overrides are read once per process otherwise. */
+export function resetMaxUploadBytesCacheForTests(): void {
+  cachedMaxUploadBytes = undefined;
+}
+
+/** Max JSON upload body (base64 expands ~4/3). */
+export function maxJsonUploadBodyChars(): number {
+  return Math.ceil(getMaxUploadBytes() * 1.37) + 65_536;
+}
 
 export type ChatAttachmentRef = {
   name: string;
@@ -61,6 +92,14 @@ export function uploadsRoot(workspaceDir: string): string {
   return path.join(workspaceDir, UPLOADS_DIR);
 }
 
+export function outputsRoot(workspaceDir: string): string {
+  return path.join(workspaceDir, OUTPUTS_DIR);
+}
+
+export function managedStorageRoots(workspaceDir: string): string[] {
+  return [uploadsRoot(workspaceDir), outputsRoot(workspaceDir)];
+}
+
 function sanitizeFilename(name: string): string {
   const base = path.basename(name).replace(/[^\w.\-+() ]+/g, "_").trim();
   return base || "upload";
@@ -71,21 +110,26 @@ export function mimeFromFilename(filename: string): string {
   return EXT_MIME[ext] ?? "application/octet-stream";
 }
 
+function newStoredUploadPath(workspaceDir: string, safeName: string): string {
+  const dir = uploadsRoot(workspaceDir);
+  fs.mkdirSync(dir, { recursive: true });
+  const id = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+  const stored = `${id}-${safeName}`;
+  return path.join(dir, stored);
+}
+
 export function saveChatUpload(
   workspaceDir: string,
   filename: string,
   mimeType: string,
   data: Buffer,
 ): ChatAttachmentRef {
-  if (data.length > MAX_UPLOAD_BYTES) {
-    throw new Error(`File exceeds ${MAX_UPLOAD_BYTES} byte limit`);
+  const max = getMaxUploadBytes();
+  if (data.length > max) {
+    throw new Error(`File exceeds ${max} byte limit`);
   }
   const safeName = sanitizeFilename(filename);
-  const dir = uploadsRoot(workspaceDir);
-  fs.mkdirSync(dir, { recursive: true });
-  const id = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-  const stored = `${id}-${safeName}`;
-  const filePath = path.join(dir, stored);
+  const filePath = newStoredUploadPath(workspaceDir, safeName);
   fs.writeFileSync(filePath, data);
   return {
     name: safeName,
@@ -93,6 +137,147 @@ export function saveChatUpload(
     path: filePath,
     size: data.length,
   };
+}
+
+/** Path for a streaming multipart upload (caller writes bytes, then finalizeChatUpload). */
+export function tempChatUploadPath(workspaceDir: string, filename: string): string {
+  const safeName = sanitizeFilename(filename);
+  return newStoredUploadPath(workspaceDir, safeName);
+}
+
+export function finalizeChatUpload(
+  filePath: string,
+  filename: string,
+  mimeType: string,
+  size: number,
+): ChatAttachmentRef {
+  const safeName = sanitizeFilename(filename);
+  return {
+    name: safeName,
+    mimeType: mimeType || mimeFromFilename(safeName),
+    path: filePath,
+    size,
+  };
+}
+
+/**
+ * Remove stale files from uploads/outputs and enforce a soft quota (oldest mtime first).
+ */
+function normalizeKeepPath(filePath: string, workspaceDir: string): string | null {
+  try {
+    const resolved = fs.realpathSync(
+      path.isAbsolute(filePath)
+        ? path.normalize(filePath)
+        : path.resolve(workspaceDir, filePath),
+    );
+    if (!fs.statSync(resolved).isFile()) return null;
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+/** Paths under uploads/outputs still referenced by chat threads (skip TTL/quota eviction). */
+export function collectReferencedManagedPaths(
+  threads: Array<{ messages?: Array<any> }>,
+  workspaceDir: string,
+): Set<string> {
+  const keep = new Set<string>();
+  const managedMarker = `${path.sep}.cursor-api-proxy${path.sep}`;
+  const addPath = (raw: string) => {
+    const normalized = normalizeKeepPath(raw, workspaceDir);
+    if (normalized) keep.add(normalized);
+  };
+
+  for (const thread of threads ?? []) {
+    for (const msg of thread.messages ?? []) {
+      if (Array.isArray(msg?.attachments)) {
+        for (const att of msg.attachments) {
+          if (typeof att?.path === "string") addPath(att.path);
+        }
+      }
+      const content = msg?.content;
+      if (typeof content !== "string" || !content.includes(".cursor-api-proxy")) continue;
+      for (const m of content.matchAll(/\.cursor-api-proxy\/(?:uploads|outputs)\/[^\s)\]"']+/g)) {
+        addPath(m[0].replace(/\//g, path.sep));
+      }
+      for (const m of content.matchAll(/\/api\/workspace-file\?path=([^&\s)\]"']+)/g)) {
+        try {
+          addPath(decodeURIComponent(m[1]));
+        } catch {
+          /* skip */
+        }
+      }
+      if (content.includes(managedMarker)) {
+        for (const m of content.matchAll(
+          /(?:^|[\s('"`])([^\s)\]"']*\.cursor-api-proxy(?:\/uploads|\/outputs)\/[^\s)\]"']+)/g,
+        )) {
+          addPath(m[1]);
+        }
+      }
+    }
+  }
+  return keep;
+}
+
+export function ensureOutputsDir(workspaceDir: string): string {
+  const dir = outputsRoot(workspaceDir);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function pruneManagedStorage(
+  workspaceDir: string,
+  opts?: { maxAgeMs?: number; quotaBytes?: number; keepPaths?: Set<string> },
+): void {
+  const maxAgeMs = opts?.maxAgeMs ?? DEFAULT_UPLOAD_TTL_MS;
+  const quotaBytes = opts?.quotaBytes ?? DEFAULT_UPLOAD_DIR_QUOTA_BYTES;
+  const keepPaths = opts?.keepPaths;
+  const cutoff = Date.now() - maxAgeMs;
+  const files: Array<{ path: string; mtime: number; size: number; pinned: boolean }> =
+    [];
+
+  for (const root of managedStorageRoots(workspaceDir)) {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      const p = path.join(root, ent.name);
+      try {
+        const real = fs.realpathSync(p);
+        const pinned = keepPaths?.has(real) ?? false;
+        const st = fs.statSync(real);
+        if (st.mtimeMs < cutoff && !pinned) {
+          fs.unlinkSync(real);
+          continue;
+        }
+        files.push({ path: real, mtime: st.mtimeMs, size: st.size, pinned });
+      } catch {
+        /* skip */
+      }
+    }
+  }
+
+  let total = files.reduce((n, f) => n + f.size, 0);
+  if (total <= quotaBytes) return;
+  const byPriority = [...files].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? 1 : -1;
+    return a.mtime - b.mtime;
+  });
+  for (const f of byPriority) {
+    if (total <= quotaBytes) break;
+    if (f.pinned) continue;
+    try {
+      fs.unlinkSync(f.path);
+      total -= f.size;
+    } catch {
+      /* skip */
+    }
+  }
 }
 
 function isImageMime(mime: string): boolean {
@@ -176,6 +361,15 @@ function readResourceBlock(
       return {
         type: "resource",
         resource: { uri, mimeType, text },
+      };
+    }
+    if (isTextLike(mimeType, name) && stat.size > 512 * 1024) {
+      return {
+        type: "resource_link",
+        uri,
+        name,
+        mimeType,
+        size: stat.size,
       };
     }
     if (isImageMime(mimeType)) {
@@ -300,11 +494,15 @@ export function buildMultimodalAcpPrompt(
 }
 
 /** Summarize attachments for plain-text prompts (CLI fallback). */
-export function attachmentSummary(msg: any): string {
+export function attachmentSummary(msg: any, workspaceDir?: string): string {
   const parts: string[] = [];
   if (Array.isArray(msg?.attachments)) {
     for (const a of msg.attachments as ChatAttachmentRef[]) {
-      parts.push(`${a.name} (${a.path})`);
+      let loc = a.path;
+      if (workspaceDir && loc.startsWith(workspaceDir)) {
+        loc = path.relative(workspaceDir, loc) || loc;
+      }
+      parts.push(`${a.name} (${loc})`);
     }
   }
   return parts.length ? `[Attachments: ${parts.join(", ")}]` : "";

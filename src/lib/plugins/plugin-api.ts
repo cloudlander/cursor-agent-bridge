@@ -1,7 +1,8 @@
 import * as http from "node:http";
 
 import type { BridgeConfig } from "../config.js";
-import { json } from "../http.js";
+import { json, readBodyLimited } from "../http.js";
+import { ApiError } from "./store.js";
 import { resolvePublicOrigin } from "./public-origin.js";
 import {
   addMarketplace,
@@ -21,25 +22,7 @@ import {
   uninstallPlugin,
   updatePlugin,
 } from "./manager.js";
-import { ApiError } from "./store.js";
-
 const MAX_BODY = 1024 * 1024;
-
-function readBodyLimited(req: http.IncomingMessage, max: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk: string) => {
-      data += chunk;
-      if (data.length > max) {
-        reject(new ApiError(413, "body too large"));
-        req.destroy();
-      }
-    });
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
-  });
-}
 
 function checkMutationOrigin(req: http.IncomingMessage): void {
   const origin = req.headers.origin;
@@ -69,7 +52,12 @@ function parseQuery(url: string): Record<string, string> {
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
-  const raw = await readBodyLimited(req, MAX_BODY);
+  let raw: string;
+  try {
+    raw = await readBodyLimited(req, MAX_BODY);
+  } catch {
+    throw new ApiError(413, "body too large");
+  }
   if (!raw.trim()) return {};
   try {
     return JSON.parse(raw) as unknown;
