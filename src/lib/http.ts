@@ -97,14 +97,35 @@ export function startSseKeepalive(
   return stop;
 }
 
-export async function readBody(req: http.IncomingMessage): Promise<string> {
+export class BodyTooLargeError extends Error {
+  readonly code: string;
+
+  constructor(message = "body too large", code = "payload_too_large") {
+    super(message);
+    this.name = "BodyTooLargeError";
+    this.code = code;
+  }
+}
+
+export async function readBodyLimited(
+  req: http.IncomingMessage,
+  maxChars: number,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
     req.setEncoding("utf8");
-    req.on("data", (chunk) => {
+    req.on("data", (chunk: string) => {
       data += chunk;
+      if (data.length > maxChars) {
+        req.destroy();
+        reject(new BodyTooLargeError());
+      }
     });
     req.on("end", () => resolve(data));
     req.on("error", reject);
   });
+}
+
+export async function readBody(req: http.IncomingMessage): Promise<string> {
+  return readBodyLimited(req, Number.MAX_SAFE_INTEGER);
 }

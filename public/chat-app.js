@@ -54,6 +54,10 @@
   };
 
   const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+  /** Compress images above this size before upload (bytes). */
+  const IMAGE_COMPRESS_MIN_BYTES = 512 * 1024;
+  const IMAGE_MAX_EDGE_PX = 2048;
+  const IMAGE_JPEG_QUALITY = 0.85;
 
   let markedReady = false;
 
@@ -124,6 +128,12 @@
 
   // ───────────────────────── markdown ─────────────────────────
 
+  function pathBasename(p) {
+    const s = String(p || '').replace(/\\/g, '/');
+    const i = s.lastIndexOf('/');
+    return i >= 0 ? s.slice(i + 1) : s;
+  }
+
   /** Map agent filesystem paths to the proxy file endpoint. */
   function toWorkspaceFileUrl(raw) {
     const p = String(raw || '').trim();
@@ -143,11 +153,30 @@
     return p;
   }
 
+  function isLocalFilesystemPath(raw) {
+    const p = String(raw || '').trim();
+    if (!p || /^https?:\/\//i.test(p) || p.startsWith('/api/')) return false;
+    if (p.startsWith('file://')) return true;
+    return p.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(p);
+  }
+
+  function workspaceDownloadUrl(raw) {
+    const base = toWorkspaceFileUrl(raw);
+    if (!base.startsWith('/api/workspace-file')) return base;
+    return base.includes('?') ? `${base}&download=1` : `${base}?download=1`;
+  }
+
   function rewriteLocalPathsInMarkdown(text) {
-    return String(text || '').replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (match, alt, url) => {
+    let out = String(text || '').replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (match, alt, url) => {
       const next = toWorkspaceFileUrl(url);
       return next === url ? match : `![${alt}](${next})`;
     });
+    out = out.replace(/(?<!!)\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (match, label, url) => {
+      if (!isLocalFilesystemPath(url)) return match;
+      const next = workspaceDownloadUrl(url);
+      return `[${label}](${next})`;
+    });
+    return out;
   }
 
   function highlightCode(text, lang) {
@@ -196,6 +225,19 @@
           const alt = escapeHtml(text || '');
           const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
           return `<img src="${escapeHtml(src)}" alt="${alt}"${titleAttr}>`;
+        },
+        link(href, title, text) {
+          const raw = String(href || '');
+          const mapped = isLocalFilesystemPath(raw)
+            ? workspaceDownloadUrl(raw)
+            : toWorkspaceFileUrl(raw);
+          const label = escapeHtml(text || pathBasename(raw) || 'Download');
+          const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+          const cls =
+            mapped.startsWith('/api/workspace-file') && mapped.includes('download=1')
+              ? ' class="chat-workspace-download"'
+              : '';
+          return `<a href="${escapeHtml(mapped)}"${cls}${titleAttr}>${label}</a>`;
         },
       },
     });
@@ -1536,50 +1578,119 @@
     return runAssistantStream(thread);
   }
 
-  async function uploadAttachment(file) {
+  async function compressImageForUpload(file) {
+    if (!file.type?.startsWith('image/')) return file;
+    if (file.type === 'image/gif' || file.type === 'image/svg+xml') return file;
+    if (file.size < IMAGE_COMPRESS_MIN_BYTES) return file;
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(file);
+    } catch {
+      return file;
+    }
+    const scale = Math.min(1, IMAGE_MAX_EDGE_PX / Math.max(bitmap.width, bitmap.height));
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      bitmap.close?.();
+      return file;
+    }
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    bitmap.close?.();
+    const preferWebp = file.type === 'image/webp';
+    const mime = preferWebp ? 'image/webp' : 'image/jpeg';
+    const blob = await new Promise((resolve) => {
+      canvas.toBlob((b) => resolve(b || file), mime, IMAGE_JPEG_QUALITY);
+    });
+    if (!(blob instanceof Blob) || blob.size >= file.size) return file;
+    const ext = preferWebp ? '.webp' : '.jpg';
+    const base = file.name.replace(/\.[^.]+$/, '') || 'image';
+    return new File([blob], `${base}${ext}`, { type: mime, lastModified: file.lastModified });
+  }
+
+  function uploadAttachmentMultipart(file, previewUrl, onProgress) {
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/chat/upload');
+      xhr.responseType = 'json';
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable && typeof onProgress === 'function') {
+          onProgress(ev.loaded / ev.total);
+        }
+      };
+      xhr.onload = () => {
+        const ok = xhr.status >= 200 && xhr.status < 300;
+        const body = xhr.response && typeof xhr.response === 'object'
+          ? xhr.response
+          : (() => {
+            try { return JSON.parse(xhr.responseText || '{}'); } catch { return {}; }
+          })();
+        if (!ok) {
+          const detail = body?.error?.message || `${xhr.status}`;
+          toast(`Upload failed: ${detail}`);
+          resolve(null);
+          return;
+        }
+        const att = body.attachment;
+        if (!att?.path) {
+          resolve(null);
+          return;
+        }
+        const mimeType = att.mimeType || file.type || 'application/octet-stream';
+        const item = {
+          name: att.name || file.name,
+          mimeType,
+          path: att.path,
+          url: att.url,
+          size: att.size,
+        };
+        if (mimeType.startsWith('image/')) {
+          item.previewUrl = previewUrl || att.url;
+        }
+        resolve(item);
+      };
+      xhr.onerror = () => {
+        toast('Upload failed: network error');
+        resolve(null);
+      };
+      const fd = new FormData();
+      fd.append('file', file, file.name);
+      xhr.send(fd);
+    });
+  }
+
+  async function uploadAttachment(file, previewUrl, onProgress) {
     if (file.size > MAX_ATTACHMENT_BYTES) {
       toast(`File too large (max ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB)`);
       return null;
     }
-    const buf = await file.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += 8192) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-    }
-    const data = btoa(binary);
-    const res = await fetch('/api/chat/upload', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        filename: file.name,
-        mimeType: file.type || 'application/octet-stream',
-        data,
-      }),
-    });
-    if (!res.ok) {
-      let detail = `${res.status}`;
+    let payload = file;
+    if (file.type?.startsWith('image/')) {
       try {
-        const err = await res.json();
-        detail = err?.error?.message || detail;
-      } catch { /* ignore */ }
-      toast(`Upload failed: ${detail}`);
-      return null;
+        payload = await compressImageForUpload(file);
+      } catch {
+        payload = file;
+      }
     }
-    const body = await res.json();
-    const att = body.attachment;
-    if (!att?.path) return null;
-    const item = {
-      name: att.name || file.name,
-      mimeType: att.mimeType || file.type || 'application/octet-stream',
-      path: att.path,
-      url: att.url,
-      size: att.size,
-    };
-    if (item.mimeType.startsWith('image/')) {
-      item.previewUrl = item.url;
+    return uploadAttachmentMultipart(payload, previewUrl, onProgress);
+  }
+
+  async function mapWithConcurrency(items, limit, fn) {
+    const out = [];
+    let i = 0;
+    async function worker() {
+      while (i < items.length) {
+        const idx = i++;
+        out[idx] = await fn(items[idx], idx);
+      }
     }
-    return item;
+    const workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
+    await Promise.all(workers);
+    return out;
   }
 
   async function addAttachmentFiles(fileList) {
@@ -1589,16 +1700,46 @@
     }
     const files = Array.from(fileList || []).filter(Boolean);
     if (!files.length) return;
-    for (const file of files) {
+    const placeholders = files.map((file) => {
+      const previewUrl =
+        file.type?.startsWith('image/') ? URL.createObjectURL(file) : undefined;
+      const placeholder = {
+        name: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        path: '',
+        url: '',
+        previewUrl,
+        uploading: true,
+        uploadProgress: 0,
+      };
+      state.pendingAttachments.push(placeholder);
+      return { file, placeholder, previewUrl };
+    });
+    renderPendingAttachments();
+    await mapWithConcurrency(placeholders, 3, async ({ file, placeholder, previewUrl }) => {
       try {
-        const item = await uploadAttachment(file);
-        if (item) {
+        const item = await uploadAttachment(file, previewUrl, (ratio) => {
+          placeholder.uploadProgress = ratio;
+          renderPendingAttachments();
+        });
+        const idx = state.pendingAttachments.indexOf(placeholder);
+        if (!item) {
+          if (idx >= 0) state.pendingAttachments.splice(idx, 1);
+          if (previewUrl) URL.revokeObjectURL(previewUrl);
+          return;
+        }
+        if (idx >= 0) {
+          state.pendingAttachments[idx] = item;
+        } else {
           state.pendingAttachments.push(item);
         }
       } catch (e) {
+        const idx = state.pendingAttachments.indexOf(placeholder);
+        if (idx >= 0) state.pendingAttachments.splice(idx, 1);
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
         toast(`Upload failed: ${e.message || e}`);
       }
-    }
+    });
     renderPendingAttachments();
   }
 
@@ -1618,12 +1759,25 @@
     }
     wrap.hidden = false;
     wrap.replaceChildren(...items.map((a, i) => {
-      const preview = a.previewUrl
-        ? el('img', { src: a.previewUrl, alt: '' })
-        : el('span', { class: 'chat-attachment-icon' }, '📎');
-      return el('div', { class: 'chat-attachment-chip' },
+      const preview = a.uploading
+        ? el('span', { class: 'chat-attachment-icon chat-attachment-spinner', title: 'Uploading' }, '…')
+        : a.previewUrl
+          ? el('img', { src: a.previewUrl, alt: '' })
+          : el('span', { class: 'chat-attachment-icon' }, '📎');
+      const progressBar = a.uploading && typeof a.uploadProgress === 'number'
+        ? el('div', { class: 'chat-attachment-progress', role: 'progressbar' },
+          el('div', {
+            class: 'chat-attachment-progress-fill',
+            style: { width: `${Math.round(Math.min(1, a.uploadProgress) * 100)}%` },
+          }),
+        )
+        : null;
+      return el('div', { class: 'chat-attachment-chip' + (a.uploading ? ' is-uploading' : '') },
         preview,
-        el('span', { class: 'chat-attachment-name', title: a.name }, a.name),
+        el('div', { class: 'chat-attachment-meta' },
+          el('span', { class: 'chat-attachment-name', title: a.name }, a.name),
+          progressBar,
+        ),
         el('button', {
           type: 'button',
           class: 'chat-attachment-remove',
