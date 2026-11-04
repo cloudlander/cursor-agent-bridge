@@ -145,7 +145,7 @@ Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (neve
 | Dashboard login & nav | `src/lib/agent-login.ts`, `public/index.html`, `public/app.js`, `public/wiki.html` (Chat/Plugins links, Sign in, Cursor account) |
 | Web chat | `src/lib/chat-api.ts`, `chat-store.ts`, `public/chat*` |
 | Plugins UI/API extensions | `src/lib/plugins/*` (bridge marketplace behavior) |
-| CAI | `.project-metadata.yaml`, `app.py`, `app.sh`, `scripts/bootstrap-cai-application.sh`, `scripts/bootstrap-cai-application.py`, `scripts/create-cai-application.sh`, `scripts/create-cai-application.py`, `docs/CAI-DEPLOYMENT.md` |
+| CAI | `.project-metadata.yaml`, `app.py`, `app.sh`, `scripts/bootstrap-cai-application.sh`, `scripts/bootstrap-cai-application.py`, `scripts/create-cai-application.sh`, `docs/CAI-DEPLOYMENT.md` |
 | Agent docs | **`AGENTS.md`** |
 
 **Not fully merged yet** — upstream expects newer ACP + `handlers/agent-turn.ts` / `agent-failure.ts`. Wire those only after upgrading `acp-connection.ts` and request logging to upstream 1.7.0 shapes; do not enable half-merged handlers.
@@ -184,11 +184,11 @@ Optional deploy path; same codebase runs on any Node 22+ host.
 | Isolated CLI `HOME` | `.cai/home/` (runtime; not in git) |
 | Node entry | `dist/cli.js` |
 | Bootstrap | `scripts/bootstrap-cai-application.sh` |
-| Register CAI app | `scripts/create-cai-application.sh` |
+| Register CAI app | `scripts/create-cai-application.sh` (also invoked from `bootstrap-cai-application.py`) |
 
 **`app.sh` defaults (override with env):**
 
-- `CURSOR_BRIDGE_HOST=127.0.0.1`, `CURSOR_BRIDGE_PORT=$CDSW_APP_PORT`
+- `CURSOR_BRIDGE_HOST=127.0.0.1`; `CURSOR_BRIDGE_PORT` = first bindable among `CDSW_APP_PORT`, `CDSW_PUBLIC_PORT`, `CDSW_READONLY_PORT`, explicit `CURSOR_BRIDGE_PORT` (startup fails if none bind)
 - `CURSOR_BRIDGE_MODE=agent`, `CURSOR_BRIDGE_FORCE=true`
 - `CURSOR_BRIDGE_USE_ACP=true` (legacy: `CURSOR_BRIDGE_USE_ACP=false`)
 - `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` on CAI engine
