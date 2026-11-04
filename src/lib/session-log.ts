@@ -23,6 +23,17 @@ export type SessionStats = {
   usage: AggregatedTokenUsage;
 };
 
+/** Paths omitted from stats, sessions log, and incoming stdout (probes and browser chrome). */
+const SESSION_STATS_EXCLUDED_PATHS = new Set([
+  "/favicon.ico",
+  "/health",
+  "/healthz",
+]);
+
+export function pathnameExcludedFromSessionStats(pathname: string): boolean {
+  return SESSION_STATS_EXCLUDED_PATHS.has(pathname);
+}
+
 export function readLastLines(
   filePath: string,
   maxLines: number,
@@ -92,6 +103,7 @@ export function computeSessionStats(
   for (const line of lines) {
     const request = parseSessionLine(line);
     if (!request || Date.parse(request.ts) < cutoff) continue;
+    if (pathnameExcludedFromSessionStats(request.pathname)) continue;
 
     stats.total++;
     if (request.status >= 400) stats.errors++;
