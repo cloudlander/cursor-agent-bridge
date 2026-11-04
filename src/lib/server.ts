@@ -15,6 +15,7 @@ import { killAllChildProcesses } from "./process.js";
 import { ToolSessionRegistry } from "./tool-session-registry.js";
 import { appsDirOf } from "./dynamic-apps.js";
 import { maybeAutoSyncCliCache, redeployAll } from "./plugins/manager.js";
+import { startUpstreamSyncScheduler } from "./upstream-sync.js";
 
 function acpLauncherLabel(acpArgs: string[]): string {
   const first = acpArgs[0];
@@ -294,6 +295,7 @@ function startSingleServer(opts: BridgeServerOptions): BridgeHttpServer {
         } catch {
           /* first-run or empty registry */
         }
+        startUpstreamSyncScheduler(config);
       })();
     }
   });

@@ -342,6 +342,11 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 | `CURSOR_BRIDGE_TLS_CERT` | — | Path to TLS certificate file (e.g. Tailscale cert). Use with `CURSOR_BRIDGE_TLS_KEY` for HTTPS. |
 | `CURSOR_BRIDGE_TLS_KEY` | — | Path to TLS private key file. Use with `CURSOR_BRIDGE_TLS_CERT` for HTTPS. |
 | `CURSOR_BRIDGE_SESSIONS_LOG` | `~/.cursor-api-proxy/sessions.log` | Path to log file; each request is appended as a line (timestamp, method, path, IP, status). |
+| `CURSOR_BRIDGE_UPSTREAM_SYNC` | `false` | When `true`, periodically check [cursor-api-proxy](https://github.com/anyrobert/cursor-api-proxy) for a newer semver tag, rsync upstream into this repo (preserving bridge-only paths per `AGENTS.md`), run `npm ci` / `build` / `test`, commit on success, and optionally push `main`. Status and banners: `GET /api/upstream-sync`. Requires `git`, `rsync`, and a git checkout of this project. |
+| `CURSOR_BRIDGE_UPSTREAM_SYNC_PUSH` | same as sync | When `false`, commit locally but do not `git push`. |
+| `CURSOR_BRIDGE_UPSTREAM_SYNC_INTERVAL_MS` | `604800000` (7 days) | Milliseconds between scheduled sync checks (after the first run). |
+| `CURSOR_BRIDGE_UPSTREAM_SYNC_FIRST_DELAY_MS` | `120000` | Delay before the first scheduled check after server start. |
+| `CURSOR_BRIDGE_UPSTREAM_SYNC_REPO` | `https://github.com/anyrobert/cursor-api-proxy.git` | Upstream git URL for tag discovery and clone. |
 | `CURSOR_BRIDGE_PLUGINS_DIR` | `<sessions-log-dir>/plugins` | Root for plugin marketplace data (registry, marketplace clones, installed trees, runtime materialization). |
 | `CURSOR_BRIDGE_APPS_DIR` | `<sessions-log-dir>/apps` | Root for user-deployed static web apps served at `/apps/{name}/` (hot deploy; no restart). |
 | `CURSOR_BRIDGE_MAX_UPLOAD_BYTES` | `20971520` (20 MiB) | Max size for Web Chat file uploads (`POST /api/chat/upload`). JSON base64 uploads remain supported for older clients; the dashboard uses `multipart/form-data`. User files go to `{workspace}/.cursor-api-proxy/uploads/`; long-lived agent artifacts should use `{workspace}/.cursor-api-proxy/outputs/`. Both dirs are pruned on upload and thread save (7-day TTL, ~500MB combined quota); paths still referenced in saved chat threads are kept until unreferenced. |

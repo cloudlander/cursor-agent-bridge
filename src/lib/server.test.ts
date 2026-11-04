@@ -296,6 +296,21 @@ describe("startBridgeServer", () => {
     expect(mcpLogin.status).toBe(404);
   });
 
+  it("serves GET /api/upstream-sync without Authorization when requiredKey is set", async () => {
+    servers = startBridgeServer({
+      version: "1.0.0",
+      config: createTestConfig({ requiredKey: "secret123" }),
+    });
+    await new Promise<void>((resolve) =>
+      servers[0].on("listening", () => resolve()),
+    );
+
+    const res = await fetchServer(servers[0], "/api/upstream-sync");
+    expect(res.status).toBe(200);
+    const data = JSON.parse(res.body) as { options: { enabled: boolean } };
+    expect(data.options.enabled).toBe(false);
+  });
+
   it("GET /api/agent/models bypasses requiredKey", async () => {
     servers = startBridgeServer({
       version: "1.0.0",

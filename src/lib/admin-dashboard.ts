@@ -33,6 +33,10 @@ import {
   handleDynamicApps,
   listApps,
 } from "./dynamic-apps.js";
+import {
+  handleUpstreamSyncApi,
+  upstreamSyncApiMatches,
+} from "./upstream-sync.js";
 
 const ACCOUNT_USAGE_CACHE_MS = 45_000;
 let accountUsageCache:
@@ -291,6 +295,7 @@ export function adminDashboardMatches(
   if (req.method === "POST" && pathname === "/api/agent-login") return true;
   if (req.method === "POST" && pathname === "/api/agent-login/cancel") return true;
   if (req.method === "POST" && pathname === "/api/apps/deploy") return true;
+  if (upstreamSyncApiMatches(req)) return true;
   if (chatApiMatches(req)) return true;
   return false;
 }
@@ -363,6 +368,10 @@ export function handleAdminDashboard(
   }
   if (chatApiMatches(req)) {
     void handleChatApi(req, res, config);
+    return;
+  }
+  if (upstreamSyncApiMatches(req)) {
+    handleUpstreamSyncApi(req, res, config);
     return;
   }
   if (req.method === "GET" && pathname.startsWith("/static/")) {

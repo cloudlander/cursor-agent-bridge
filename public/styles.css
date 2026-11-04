@@ -38,6 +38,45 @@ html, body {
 a { color: var(--blue); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
+.upstream-sync-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 24px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.upstream-sync-banner.hidden { display: none !important; }
+.upstream-sync-banner[data-kind="success"] {
+  border-left: 4px solid var(--green);
+}
+.upstream-sync-banner[data-kind="error"] {
+  border-left: 4px solid var(--red);
+}
+.upstream-sync-banner[data-kind="info"] {
+  border-left: 4px solid var(--yellow);
+}
+.upstream-sync-banner-text { flex: 1; line-height: 1.45; }
+.upstream-sync-banner-restart {
+  display: block;
+  margin-top: 4px;
+  color: var(--yellow);
+  font-weight: 500;
+}
+.upstream-sync-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.chat-page .upstream-sync-banner {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
 .site-header {
   border-bottom: 1px solid var(--border);
   background: var(--panel);
