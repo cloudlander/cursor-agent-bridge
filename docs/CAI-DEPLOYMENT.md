@@ -5,20 +5,22 @@ Short checklist for agents operating this bridge on a **CAI Application** engine
 ## Preconditions
 
 - Application script: `app.py` (shebang runner for `app.sh`).
-- Engine env must include: `CDSW_APP_PORT`, `CDSW_API_KEY`.
+- Engine env must include: `CDSW_API_KEY`. Listen port: `CDSW_APP_PORT` is usual on CAI; if it is in use, `app.sh` tries `CDSW_PUBLIC_PORT`, then `CDSW_READONLY_PORT`, then an explicit `CURSOR_BRIDGE_PORT`. If none are set or bindable, startup exits with an error.
 - Cursor CLI credentials (for agent runs): `CURSOR_API_KEY`, `auth.json` under `.cai/home/.config/cursor/`, or **Sign in with Cursor** on the dashboard after the app starts (no auth required for `app.sh` to bind the port).
 
 ## Bootstrap sequence
 
-1. **Build TypeScript** (in a session with Node 22+): `npm install && npm run build`, or run the prototype **build-project** job (`scripts/bootstrap-cai-application.sh`).
-2. **Install Cursor CLI into isolated home**: same bootstrap script (installs npm via bundled Node when the session has no npm).
+1. **Build + register** (prototype **build-project** job): `scripts/bootstrap-cai-application.py` runs bootstrap (`scripts/bootstrap-cai-application.sh`) then `scripts/create-cai-application.sh` (needs `CDSW_APIV2_KEY`, project id, domain).
+2. **Install Cursor CLI into isolated home**: bootstrap script (installs npm via bundled Node when the session has no npm).
 
 Bootstrap and `app.sh` **rebuild automatically** when any `src/` or `public/` file is newer than `dist/cli.js`. Set `CAI_FORCE_BUILD=1` to force a full rebuild after git pull.
-3. **Register application** (once per project/subdomain): `scripts/create-cai-application.sh` with `CDSW_APIV2_KEY`, project id, domain.
+
+Application **subdomain**: set `CAI_APP_SUBDOMAIN` or prototype `APP_SUBDOMAIN` to pin a name; if unset, `create-cai-application.sh` registers `agent-cai-` plus four random lowercase letters or digits.
 
 On application start, `app.sh`:
 
 - Sets `HOME` to `.cai/home`
+- Picks the first bindable port among `CDSW_APP_PORT` → `CDSW_PUBLIC_PORT` → `CDSW_READONLY_PORT` → `CURSOR_BRIDGE_PORT` and sets `CURSOR_BRIDGE_PORT`
 - Runs bootstrap if `agent` or `dist/cli.js` missing
 - Copies existing `auth.json` from project or user home when present; otherwise logs a warning and still starts
 - Sets `CURSOR_AGENT_BIN` and bundled Node via `CURSOR_API_PROXY_NODE`
