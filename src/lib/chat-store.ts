@@ -389,12 +389,23 @@ function mergeDiscoveredSessions(discovered: DiscoveredSession[]): DiscoveredSes
   return [...byId.values()];
 }
 
+export type ListChatSessionsOptions = {
+  /** Omit message bodies from web threads (lighter polling payloads). */
+  compactThreads?: boolean;
+};
+
+export type WebChatThreadListEntry = Omit<WebChatThread, "messages"> & {
+  messages?: ChatMessage[];
+};
+
 export async function listChatSessions(
   config: BridgeConfig,
+  options: ListChatSessionsOptions = {},
 ): Promise<{
   activeId: string | null;
-  threads: WebChatThread[];
+  threads: WebChatThreadListEntry[];
   sessions: ChatSessionSummary[];
+  compact?: boolean;
 }> {
   const store = await readChatStore(config);
   const webSummaries = store.threads.map(webThreadSummary);
@@ -415,7 +426,16 @@ export async function listChatSessions(
     .filter((s) => s.messageCount > 0)
     .sort((a, b) => b.createdAt - a.createdAt);
 
-  return { activeId: store.activeId, threads: store.threads, sessions };
+  const threads: WebChatThreadListEntry[] = options.compactThreads
+    ? store.threads.map(({ messages: _messages, ...meta }) => meta)
+    : store.threads;
+
+  return {
+    activeId: store.activeId,
+    threads,
+    sessions,
+    ...(options.compactThreads ? { compact: true } : {}),
+  };
 }
 
 export async function getChatSession(

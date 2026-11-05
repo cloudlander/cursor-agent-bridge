@@ -51,6 +51,10 @@ function testConfig(dir: string): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: false,
     bridgePackageVersion: "test",
+    routerEnabled: false,
+    routerConfigPath: "/tmp/model-router.json",
+    routerQuotaThreshold: 0.1,
+    routerTimeoutMs: 8000,
   };
 }
 
@@ -164,10 +168,15 @@ describe("chat store persistence", () => {
     expect(store.threads).toHaveLength(1);
     const listed = await listChatSessions(config);
     expect(listed.activeId).toBe("web-1");
-    expect(listed.threads[0]?.messages[0]?.content).toBe("ping");
+    expect(listed.threads[0]?.messages?.[0]?.content).toBe("ping");
     expect(listed.sessions.some((s) => s.id === "web-1" && s.source === "web")).toBe(
       true,
     );
+    const compact = await listChatSessions(config, { compactThreads: true });
+    expect(compact.compact).toBe(true);
+    expect(compact.threads).toHaveLength(1);
+    expect(compact.threads[0]?.messages).toBeUndefined();
+    expect(compact.threads[0]?.id).toBe("web-1");
   });
 
   it("excludes zero-message sessions and sorts by createdAt", async () => {

@@ -51,6 +51,7 @@
     sessionSyncBusy: false,
     /** threadId -> { updatedAt, messageCount } last seen from server/local. */
     sessionSnapshots: new Map(),
+    searchDebounce: null,
   };
 
   const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -286,6 +287,11 @@
     return escapeHtml(normalized).replace(/\n/g, '<br>');
   }
 
+  /** Cheap live preview while tokens stream (full markdown runs once on completion). */
+  function renderStreamingBubbleHtml(text) {
+    return escapeHtml(text || '').replace(/\n/g, '<br>');
+  }
+
   function wireCopyButtons(root) {
     root.querySelectorAll('.chat-code-copy[data-copy]').forEach(btn => {
       if (btn.dataset.wired) return;
@@ -508,11 +514,28 @@
     }
   }
 
-  function mergeServerWebThread(serverThread) {
+  function mergeServerWebThread(serverThread, compact = false) {
     if (!serverThread?.id || state.streams.has(serverThread.id)) return false;
     const idx = state.threads.findIndex(t => t.id === serverThread.id);
     const entry = catalogEntry(serverThread.id);
     const local = idx >= 0 ? state.threads[idx] : null;
+
+    if (compact) {
+      if (!local) return false;
+      if ((local.updatedAt ?? 0) > (serverThread.updatedAt ?? 0)) return false;
+      local.title = serverThread.title ?? local.title;
+      local.pinned = serverThread.pinned ?? local.pinned;
+      local.model = serverThread.model ?? local.model;
+      local.mode = serverThread.mode ?? local.mode;
+      local.updatedAt = Math.max(local.updatedAt ?? 0, serverThread.updatedAt ?? 0);
+      if (entry) {
+        entry.title = local.title || entry.title;
+        entry.pinned = local.pinned;
+        if (serverThread.updatedAt) entry.updatedAt = serverThread.updatedAt;
+      }
+      return true;
+    }
+
     if (local && (local.updatedAt ?? 0) > (serverThread.updatedAt ?? 0)) return false;
 
     const merged = {
@@ -534,10 +557,10 @@
     return true;
   }
 
-  function mergeServerWebThreads(serverThreads) {
+  function mergeServerWebThreads(serverThreads, compact = false) {
     let changed = false;
     for (const t of serverThreads || []) {
-      if (mergeServerWebThread(t)) changed = true;
+      if (mergeServerWebThread(t, compact)) changed = true;
     }
     return changed;
   }
@@ -625,16 +648,17 @@
     try {
       const prevCatalog = state.sessionCatalog;
       const [threadsRes, activeGens] = await Promise.all([
-        fetch('/api/chat/threads'),
+        fetch('/api/chat/threads?compact=1'),
         fetchActiveGenerations(),
       ]);
       if (!threadsRes.ok) return;
       const data = await threadsRes.json();
+      const compactList = data.compact === true;
 
       const nextCatalog = Array.isArray(data.sessions) ? data.sessions : [];
       const catalogChanged = sessionCatalogDiffers(prevCatalog, nextCatalog);
       state.sessionCatalog = nextCatalog;
-      const threadsChanged = mergeServerWebThreads(data.threads || []);
+      const threadsChanged = mergeServerWebThreads(data.threads || [], compactList);
 
       if (catalogChanged || threadsChanged) renderThreadList();
       await syncActiveSession(data);
@@ -923,6 +947,24 @@
     list.replaceChildren(...nodes);
   }
 
+  /** Update generating indicators without rebuilding the sidebar. */
+  function patchThreadListBusyState() {
+    const list = $('chat-thread-list');
+    if (!list) return;
+    list.querySelectorAll('.chat-thread-item[data-thread-id]').forEach(item => {
+      const id = item.getAttribute('data-thread-id');
+      const busy = id && state.streams.has(id);
+      item.classList.toggle('generating', !!busy);
+      let dot = item.querySelector('.chat-thread-busy');
+      if (busy && !dot) {
+        dot = el('span', { class: 'chat-thread-busy', title: 'Generating…' });
+        item.insertBefore(dot, item.firstChild);
+      } else if (!busy && dot) {
+        dot.remove();
+      }
+    });
+  }
+
   function buildThreadItem(s) {
     const title = el('span', { class: 'chat-thread-item-title' }, threadTitle(s.id));
     const busy = state.streams.has(s.id);
@@ -932,7 +974,8 @@
       title: readOnly ? 'Read-only session from server' : 'Editable web chat',
     }, SOURCE_LABELS[s.source] || s.source);
     const item = el('li', {
-      class: `chat-thread-item${s.id === state.activeId ? ' active' : ''}${readOnly ? ' readonly' : ''}`,
+      class: `chat-thread-item${s.id === state.activeId ? ' active' : ''}${readOnly ? ' readonly' : ''}${busy ? ' generating' : ''}`,
+      'data-thread-id': s.id,
       onclick: () => selectThread(s.id),
     },
       busy ? el('span', { class: 'chat-thread-busy', title: 'Generating…' }) : null,
@@ -1101,7 +1144,11 @@
       bubble.textContent = m.errorDetail || m.content || 'Generation failed';
     } else if (m.streaming && !m.content) {
       bubble.innerHTML = '<span class="chat-typing"><i></i><i></i><i></i></span>';
+    } else if (m.streaming) {
+      bubble.innerHTML = renderStreamingBubbleHtml(m.content);
+      bubble.classList.add('streaming-plain');
     } else {
+      bubble.classList.remove('streaming-plain');
       bubble.innerHTML = renderMarkdown(m.content);
     }
 
@@ -1161,8 +1208,8 @@
         const bubble = row.querySelector('.chat-bubble');
         if (bubble) {
           if (last.content) {
-            bubble.innerHTML = renderMarkdown(last.content);
-            wireCopyButtons(bubble);
+            bubble.classList.add('streaming-plain');
+            bubble.innerHTML = renderStreamingBubbleHtml(last.content);
           }
           const think = row.querySelector('.chat-think');
           if (last.reasoning) {
@@ -1375,7 +1422,7 @@
 
   function repaint(thread, streaming) {
     if (thread.id !== state.activeId) {
-      renderThreadList();
+      patchThreadListBusyState();
       return;
     }
     if (streaming) schedulePaint();
@@ -1423,7 +1470,7 @@
     state.streams.set(thread.id, ac);
     state.stickToBottom = true;
     renderComposerState();
-    renderThreadList();
+    patchThreadListBusyState();
 
     try {
       const res = await fetch(`/api/chat/generations/${encodeURIComponent(thread.id)}/stream`, {
@@ -1493,7 +1540,7 @@
     state.streams.set(thread.id, ac);
     state.stickToBottom = true;
     renderComposerState();
-    renderThreadList();
+    patchThreadListBusyState();
 
     try {
       const res = await fetch('/api/agent/chat', {
@@ -1989,7 +2036,11 @@
     const search = $('chat-search');
     search?.addEventListener('input', () => {
       state.searchQuery = search.value;
-      renderThreadList();
+      if (state.searchDebounce) clearTimeout(state.searchDebounce);
+      state.searchDebounce = setTimeout(() => {
+        state.searchDebounce = null;
+        renderThreadList();
+      }, 120);
     });
 
     const wrap = messagesWrap();
@@ -2088,7 +2139,6 @@
         if (e.matches) setSidebar(false);
       });
     } catch { /* ignore */ }
-    renderAll();
     const activeGens = await loadThreads();
     ensureActiveThread();
     if (state.activeId) void ensureExternalSessionLoaded(state.activeId);

@@ -47,6 +47,10 @@ function testConfig(dir: string): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: false,
     bridgePackageVersion: "test",
+    routerEnabled: false,
+    routerConfigPath: "/tmp/model-router.json",
+    routerQuotaThreshold: 0.1,
+    routerTimeoutMs: 8000,
   };
 }
 
@@ -115,6 +119,15 @@ describe("chat API", () => {
     };
     expect(body.activeId).toBe("abc");
     expect(body.threads[0]?.messages[0]?.content).toBe("hi");
+
+    const compact = await fetchJson(port, "/api/chat/threads?compact=1");
+    expect(compact.status).toBe(200);
+    const compactBody = compact.body as {
+      compact: boolean;
+      threads: Array<{ messages?: unknown[] }>;
+    };
+    expect(compactBody.compact).toBe(true);
+    expect(compactBody.threads[0]?.messages).toBeUndefined();
     } finally {
       process.env.HOME = prevHome;
       await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -123,7 +123,11 @@ export async function handleChatApi(
   }
 
   if (req.method === "GET" && pathname === "/api/chat/threads") {
-    const data = await listChatSessions(config);
+    const query = (req.url ?? "").includes("?")
+      ? new URL(req.url ?? "", "http://127.0.0.1").searchParams
+      : null;
+    const compactThreads = query?.get("compact") === "1";
+    const data = await listChatSessions(config, { compactThreads });
     json(res, 200, data);
     return;
   }
