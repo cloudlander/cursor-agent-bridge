@@ -81,6 +81,7 @@ Set `CURSOR_BRIDGE_UPSTREAM_SYNC=true` on the application only when this deploym
 | `npm not found` during build | Session lacks npm; agent bundle has only `node` | Re-run bootstrap; check `.cai/home/.local/bin/npm` |
 | `/usr/bin/env: 'node': No such file` after npm install | Bundled `node` was not on `PATH` (npm shebang) | Re-run bootstrap (symlinks `.cai/home/.local/bin/node`); or `ln -sf …/versions/*/node .cai/home/.local/bin/node` |
 | Dashboard looks like upstream only (no Chat/Plugins/Sign in) | Stale checkout or upstream `public/index.html` | Pull latest; run bootstrap or restart app (rebuilds when `public/` changed); open `/chat` and `/plugins` directly |
+| ACP chat in sidebar, empty transcript in `/chat` | Web Chat does not read ACP `store.db` | `npm run restore-acp-to-web -- .cai/home/.cursor-api-proxy/accounts/<account>/acp-sessions/<id>` (see README) |
 | Empty models list | CLI not logged in | Set `CURSOR_API_KEY` or `HOME=.cai/home agent login` |
 | Hang on startup | Stale `cursor --version` | `app.sh` already reaps; check `.cai/startup.log` |
 | `Permission denied` on `app.sh` / bootstrap after `git pull` | Script committed without executable bit (older clones) | `git pull` again after upstream fix, or `git update-index --chmod=+x app.sh scripts/*.sh` and commit; temporary: `bash app.sh` |
