@@ -123,6 +123,7 @@ Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (neve
 | CLI entry | `src/cli.ts`, `src/cli/*` | Published bin: `cursor-api-proxy` |
 | SDK consumer | `src/client.ts` | npm export `"."` |
 | CAI deploy | `app.py`, `app.sh`, `scripts/bootstrap-cai-application.sh`, `docs/CAI-DEPLOYMENT.md` | Not required for generic Node deploy |
+| ACP → Web Chat import | `scripts/restore-acp-to-web.mjs` | `npm run restore-acp-to-web -- <acp-session-dir>`; Node 22+ (`node:sqlite`) |
 | Tests | `src/**/*.test.ts` | Vitest; colocated with modules |
 
 ---

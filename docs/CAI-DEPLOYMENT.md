@@ -81,6 +81,7 @@ Set `CURSOR_BRIDGE_UPSTREAM_SYNC=true` on the application only when this deploym
 | `npm not found` during build | Session lacks npm; agent bundle has only `node` | Re-run bootstrap; check `.cai/home/.local/bin/npm` |
 | `/usr/bin/env: 'node': No such file` after npm install | Bundled `node` was not on `PATH` (npm shebang) | Re-run bootstrap (symlinks `.cai/home/.local/bin/node`); or `ln -sf …/versions/*/node .cai/home/.local/bin/node` |
 | Dashboard looks like upstream only (no Chat/Plugins/Sign in) | Stale checkout or upstream `public/index.html` | Pull latest; run bootstrap or restart app (rebuilds when `public/` changed); open `/chat` and `/plugins` directly |
+| ACP chat in sidebar, empty transcript in `/chat` | Web Chat does not read ACP `store.db` | `npm run restore-acp-to-web -- .cai/home/.cursor-api-proxy/accounts/<account>/acp-sessions/<id>` (see README) |
 | Empty models list | CLI not logged in | Set `CURSOR_API_KEY` or `HOME=.cai/home agent login` |
 | Hang on startup | Stale `cursor --version` | `app.sh` already reaps; check `.cai/startup.log` |
 | `Permission denied` on `app.sh` / bootstrap after `git pull` | Script committed without executable bit (older clones) | `git pull` again after upstream fix, or `git update-index --chmod=+x app.sh scripts/*.sh` and commit; temporary: `bash app.sh` |
@@ -92,25 +93,3 @@ Logs: `.cai/startup.log` (application stdout from `app.sh`), proxy stderr from t
 CAI **`app.sh` sets `CURSOR_BRIDGE_MODE=agent`** so the CLI may use tools against the workspace when `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false`. For read-only Q&A, set `CURSOR_BRIDGE_MODE=ask` on the application or pass `X-Cursor-Mode: ask` per request.
 
 See [AGENTS.md](../AGENTS.md) for code locations and sync instructions.
-
-## Auto model routing (optional)
-
-| Variable | Notes |
-|----------|--------|
-| `CURSOR_BRIDGE_ROUTER_ENABLED` | `true` to enable |
-| `CURSOR_BRIDGE_DEFAULT_MODEL` | Cost-efficient default and classifier model (e.g. Composer) |
-| `CURSOR_BRIDGE_ROUTER_CONFIG` | Defaults to `$HOME/.cursor-api-proxy/model-router.json` on CAI (`HOME=.cai/home`) |
-| `CURSOR_BRIDGE_ROUTER_QUOTA_THRESHOLD` | Stop routing below this remaining ratio (default `0.10`) |
-| `CURSOR_BRIDGE_ROUTER_MONTHLY_BUDGET_USD` | For usage-based quota when `/auth/usage` has no caps |
-
-Example `model-router.json`:
-
-```json
-{
-  "routes": [
-    { "model": "opus-4.6-thinking", "when": "large refactors and architecture" }
-  ]
-}
-```
-
-Responses include `X-Bridge-Routed-Model`, `X-Bridge-Route-Reason`, and `X-Bridge-Quota-Remaining`. `GET /health` includes a `router` summary when enabled.
