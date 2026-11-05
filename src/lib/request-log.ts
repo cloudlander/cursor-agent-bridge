@@ -3,6 +3,7 @@ import * as path from "node:path";
 
 import type { AccountStat } from "./account-pool.js";
 import type { ModelResolutionDecision } from "./model-map.js";
+import type { RouteDecision } from "./model-router.js";
 import { pathnameExcludedFromSessionStats } from "./session-log.js";
 
 export function logIncoming(
@@ -194,6 +195,20 @@ export function logTrafficResponse(
   }
   console.log(`  🤖 ${C.green}${preview}${C.reset}`);
   console.log(hr("─", 60));
+}
+
+export function logModelRoute(
+  verbose: boolean,
+  decision: RouteDecision,
+): void {
+  if (!verbose) return;
+  const remaining =
+    decision.remainingRatio === undefined
+      ? ""
+      : ` remaining=${decision.remainingRatio}`;
+  console.log(
+    `${ts()} ${C.bMagenta}ROUTE${C.reset} model=${C.bold}${decision.model}${C.reset} reason=${C.white}${decision.reason}${C.reset} routed=${decision.routed ? C.green + "yes" : C.dim + "no"}${C.reset}${remaining}`,
+  );
 }
 
 export function logModelResolution(

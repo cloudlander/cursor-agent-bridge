@@ -43,12 +43,15 @@ import {
   logAccountStats,
   logAgentError,
   logModelResolution,
+  logModelRoute,
   logTrafficRequest,
   logTrafficResponse,
   type TrafficMessage,
 } from "../request-log.js";
 import { recordProxyUsage } from "../token-usage.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
+import { applyModelRouteHeaders } from "../model-router.js";
+import { resolveModelWithOptionalRouting } from "../model-routing-flow.js";
 import { resolveRequestMode } from "../resolve-mode.js";
 import { sanitizeMessages } from "../sanitize.js";
 import { resolveWorkspace } from "../workspace.js";
@@ -540,14 +543,46 @@ export async function handleResponses(
   }
   const ownerKey = toolSessionOwnerKey(req, remoteAddress);
   const requested = normalizeModelId(body.model);
-  const model = resolveModel(requested, lastRequestedModelRef, config);
+  const cleanMessages = sanitizeMessages(responsesInputToMessages(body));
   const models = await getCachedCursorModels(config, modelCacheRef);
+  const availableCursorIds = models.map((m) => m.id);
+  const skipRouting =
+    config.useAcp && submittedToolOutputs.length > 0;
+  let assignedConfigDir: string | undefined;
+  const pickConfigDir = (): string | undefined => {
+    if (assignedConfigDir) return assignedConfigDir;
+    assignedConfigDir = getNextAccountConfigDir();
+    return assignedConfigDir;
+  };
+  const routingFlow: Awaited<
+    ReturnType<typeof resolveModelWithOptionalRouting>
+  > = skipRouting
+    ? {
+        model: resolveModel(requested, lastRequestedModelRef, config),
+        rememberModel: true,
+        skipSessionMemory: false,
+        configDir:
+          config.configDirs.length > 0 ? pickConfigDir() : undefined,
+      }
+    : await resolveModelWithOptionalRouting({
+        config,
+        requested,
+        lastRequestedModelRef,
+        messages: cleanMessages,
+        availableCursorIds,
+      });
+  if (routingFlow.routeDecision) {
+    applyModelRouteHeaders(res, routingFlow.routeDecision);
+    logModelRoute(config.verbose, routingFlow.routeDecision);
+  }
+  assignedConfigDir = routingFlow.configDir ?? assignedConfigDir;
+  const model = routingFlow.model;
   let decision;
   try {
     decision = resolveModelForExecution({
       requested: model,
       defaultModel: config.defaultModel,
-      availableCursorIds: models.map((m) => m.id),
+      availableCursorIds,
       reasoningEffort:
         typeof body.reasoning?.effort === "string"
           ? body.reasoning.effort
@@ -565,7 +600,9 @@ export async function handleResponses(
     return;
   }
   const cursorModel = decision.final;
-  rememberResolvedModel(cursorModel, lastRequestedModelRef);
+  if (routingFlow.rememberModel) {
+    rememberResolvedModel(cursorModel, lastRequestedModelRef);
+  }
   logModelResolution(config.verbose, decision);
   const displayModel =
     decision.requestedWasDefault && config.defaultModel !== "default"
@@ -576,8 +613,6 @@ export async function handleResponses(
   )?.name;
   const id = `resp_${randomUUID().replace(/-/g, "")}`;
   const createdAt = Math.floor(Date.now() / 1000);
-
-  const cleanMessages = sanitizeMessages(responsesInputToMessages(body));
   const structuredToolStart =
     config.useAcp &&
     selectedTools.length > 0 &&
@@ -801,7 +836,7 @@ export async function handleResponses(
     : undefined;
 
   if (structuredToolStart) {
-    const configDir = getNextAccountConfigDir();
+    const configDir = pickConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const startedAt = Date.now();
@@ -905,7 +940,7 @@ export async function handleResponses(
   }
 
   if (body.stream) {
-    const configDir = getNextAccountConfigDir();
+    const configDir = pickConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const streamStart = Date.now();
@@ -1153,7 +1188,7 @@ export async function handleResponses(
     return;
   }
 
-  const configDir = getNextAccountConfigDir();
+  const configDir = pickConfigDir();
   logAccountAssigned(configDir);
   reportRequestStart(configDir);
   const syncStart = Date.now();

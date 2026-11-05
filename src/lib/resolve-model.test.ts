@@ -33,6 +33,10 @@ function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: true,
     bridgePackageVersion: "0.0.0-test",
+    routerEnabled: false,
+    routerConfigPath: "/tmp/model-router.json",
+    routerQuotaThreshold: 0.1,
+    routerTimeoutMs: 8000,
     ...overrides,
   };
 }
@@ -55,5 +59,14 @@ describe("resolveModel memory behavior", () => {
     const ref: { current?: string } = {};
     rememberResolvedModel("default", ref);
     expect(ref.current).toBeUndefined();
+  });
+
+  it("skipSessionMemory ignores sticky model", () => {
+    const ref: { current?: string } = { current: "opus-4.6" };
+    const resolved = resolveModel(undefined, ref, config(), {
+      skipSessionMemory: true,
+    });
+    expect(resolved).toBe("auto");
+    expect(ref.current).toBe("opus-4.6");
   });
 });

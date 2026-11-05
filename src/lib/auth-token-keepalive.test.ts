@@ -47,6 +47,10 @@ const baseConfig: BridgeConfig = {
   winCmdlineMax: 30_000,
   contextPreamble: true,
   bridgePackageVersion: "test",
+    routerEnabled: false,
+    routerConfigPath: "/tmp/model-router.json",
+    routerQuotaThreshold: 0.1,
+    routerTimeoutMs: 8000,
 };
 
 describe("isAccessTokenExpiringSoon", () => {
