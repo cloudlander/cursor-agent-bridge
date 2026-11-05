@@ -41,6 +41,10 @@ function baseConfig(workspace: string): BridgeConfig {
     winCmdlineMax: 8191,
     contextPreamble: false,
     bridgePackageVersion: "test",
+    routerEnabled: false,
+    routerConfigPath: "/tmp/model-router.json",
+    routerQuotaThreshold: 0.1,
+    routerTimeoutMs: 8000,
   };
 }
 

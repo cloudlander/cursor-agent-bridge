@@ -33,6 +33,9 @@ describe("loadEnvConfig", () => {
     expect(loaded.promptViaStdin).toBe(false);
     expect(loaded.useAcp).toBe(true);
     expect(loaded.contextPreamble).toBe(true);
+    expect(loaded.routerEnabled).toBe(false);
+    expect(loaded.routerQuotaThreshold).toBe(0.1);
+    expect(loaded.routerTimeoutMs).toBe(8000);
   });
 
   it("applies env aliases with expected precedence", () => {

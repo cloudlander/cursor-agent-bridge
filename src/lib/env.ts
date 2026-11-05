@@ -52,6 +52,11 @@ export type LoadedEnv = {
   configDirs: string[];
   /** When true, runs each config dir on its own incrementing port starting from `port` */
   multiPort: boolean;
+  routerEnabled: boolean;
+  routerConfigPath: string;
+  routerQuotaThreshold: number;
+  routerMonthlyBudgetUsd?: number;
+  routerTimeoutMs: number;
   /**
    * Upper bound (UTF-16 code units, pessimistic) for the Windows CreateProcess command line.
    * On win32 the proxy truncates the prompt tail to stay under this budget.
@@ -436,6 +441,36 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
 
   const contextExtra = envContextExtra(env);
 
+  const routerEnabled = envBool(env, ["CURSOR_BRIDGE_ROUTER_ENABLED"], false);
+  const routerConfigPath = (() => {
+    const explicit = resolveAbsolutePath(
+      envString(env, ["CURSOR_BRIDGE_ROUTER_CONFIG"]),
+      cwd,
+    );
+    if (explicit) return explicit;
+    return path.join(path.dirname(sessionsLogPath), "model-router.json");
+  })();
+  const routerQuotaThresholdRaw = envNumber(
+    env,
+    ["CURSOR_BRIDGE_ROUTER_QUOTA_THRESHOLD"],
+    0.1,
+  );
+  const routerQuotaThreshold =
+    routerQuotaThresholdRaw >= 0 && routerQuotaThresholdRaw <= 1
+      ? routerQuotaThresholdRaw
+      : 0.1;
+  const routerMonthlyBudgetRaw = envString(env, [
+    "CURSOR_BRIDGE_ROUTER_MONTHLY_BUDGET_USD",
+  ]);
+  const routerMonthlyBudgetUsd = routerMonthlyBudgetRaw
+    ? Number(routerMonthlyBudgetRaw)
+    : undefined;
+  const routerTimeoutMs = envNumber(
+    env,
+    ["CURSOR_BRIDGE_ROUTER_TIMEOUT_MS"],
+    8000,
+  );
+
   const chatOnlyWorkspaceExplicit = Object.prototype.hasOwnProperty.call(
     env,
     "CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE",
@@ -491,6 +526,16 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     winCmdlineMax,
     contextPreamble,
     contextExtra,
+    routerEnabled,
+    routerConfigPath,
+    routerQuotaThreshold,
+    routerMonthlyBudgetUsd:
+      routerMonthlyBudgetUsd != null &&
+      Number.isFinite(routerMonthlyBudgetUsd) &&
+      routerMonthlyBudgetUsd > 0
+        ? routerMonthlyBudgetUsd
+        : undefined,
+    routerTimeoutMs,
   };
 }
 

@@ -16,6 +16,7 @@ import { ToolSessionRegistry } from "./tool-session-registry.js";
 import { appsDirOf } from "./dynamic-apps.js";
 import { maybeAutoSyncCliCache, redeployAll } from "./plugins/manager.js";
 import { startUpstreamSyncScheduler } from "./upstream-sync.js";
+import { validateModelRouterTableAtStartup } from "./model-router-config.js";
 
 function acpLauncherLabel(acpArgs: string[]): string {
   const first = acpArgs[0];
@@ -203,6 +204,10 @@ export function setupGracefulShutdown(
 
 function startSingleServer(opts: BridgeServerOptions): BridgeHttpServer {
   const { config } = opts;
+
+  if (config.routerEnabled) {
+    validateModelRouterTableAtStartup(config.routerConfigPath, true);
+  }
 
   const toolSessions = new ToolSessionRegistry();
   const handleRequest = createRequestListener(opts, { toolSessions });

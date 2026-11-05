@@ -30,12 +30,15 @@ import {
   logAccountAssigned,
   logAccountStats,
   logModelResolution,
+  logModelRoute,
   logTrafficRequest,
   logTrafficResponse,
   type TrafficMessage,
 } from "../request-log.js";
 import { recordProxyUsage } from "../token-usage.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
+import { applyModelRouteHeaders } from "../model-router.js";
+import { resolveModelWithOptionalRouting } from "../model-routing-flow.js";
 import { resolveRequestMode } from "../resolve-mode.js";
 import { resolveWorkspace } from "../workspace.js";
 import { buildBridgeContextPreamble, BRIDGE_AGENT_PROMPT_SEPARATOR } from "../bridge-context-preamble.js";
@@ -364,14 +367,46 @@ export async function handleChatCompletions(
   }
   const ownerKey = toolSessionOwnerKey(req, remoteAddress);
   const requested = normalizeModelId(body.model);
-  const model = resolveModel(requested, lastRequestedModelRef, config);
+  const cleanMessages = sanitizeMessages(body.messages ?? []);
   const models = await getCachedCursorModels(config, modelCacheRef);
+  const availableCursorIds = models.map((m) => m.id);
+  const skipRouting =
+    config.useAcp && submittedToolOutputs.length > 0;
+  let assignedConfigDir: string | undefined;
+  const pickConfigDir = (): string | undefined => {
+    if (assignedConfigDir) return assignedConfigDir;
+    assignedConfigDir = getNextAccountConfigDir();
+    return assignedConfigDir;
+  };
+  const routingFlow: Awaited<
+    ReturnType<typeof resolveModelWithOptionalRouting>
+  > = skipRouting
+    ? {
+        model: resolveModel(requested, lastRequestedModelRef, config),
+        rememberModel: true,
+        skipSessionMemory: false,
+        configDir:
+          config.configDirs.length > 0 ? pickConfigDir() : undefined,
+      }
+    : await resolveModelWithOptionalRouting({
+        config,
+        requested,
+        lastRequestedModelRef,
+        messages: cleanMessages,
+        availableCursorIds,
+      });
+  if (routingFlow.routeDecision) {
+    applyModelRouteHeaders(res, routingFlow.routeDecision);
+    logModelRoute(config.verbose, routingFlow.routeDecision);
+  }
+  assignedConfigDir = routingFlow.configDir ?? assignedConfigDir;
+  const model = routingFlow.model;
   let decision;
   try {
     decision = resolveModelForExecution({
       requested: model,
       defaultModel: config.defaultModel,
-      availableCursorIds: models.map((m) => m.id),
+      availableCursorIds,
       reasoningEffort: body.reasoning_effort,
     });
   } catch (error) {
@@ -386,7 +421,9 @@ export async function handleChatCompletions(
     return;
   }
   const cursorModel = decision.final;
-  rememberResolvedModel(cursorModel, lastRequestedModelRef);
+  if (routingFlow.rememberModel) {
+    rememberResolvedModel(cursorModel, lastRequestedModelRef);
+  }
   logModelResolution(config.verbose, decision);
   // When request is "default", use defaultModel for response display (dashboard) if set; else echo "default"
   const displayModel =
@@ -398,8 +435,6 @@ export async function handleChatCompletions(
   )?.name;
   const id = `chatcmpl_${randomUUID().replace(/-/g, "")}`;
   const created = Math.floor(Date.now() / 1000);
-
-  const cleanMessages = sanitizeMessages(body.messages ?? []);
 
   const structuredToolStart =
     config.useAcp &&
@@ -613,7 +648,7 @@ export async function handleChatCompletions(
     : undefined;
 
   if (structuredToolStart) {
-    const configDir = getNextAccountConfigDir();
+    const configDir = pickConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const startedAt = Date.now();
@@ -732,7 +767,7 @@ export async function handleChatCompletions(
       agentSignal = abortController.signal;
     }
 
-    const configDir = getNextAccountConfigDir();
+    const configDir = pickConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const streamStart = Date.now();
@@ -1011,7 +1046,7 @@ export async function handleChatCompletions(
     return;
   }
 
-  const configDir = getNextAccountConfigDir();
+  const configDir = pickConfigDir();
   logAccountAssigned(configDir);
   reportRequestStart(configDir);
   const syncStart = Date.now();
