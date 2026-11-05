@@ -36,6 +36,11 @@ export type CatalogEntry = {
 // git
 // ---------------------------------------------------------------------------
 
+/** True when `ref` is a git object id (commit SHA), not a branch or tag name. */
+export function isGitCommitRef(ref: string): boolean {
+  return /^[0-9a-f]{40}$/i.test(ref.trim());
+}
+
 export function validateGitUrl(url: unknown): string {
   if (typeof url !== "string") throw new ApiError(400, "url is required");
   const u = url.trim();
@@ -239,6 +244,19 @@ function copyTree(from: string, to: string): void {
 
 export type FetchedPlugin = { dir: string; commit?: string; cleanup: () => void };
 
+async function cloneGitRepo(url: string, ref: string | undefined, dest: string): Promise<void> {
+  const safeUrl = validateGitUrl(url);
+  if (ref && isGitCommitRef(ref)) {
+    await git(["clone", "--depth", "1", "--no-checkout", "--", safeUrl, dest]);
+    await git(["fetch", "--depth", "1", "origin", ref], dest);
+    await git(["checkout", ref], dest);
+    return;
+  }
+  const args = ["clone", "--depth", "1"];
+  if (ref) args.push("--branch", ref);
+  await git([...args, "--", safeUrl, dest]);
+}
+
 /** Materialize a plugin's source tree into a fresh staging directory. */
 export async function fetchPluginSource(
   config: BridgeConfig,
@@ -278,9 +296,7 @@ export async function fetchPluginSource(
     }
     const tmp = `${staging}-clone`;
     cleanups.push(() => fs.rmSync(tmp, { recursive: true, force: true }));
-    const args = ["clone", "--depth", "1"];
-    if (source.ref) args.push("--branch", source.ref);
-    await git([...args, "--", validateGitUrl(source.url), tmp]);
+    await cloneGitRepo(source.url, source.ref, tmp);
     const commit = await git(["rev-parse", "HEAD"], tmp);
     const sub = source.path ? path.join(tmp, safeRelPath(source.path)) : tmp;
     if (!fs.existsSync(sub) || !isInside(tmp, sub)) throw new ApiError(404, `path not found in repo: ${source.path}`);
