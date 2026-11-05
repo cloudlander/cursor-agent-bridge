@@ -143,8 +143,13 @@ The plist label is **`com.cursor-api-proxy`**. Use **`cursor-api-proxy disable`*
 | `docs/WIKI.md` | Wiki source |
 | `scripts/cursor-api-proxy` | Launcher script (symlink target) |
 | `~/.cursor-api-proxy/sessions.log` | Default request log (one line per finished response) |
+| `~/.cursor-api-proxy/chat-store.json` | Web Chat threads (`/chat`) |
 | `~/.cursor-api-proxy/proxy.log` | Launcher / background stdout+stderr |
 | `~/.cursor-api-proxy/proxy.pid` | Written by the running Node process for the dashboard |
+| `scripts/restore-acp-to-web.mjs` | Import an ACP `store.db` session into Web Chat (see README) |
+
+On Cloudera AI, `HOME` is usually `.cai/home/` under the project; the same
+`.cursor-api-proxy/` paths live there.
 
 ---
 
@@ -163,6 +168,18 @@ Install the launcher to `~/.local/bin/cursor-api-proxy` (see [install](#install-
 **Dashboard shows “no requests”**
 
 Stats are parsed from **`sessions.log`** lines in the form logged by the proxy (`ISO8601 METHOD PATH REMOTE STATUS`). If the log path was overridden (`CURSOR_BRIDGE_SESSIONS_LOG`), the dashboard reads that file instead.
+
+**Web Chat: ACP session in the sidebar but empty in the middle**
+
+ACP threads are catalog-only in `/chat` (messages stay in
+`…/acp-sessions/<id>/store.db`). Import for read-only browsing:
+
+```bash
+npm run restore-acp-to-web -- ~/.cursor-api-proxy/accounts/<account>/acp-sessions/<session-id>
+```
+
+Then hard-refresh `/chat` and open the new web thread (title ends with
+`(restored from ACP)` unless you passed a custom title).
 
 ---
 

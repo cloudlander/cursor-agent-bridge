@@ -604,7 +604,7 @@
     }
   }
 
-  async function syncActiveSession(data) {
+  async function syncActiveSession(data, compact = false) {
     const id = state.activeId;
     if (!id || state.streams.has(id) || state.editingIdx != null || state.persistTimer) return;
 
@@ -612,11 +612,12 @@
     const serverThread = (data.threads || []).find(t => t.id === id);
     const local = state.threads.find(t => t.id === id);
     const snap = state.sessionSnapshots.get(id);
+    const serverHasMessages = !!serverThread && Array.isArray(serverThread.messages);
 
     const serverUpdatedAt = Math.max(serverThread?.updatedAt ?? 0, entry?.updatedAt ?? 0);
-    const serverMsgCount = serverThread
+    const serverMsgCount = serverHasMessages && !compact
       ? countStableMessages(serverThread.messages)
-      : (entry?.messageCount ?? 0);
+      : (entry?.messageCount ?? (serverHasMessages ? countStableMessages(serverThread.messages) : 0));
 
     const localUpdatedAt = Math.max(snap?.updatedAt ?? 0, local?.updatedAt ?? 0);
     const localMsgCount = snap?.messageCount ?? countStableMessages(local?.messages);
@@ -627,12 +628,12 @@
     if (!stale) return;
 
     let changed = false;
-    if (serverThread && !entry?.readOnly) {
-      changed = mergeServerWebThread(serverThread);
-    } else if (entry?.readOnly || !serverThread) {
+    if (entry?.readOnly || !serverThread) {
       changed = await fetchAndApplySession(id);
-    } else if (serverThread) {
-      changed = mergeServerWebThread(serverThread);
+    } else if (compact || !serverHasMessages) {
+      changed = await fetchAndApplySession(id);
+    } else {
+      changed = mergeServerWebThread(serverThread, false);
     }
 
     if (changed) {
@@ -661,7 +662,7 @@
       const threadsChanged = mergeServerWebThreads(data.threads || [], compactList);
 
       if (catalogChanged || threadsChanged) renderThreadList();
-      await syncActiveSession(data);
+      await syncActiveSession(data, compactList);
       await reconnectActiveGenerations(activeGens);
     } catch {
       /* ignore transient poll errors */
@@ -690,33 +691,17 @@
 
   async function ensureExternalSessionLoaded(id) {
     const entry = catalogEntry(id);
-    if (!entry?.readOnly) return;
+    if (!entry) return;
     if (state.loadingSessionId === id) return;
     const existing = state.threads.find(t => t.id === id);
-    if (existing?.messages?.length) return;
+    const localCount = countStableMessages(existing?.messages);
+    const expectCount = entry.messageCount ?? 0;
+    if (localCount > 0 && (!expectCount || localCount >= expectCount)) return;
+    if (!entry.readOnly && !expectCount && localCount === 0) return;
     state.loadingSessionId = id;
     try {
-      const r = await fetch(`/api/chat/threads/${encodeURIComponent(id)}`);
-      if (!r.ok) throw new Error(String(r.status));
-      const body = await r.json();
-      const session = body.session;
-      const messages = session?.messages || [];
-      const thread = {
-        id,
-        source: entry.source,
-        title: entry.title,
-        pinned: false,
-        createdAt: entry.createdAt,
-        updatedAt: entry.updatedAt,
-        model: entry.model || '',
-        mode: entry.mode || '',
-        messages,
-        readOnly: true,
-      };
-      const idx = state.threads.findIndex(t => t.id === id);
-      if (idx >= 0) state.threads[idx] = thread;
-      else state.threads.push(thread);
-      updateSessionSnapshot(id);
+      const ok = await fetchAndApplySession(id);
+      if (!ok) throw new Error('missing session');
       if (state.activeId === id) renderMessages();
     } catch {
       toast('Could not load session messages');

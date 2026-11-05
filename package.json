@@ -10,6 +10,7 @@
     "public",
     "docs",
     "scripts/cursor-api-proxy",
+    "scripts/restore-acp-to-web.mjs",
     "package.json"
   ],
   "main": "./dist/client.js",
@@ -32,6 +33,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "restore-acp-to-web": "node scripts/restore-acp-to-web.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "engines": {
