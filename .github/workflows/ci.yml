@@ -18,6 +18,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify shell script executable bit in Git
+        run: |
+          set -euo pipefail
+          must_exec=(
+            app.sh
+            scripts/bootstrap-cai-application.sh
+            scripts/bootstrap-cai-application.py
+            scripts/create-cai-application.sh
+            scripts/cursor-api-proxy
+            scripts/env.local.sh
+            scripts/start-local.sh
+            widget-mac/install.sh
+            widget-mac/uninstall.sh
+          )
+          fail=0
+          for f in "${must_exec[@]}"; do
+            mode="$(git ls-files -s -- "$f" | awk '{print $1}')"
+            if [[ "$mode" != "100755" ]]; then
+              echo "::error:: $f must be mode 100755 in Git (got ${mode:-missing}); run: git update-index --chmod=+x $f"
+              fail=1
+            fi
+          done
+          exit "$fail"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:

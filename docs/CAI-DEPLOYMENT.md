@@ -83,6 +83,7 @@ Set `CURSOR_BRIDGE_UPSTREAM_SYNC=true` on the application only when this deploym
 | Dashboard looks like upstream only (no Chat/Plugins/Sign in) | Stale checkout or upstream `public/index.html` | Pull latest; run bootstrap or restart app (rebuilds when `public/` changed); open `/chat` and `/plugins` directly |
 | Empty models list | CLI not logged in | Set `CURSOR_API_KEY` or `HOME=.cai/home agent login` |
 | Hang on startup | Stale `cursor --version` | `app.sh` already reaps; check `.cai/startup.log` |
+| `Permission denied` on `app.sh` / bootstrap after `git pull` | Script committed without executable bit (older clones) | `git pull` again after upstream fix, or `git update-index --chmod=+x app.sh scripts/*.sh` and commit; temporary: `bash app.sh` |
 
 Logs: `.cai/startup.log` (application stdout from `app.sh`), proxy stderr from the Node process, `sessions.log` under configured `HOME`.
 
