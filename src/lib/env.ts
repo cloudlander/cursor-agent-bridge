@@ -441,14 +441,18 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
 
   const contextExtra = envContextExtra(env);
 
-  const routerEnabled = envBool(env, ["CURSOR_BRIDGE_ROUTER_ENABLED"], false);
+  const workspace =
+    resolveAbsolutePath(envString(env, ["CURSOR_BRIDGE_WORKSPACE"]), cwd) ??
+    cwd;
+
+  const routerEnabled = envBool(env, ["CURSOR_BRIDGE_ROUTER_ENABLED"], true);
   const routerConfigPath = (() => {
     const explicit = resolveAbsolutePath(
       envString(env, ["CURSOR_BRIDGE_ROUTER_CONFIG"]),
       cwd,
     );
     if (explicit) return explicit;
-    return path.join(path.dirname(sessionsLogPath), "model-router.json");
+    return path.join(workspace, "model-router.json");
   })();
   const routerQuotaThresholdRaw = envNumber(
     env,
@@ -459,12 +463,14 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     routerQuotaThresholdRaw >= 0 && routerQuotaThresholdRaw <= 1
       ? routerQuotaThresholdRaw
       : 0.1;
-  const routerMonthlyBudgetRaw = envString(env, [
-    "CURSOR_BRIDGE_ROUTER_MONTHLY_BUDGET_USD",
-  ]);
-  const routerMonthlyBudgetUsd = routerMonthlyBudgetRaw
-    ? Number(routerMonthlyBudgetRaw)
-    : undefined;
+  const routerMonthlyBudgetRaw = envNumber(
+    env,
+    ["CURSOR_BRIDGE_ROUTER_MONTHLY_BUDGET_USD"],
+    300,
+  );
+  const routerMonthlyBudgetUsd = Number.isFinite(routerMonthlyBudgetRaw)
+    ? routerMonthlyBudgetRaw
+    : 300;
   const routerTimeoutMs = envNumber(
     env,
     ["CURSOR_BRIDGE_ROUTER_TIMEOUT_MS"],
@@ -493,9 +499,7 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     force,
     approveMcps: envBool(env, ["CURSOR_BRIDGE_APPROVE_MCPS"], false),
     strictModel: envBool(env, ["CURSOR_BRIDGE_STRICT_MODEL"], true),
-    workspace:
-      resolveAbsolutePath(envString(env, ["CURSOR_BRIDGE_WORKSPACE"]), cwd) ??
-      cwd,
+    workspace,
     timeoutMs: envNumber(env, ["CURSOR_BRIDGE_TIMEOUT_MS"], 300_000),
     tlsCertPath: resolveAbsolutePath(
       envString(env, ["CURSOR_BRIDGE_TLS_CERT"]),

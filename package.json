@@ -9,6 +9,7 @@
     "!dist/**/*.test.*",
     "public",
     "docs",
+    "model-router.json",
     "scripts/cursor-api-proxy",
     "scripts/restore-acp-to-web.mjs",
     "package.json"

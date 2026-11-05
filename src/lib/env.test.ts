@@ -33,8 +33,12 @@ describe("loadEnvConfig", () => {
     expect(loaded.promptViaStdin).toBe(false);
     expect(loaded.useAcp).toBe(true);
     expect(loaded.contextPreamble).toBe(true);
-    expect(loaded.routerEnabled).toBe(false);
+    expect(loaded.routerEnabled).toBe(true);
+    expect(loaded.routerConfigPath).toBe(
+      path.join("/workspace", "model-router.json"),
+    );
     expect(loaded.routerQuotaThreshold).toBe(0.1);
+    expect(loaded.routerMonthlyBudgetUsd).toBe(300);
     expect(loaded.routerTimeoutMs).toBe(8000);
   });
 

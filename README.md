@@ -352,7 +352,12 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 | `CURSOR_BRIDGE_DSH_AUTO_MODE` | `false` | When enabled, requests whose system/developer content contains the DSH system marker use Cursor `plan` while the plan marker is present and `agent` otherwise. Ordinary user content is never inspected. Explicit body/header modes still win. |
 | `CURSOR_BRIDGE_DSH_SYSTEM_MARKER` | `You are an AI agent powered by DeepSeek Harness.` | Exact substring identifying trusted DSH-owned system/developer content for auto-mode. |
 | `CURSOR_BRIDGE_DSH_PLAN_MARKER` | `You are in plan mode.` | Exact substring emitted by DSH while `/plan` is active. |
-| `CURSOR_BRIDGE_DEFAULT_MODEL` | `auto` | Default model when request omits one |
+| `CURSOR_BRIDGE_DEFAULT_MODEL` | `auto` | Default model when request omits one. With routing enabled, also the cost-efficient model and the classifier model. |
+| `CURSOR_BRIDGE_ROUTER_ENABLED` | `true` | When `true`, requests with no model or `model: auto` are classified into up to five routes from `model-router.json` before the main agent run. `model: default` and explicit model IDs are not re-routed. Applies to `/v1/chat/completions`, `/v1/responses`, and `/v1/messages`. When routing is off, `auto` is passed through to Cursor as today. |
+| `CURSOR_BRIDGE_ROUTER_CONFIG` | `<workspace>/model-router.json` | Optional override path for the JSON route table: `{ "routes": [{ "model": "…", "when": "…" }] }` (max 5). Not set in CAI project metadata; edit `model-router.json` in the project workspace or use Dashboard `PUT /api/router/config`. Unknown model IDs are ignored with a warning. On first start, if the file is missing, the bridge writes the shipped default table. |
+| `CURSOR_BRIDGE_ROUTER_QUOTA_THRESHOLD` | `0.10` | Stop routing when remaining quota ratio for the selected account is below this value (0–1). |
+| `CURSOR_BRIDGE_ROUTER_MONTHLY_BUDGET_USD` | `300` | Monthly USD budget used with cursor.com billed usage when `/auth/usage` has no explicit caps. Set to `0` to disable budget-based quota (routing then relies on API caps only). |
+| `CURSOR_BRIDGE_ROUTER_TIMEOUT_MS` | `8000` | Timeout for the classifier `ask` call (ms). |
 | `CURSOR_BRIDGE_STRICT_MODEL` | `true` | Reject a requested model when Cursor's CLI/ACP catalogs cannot match it instead of silently selecting the ACP session default. |
 | `CURSOR_BRIDGE_FORCE` | `false` | Pass `--force` to Cursor CLI |
 | `CURSOR_BRIDGE_APPROVE_MCPS` | `false` | Pass `--approve-mcps` to Cursor CLI |

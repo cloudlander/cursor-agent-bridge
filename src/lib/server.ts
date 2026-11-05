@@ -16,7 +16,10 @@ import { ToolSessionRegistry } from "./tool-session-registry.js";
 import { appsDirOf } from "./dynamic-apps.js";
 import { maybeAutoSyncCliCache, redeployAll } from "./plugins/manager.js";
 import { startUpstreamSyncScheduler } from "./upstream-sync.js";
-import { validateModelRouterTableAtStartup } from "./model-router-config.js";
+import {
+  ensureModelRouterConfigFile,
+  validateModelRouterTableAtStartup,
+} from "./model-router-config.js";
 
 function acpLauncherLabel(acpArgs: string[]): string {
   const first = acpArgs[0];
@@ -206,6 +209,7 @@ function startSingleServer(opts: BridgeServerOptions): BridgeHttpServer {
   const { config } = opts;
 
   if (config.routerEnabled) {
+    ensureModelRouterConfigFile(config.routerConfigPath);
     validateModelRouterTableAtStartup(config.routerConfigPath, true);
   }
 

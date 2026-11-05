@@ -1,3 +1,5 @@
+import { markAccountQuotaExhausted } from "./quota-monitor.js";
+
 type AccountStatus = {
   configDir: string;
   activeRequests: number;
@@ -168,6 +170,7 @@ export function reportRateLimit(configDir?: string, penaltyMs?: number): void {
   if (globalPool) {
     globalPool.reportRateLimit(configDir, penaltyMs);
   }
+  markAccountQuotaExhausted(configDir);
 }
 
 export function reportRequestSuccess(

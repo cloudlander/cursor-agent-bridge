@@ -29,10 +29,13 @@ import {
   logAccountAssigned,
   logAccountStats,
   logModelResolution,
+  logModelRoute,
   logTrafficRequest,
   logTrafficResponse,
   type TrafficMessage,
 } from "../request-log.js";
+import { applyModelRouteHeaders } from "../model-router.js";
+import { resolveModelWithOptionalRouting } from "../model-routing-flow.js";
 import { normalizeAssistantReplyText } from "../assistant-text-dedupe.js";
 import { recordProxyUsage } from "../token-usage.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
@@ -316,15 +319,49 @@ export async function handleAnthropicMessages(
   }
   const ownerKey = toolSessionOwnerKey(req, remoteAddress);
   const requested = normalizeModelId(body.model);
-  const model = resolveModel(requested, lastRequestedModelRef, config);
+  const cleanMessages = sanitizeMessages(
+    body.messages ?? [],
+  ) as AnthropicMessagesRequest["messages"];
   const models = await getCachedCursorModels(config, modelCacheRef);
+  const availableCursorIds = models.map((m) => m.id);
+  const skipRouting =
+    config.useAcp && submittedToolOutputs.length > 0;
+  let assignedConfigDir: string | undefined;
+  const pickConfigDir = (): string | undefined => {
+    if (assignedConfigDir) return assignedConfigDir;
+    assignedConfigDir = getNextAccountConfigDir();
+    return assignedConfigDir;
+  };
+  const routingFlow = skipRouting
+    ? {
+        model: resolveModel(requested, lastRequestedModelRef, config),
+        rememberModel: true,
+        skipSessionMemory: false,
+        configDir:
+          config.configDirs.length > 0 ? pickConfigDir() : undefined,
+      }
+    : await resolveModelWithOptionalRouting({
+        config,
+        requested,
+        lastRequestedModelRef,
+        messages: cleanMessages,
+        availableCursorIds,
+      });
+  if (routingFlow.routeDecision) {
+    applyModelRouteHeaders(res, routingFlow.routeDecision);
+    logModelRoute(config.verbose, routingFlow.routeDecision);
+  }
+  assignedConfigDir = routingFlow.configDir ?? assignedConfigDir;
+  const model = routingFlow.model;
   const decision = resolveModelForExecution({
     requested: model,
     defaultModel: config.defaultModel,
-    availableCursorIds: models.map((m) => m.id),
+    availableCursorIds,
   });
   const cursorModel = decision.final;
-  rememberResolvedModel(cursorModel, lastRequestedModelRef);
+  if (routingFlow.rememberModel) {
+    rememberResolvedModel(cursorModel, lastRequestedModelRef);
+  }
   logModelResolution(config.verbose, decision);
   const displayModel =
     decision.requestedWasDefault && config.defaultModel !== "default"
@@ -336,9 +373,6 @@ export async function handleAnthropicMessages(
   const msgId = `msg_${randomUUID().replace(/-/g, "")}`;
 
   const cleanSystem = sanitizeSystem(body.system);
-  const cleanMessages = sanitizeMessages(
-    body.messages ?? [],
-  ) as AnthropicMessagesRequest["messages"];
 
   const structuredToolStart =
     config.useAcp &&
@@ -569,7 +603,7 @@ export async function handleAnthropicMessages(
     config.promptViaStdin || config.useAcp ? agentPrompt : undefined;
 
   if (structuredToolStart) {
-    const configDir = getNextAccountConfigDir();
+    const configDir = pickConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const startedAt = Date.now();
@@ -685,7 +719,7 @@ export async function handleAnthropicMessages(
       content_block: { type: "text", text: "" },
     });
 
-    const configDir = getNextAccountConfigDir();
+    const configDir = pickConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const streamStart = Date.now();
@@ -885,7 +919,7 @@ export async function handleAnthropicMessages(
     return;
   }
 
-  const configDir = getNextAccountConfigDir();
+  const configDir = pickConfigDir();
   logAccountAssigned(configDir);
   reportRequestStart(configDir);
   const syncStart = Date.now();

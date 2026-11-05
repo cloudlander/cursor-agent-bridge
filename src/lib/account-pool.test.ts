@@ -7,6 +7,10 @@ import {
   reportRequestEnd,
   reportRateLimit,
 } from "./account-pool.js";
+import {
+  clearQuotaMonitorCacheForTests,
+  getAccountQuotaRemainingRatio,
+} from "./quota-monitor.js";
 
 describe("AccountPool", () => {
   it("should return undefined if no config dirs provided", () => {
@@ -193,6 +197,14 @@ describe("Global account pool functions", () => {
     expect(() => reportRequestStart("/dir1")).not.toThrow();
     expect(() => reportRequestEnd("/dir1")).not.toThrow();
     expect(() => reportRateLimit("/dir1", 1000)).not.toThrow();
+  });
+
+  it("reportRateLimit marks quota exhausted for model routing", async () => {
+    clearQuotaMonitorCacheForTests();
+    reportRateLimit("/routing-account", 60_000);
+    expect(
+      await getAccountQuotaRemainingRatio({ configDir: "/routing-account" }),
+    ).toBe(0);
   });
 
   it("global pool functions work after init", () => {

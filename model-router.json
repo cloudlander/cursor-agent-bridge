@@ -1,0 +1,24 @@
+{
+  "routes": [
+    {
+      "model": "composer-2.5",
+      "when": "Small, localized changes: typo fixes, single-file edits, adding a unit test, explaining a short code snippet, or formatting and comment-only updates where speed matters more than deep reasoning."
+    },
+    {
+      "model": "claude-4.6-sonnet-medium",
+      "when": "Everyday feature work in one or two modules: implement an API endpoint, fix a regression with a clear stack trace, write integration tests, or refactor a class without changing system-wide architecture."
+    },
+    {
+      "model": "claude-4.6-sonnet-medium-thinking",
+      "when": "Multi-step problems that need visible reasoning: design a data model and migration plan, compare two implementation approaches with tradeoffs, debug intermittent failures from logs, or plan a feature before coding."
+    },
+    {
+      "model": "claude-opus-5-5-high",
+      "when": "Large or cross-cutting code changes: refactor across many packages, reconcile conflicting patterns, performance work that touches hot paths, or subtle bugs that span services, configs, and tests."
+    },
+    {
+      "model": "claude-opus-5-thinking-max",
+      "when": "Highest-complexity work: greenfield system architecture, security-sensitive flows, distributed-system failure modes, or open-ended research where the agent must explore alternatives before committing to a design."
+    }
+  ]
+}

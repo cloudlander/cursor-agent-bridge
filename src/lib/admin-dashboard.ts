@@ -37,6 +37,11 @@ import {
   handleUpstreamSyncApi,
   upstreamSyncApiMatches,
 } from "./upstream-sync.js";
+import {
+  loadModelRouterTable,
+  saveModelRouterTable,
+} from "./model-router-config.js";
+import { readBody } from "./http.js";
 
 const ACCOUNT_USAGE_CACHE_MS = 45_000;
 let accountUsageCache:
@@ -295,6 +300,7 @@ export function adminDashboardMatches(
   if (req.method === "POST" && pathname === "/api/agent-login") return true;
   if (req.method === "POST" && pathname === "/api/agent-login/cancel") return true;
   if (req.method === "POST" && pathname === "/api/apps/deploy") return true;
+  if (pathname === "/api/router/config") return true;
   if (upstreamSyncApiMatches(req)) return true;
   if (chatApiMatches(req)) return true;
   return false;
@@ -441,6 +447,50 @@ export function handleAdminDashboard(
   }
   if (req.method === "GET" && pathname === "/api/config") {
     return json(res, 200, sanitizedBridgeConfig(config));
+  }
+  if (req.method === "GET" && pathname === "/api/router/config") {
+    return json(res, 200, {
+      enabled: config.routerEnabled,
+      configPath: config.routerConfigPath,
+      threshold: config.routerQuotaThreshold,
+      routes: loadModelRouterTable(config.routerConfigPath).routes,
+    });
+  }
+  if (req.method === "PUT" && pathname === "/api/router/config") {
+    void readBody(req).then(
+      (raw) => {
+        try {
+          const body = JSON.parse(raw || "{}") as { routes?: unknown };
+          if (!Array.isArray(body.routes)) {
+            json(res, 400, { error: 'Body must include "routes" array' });
+            return;
+          }
+          const routes = body.routes
+            .filter((e) => e && typeof e === "object")
+            .map((e) => ({
+              model: String((e as { model?: unknown }).model ?? "").trim(),
+              when: String((e as { when?: unknown }).when ?? "").trim(),
+            }))
+            .filter((r) => r.model && r.when);
+          saveModelRouterTable(config.routerConfigPath, { routes });
+          json(res, 200, {
+            ok: true,
+            configPath: config.routerConfigPath,
+            routes: loadModelRouterTable(config.routerConfigPath).routes,
+          });
+        } catch (error) {
+          json(res, 400, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+      (error) => {
+        json(res, 400, {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    );
+    return;
   }
   if (req.method === "GET" && pathname === "/api/log") {
     const n = Math.min(5000, Math.max(1, Number(q.lines) || 100));

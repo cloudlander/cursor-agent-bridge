@@ -17,6 +17,12 @@ environment_variables:
   CAI_APP_MEMORY_GB:
     default: "4"
     required: false
+  CURSOR_BRIDGE_ROUTER_ENABLED:
+    default: "true"
+    required: false
+  CURSOR_BRIDGE_ROUTER_MONTHLY_BUDGET_USD:
+    default: "300"
+    required: false
 runtimes:
   - editor: JupyterLab
     kernel: Python 3.14

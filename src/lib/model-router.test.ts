@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BridgeConfig } from "./config.js";
+import * as http from "node:http";
+
 import {
+  applyModelRouteHeaders,
   isModelRoutingEligible,
   routeModel,
   extractLastUserPromptText,
@@ -60,6 +63,46 @@ function baseConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     ...overrides,
   };
 }
+
+describe("applyModelRouteHeaders", () => {
+  it("writes bridge routing headers on the response", () => {
+    const headers: Record<string, string | number | string[]> = {};
+    const res = {
+      setHeader(name: string, value: string | number | string[]) {
+        headers[name] = value;
+      },
+    } as http.ServerResponse;
+
+    applyModelRouteHeaders(res, {
+      model: "claude-3-opus",
+      routed: true,
+      reason: "classified",
+      remainingRatio: 0.42,
+    });
+
+    expect(headers["X-Bridge-Routed-Model"]).toBe("claude-3-opus");
+    expect(headers["X-Bridge-Route-Reason"]).toBe("classified");
+    expect(headers["X-Bridge-Quota-Remaining"]).toBe("0.42");
+  });
+
+  it("uses unknown quota sentinel when ratio is unknown", () => {
+    const headers: Record<string, string | number | string[]> = {};
+    const res = {
+      setHeader(name: string, value: string | number | string[]) {
+        headers[name] = value;
+      },
+    } as http.ServerResponse;
+
+    applyModelRouteHeaders(res, {
+      model: "composer-2.5",
+      routed: true,
+      reason: "quota-unknown",
+      remainingRatio: "unknown",
+    });
+
+    expect(headers["X-Bridge-Quota-Remaining"]).toBe("unknown");
+  });
+});
 
 describe("isModelRoutingEligible", () => {
   it("treats unset and auto as eligible, not default or explicit ids", () => {

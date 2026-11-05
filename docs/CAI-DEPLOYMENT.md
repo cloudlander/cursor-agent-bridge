@@ -93,3 +93,20 @@ Logs: `.cai/startup.log` (application stdout from `app.sh`), proxy stderr from t
 CAI **`app.sh` sets `CURSOR_BRIDGE_MODE=agent`** so the CLI may use tools against the workspace when `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false`. For read-only Q&A, set `CURSOR_BRIDGE_MODE=ask` on the application or pass `X-Cursor-Mode: ask` per request.
 
 See [AGENTS.md](../AGENTS.md) for code locations and sync instructions.
+
+## Auto model routing
+
+CAI project metadata sets **`CURSOR_BRIDGE_ROUTER_ENABLED=true`** and **`CURSOR_BRIDGE_ROUTER_MONTHLY_BUDGET_USD=300`** by default. The route table lives at **`model-router.json` in the project workspace** (same directory as `CURSOR_BRIDGE_WORKSPACE`, usually the git checkout root). Override the path only with env `CURSOR_BRIDGE_ROUTER_CONFIG` (not in metadata).
+
+| Variable | Default on CAI | Notes |
+|----------|----------------|--------|
+| `CURSOR_BRIDGE_ROUTER_ENABLED` | `true` (metadata) | Classify `auto` / omitted model before the main agent run |
+| `CURSOR_BRIDGE_DEFAULT_MODEL` | `auto` | Cost-efficient fallback and classifier model (e.g. Composer) |
+| `CURSOR_BRIDGE_ROUTER_QUOTA_THRESHOLD` | `0.10` | Stop routing below this remaining ratio |
+| `CURSOR_BRIDGE_ROUTER_MONTHLY_BUDGET_USD` | `300` (metadata) | Budget for usage-based quota when API caps are missing |
+
+The repo includes a five-route English **`model-router.json`** (Composer → Sonnet → thinking variants → Opus). If the file is missing at startup, the bridge seeds that default into the workspace path.
+
+Dashboard: `GET` / `PUT` `/api/router/config` (no bridge key) reads or updates the workspace `model-router.json` (or the path from `CURSOR_BRIDGE_ROUTER_CONFIG`).
+
+**Phase 3 (planned):** dashboard banner with rolling account quota remaining and in-UI route table editing.
