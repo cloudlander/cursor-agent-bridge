@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import * as path from "node:path";
 
 import type { BridgeConfig } from "../config.js";
+import { runMcpEnable, isMcpNotApprovedMessage } from "./mcp-enable.js";
 import { mcpOAuthLoopbackPort } from "./mcp-oauth-callback.js";
 
 export type McpLoginResult = {
@@ -152,9 +153,24 @@ export async function runMcpLoginSpawn(
   const dir =
     configDir ??
     (config.configDirs[0] || path.join(process.env.HOME ?? "", ".cursor"));
-  const manualCommand = `${config.agentBin} --workspace ${config.workspace} mcp login ${mcpKey}`;
+  const manualEnable = `${config.agentBin} --workspace ${config.workspace} mcp enable ${mcpKey}`;
+  const manualCommand = `${manualEnable} && ${config.agentBin} --workspace ${config.workspace} mcp login ${mcpKey}`;
   const waitMs = defaultUrlWaitMs();
   const publicOrigin = options?.publicOrigin;
+
+  const enable = await runMcpEnable(config, mcpKey, dir);
+  if (!enable.ok) {
+    return buildResult(
+      {
+        ok: false,
+        hint: `Could not approve MCP server "${mcpKey}" for login. Run: ${manualEnable}`,
+      },
+      enable.output,
+      mcpKey,
+      manualCommand,
+      publicOrigin,
+    );
+  }
 
   return new Promise((resolve) => {
     let out = "";
@@ -207,12 +223,15 @@ export async function runMcpLoginSpawn(
         finish({ ok: true, hint: "OAuth login completed." });
         return;
       }
+      const notApproved = isMcpNotApprovedMessage(out);
       finish({
         ok: code === 0,
         hint:
           extractMcpLoginUrl(out) != null
             ? oauthHint(publicOrigin, extractMcpLoginUrl(out))
-            : `MCP login did not print a URL yet. Try again or run in a terminal: ${manualCommand}`,
+            : notApproved
+              ? `MCP server is not approved yet. Run: ${manualEnable}`
+              : `MCP login did not print a URL yet. Try again or run in a terminal: ${manualCommand}`,
       });
     });
 
