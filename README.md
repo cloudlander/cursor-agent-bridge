@@ -127,7 +127,7 @@ Deploy static web apps (HTML/CSS/JS) under **`/apps/{name}/`** or the short alia
 - For CLI-only MCP (e.g. Atlassian already in your local `mcp.json`), use **OAuth login** on the catalog row or `POST /api/plugins/mcp-login` — no Import and no bridge API key.
 - Set `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` and point `CURSOR_BRIDGE_WORKSPACE` at your vault/repo if you also want **project** `.cursor/skills` in addition to proxy-deployed plugins.
 - Use **Redeploy all** after changing account pool dirs or moving the plugin store.
-- MCP OAuth **Start login** runs `agent mcp login`, waits for the authorize URL, and shows it in the Plugins UI (also logged as `[cursor-api-proxy] MCP OAuth URL`). OAuth callback uses `http://localhost:8787/callback` on the machine running the proxy — port-forward from your laptop when the app runs on Cloudera AI.
+- MCP OAuth **Start login** runs `agent mcp enable` then `agent mcp login` (CLI requires approval before OAuth), waits for the authorize URL, and shows it in the Plugins UI (also logged as `[cursor-api-proxy] MCP OAuth URL`). OAuth callback uses `http://localhost:8787/callback` on the machine running the proxy — port-forward from your laptop when the app runs on Cloudera AI.
 
 REST API (same auth rules): `/api/plugins/marketplaces`, `/api/plugins/catalog?q=…`, `/api/plugins/install`, `/api/plugins/installed/:id`, etc.
 
@@ -355,7 +355,7 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 | `CURSOR_BRIDGE_DEFAULT_MODEL` | `auto` | Default model when request omits one |
 | `CURSOR_BRIDGE_STRICT_MODEL` | `true` | Reject a requested model when Cursor's CLI/ACP catalogs cannot match it instead of silently selecting the ACP session default. |
 | `CURSOR_BRIDGE_FORCE` | `false` | Pass `--force` to Cursor CLI |
-| `CURSOR_BRIDGE_APPROVE_MCPS` | `false` | Pass `--approve-mcps` to Cursor CLI |
+| `CURSOR_BRIDGE_APPROVE_MCPS` | `false` | Pass `--approve-mcps` on agent runs; also runs `agent mcp enable` for plugin MCP keys after deploy |
 | `CURSOR_BRIDGE_TIMEOUT_MS` | `300000` | Timeout per completion and idle TTL for a parked client-tool turn (ms). Raise above wall-clock for long Codex/agent turns, otherwise `cursor-agent` is SIGKILLed mid-stream. |
 | `CURSOR_BRIDGE_TLS_CERT` | — | Path to TLS certificate file (e.g. Tailscale cert). Use with `CURSOR_BRIDGE_TLS_KEY` for HTTPS. |
 | `CURSOR_BRIDGE_TLS_KEY` | — | Path to TLS private key file. Use with `CURSOR_BRIDGE_TLS_CERT` for HTTPS. |

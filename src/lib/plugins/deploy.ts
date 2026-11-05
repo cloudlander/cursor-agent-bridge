@@ -4,6 +4,7 @@ import * as path from "node:path";
 
 import type { BridgeConfig } from "../config.js";
 import { rewriteBridgeRemoteMcpUrl } from "./bridge-mcp-url.js";
+import { approveMcpKeysAfterDeploy } from "./mcp-enable.js";
 import {
   analyzePlugin,
   collectVariables,
@@ -345,6 +346,7 @@ export function deployInstalledPlugin(
     merged.mcpServers = [...new Set([...merged.mcpServers, ...part.mcpServers])];
     merged.warnings.push(...part.warnings);
   }
+  approveMcpKeysAfterDeploy(config, merged.mcpServers);
   return merged;
 }
 
