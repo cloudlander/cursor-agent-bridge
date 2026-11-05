@@ -1,0 +1,2 @@
+# Shell scripts: LF line endings. Keep executable bit in Git (100755) for entrypoints.
+*.sh text eol=lf
