@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { BridgeConfig } from "../config.js";
+import { rewriteBridgeRemoteMcpUrl } from "./bridge-mcp-url.js";
 import {
   analyzePlugin,
   collectVariables,
@@ -123,6 +124,9 @@ function buildMcpEntry(
     plugin.config,
   ) as McpServerDef;
   if (ov?.url && typeof merged.url === "string") merged.url = ov.url;
+  if (typeof merged.url === "string" && !ov?.url) {
+    merged.url = rewriteBridgeRemoteMcpUrl(merged.url);
+  }
   if (merged.command && typeof merged.command === "string") {
     merged.command = substituteValue(String(merged.command), pluginRoot, plugin.config);
   }
