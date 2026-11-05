@@ -1,1 +1,1 @@
-# PLACEHOLDER_AGENTS
+/tmp/mcp-file-0
