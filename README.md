@@ -71,6 +71,24 @@ The bundle is a directory (`manifest.json`, `chat-store.partial.json`, and
 `cursor/` files under your Cursor config dir). Web threads merge by id; use
 `--no-merge` to overwrite newer on-disk Cursor files when importing.
 
+**ACP sessions in Web Chat:** The `/chat` sidebar lists Cursor ACP sessions
+(read-only) but does not load their transcripts from `store.db`. To browse a
+long agent-mode conversation in Web Chat, import it into `chat-store.json`:
+
+```bash
+# Path is the ACP session directory (contains store.db and meta.json), e.g.
+# ~/.cursor-api-proxy/accounts/<account>/acp-sessions/<session-id>/
+npm run restore-acp-to-web -- /path/to/acp-sessions/<session-id>
+
+# Optional: explicit chat-store path and thread title
+node scripts/restore-acp-to-web.mjs /path/to/acp-sessions/<id> ./chat-store.json "My thread title"
+```
+
+Uses the same `chat-store.json` location as the proxy (`dirname` of
+`CURSOR_BRIDGE_SESSIONS_LOG`, default `~/.cursor-api-proxy/chat-store.json`).
+Re-running with the same title replaces the previous imported thread with that
+title. Set `RESTORE_MAX_MESSAGES` to raise the import cap (default `290`).
+
 The command reads `CURSOR_BRIDGE_SESSIONS_LOG` (default
 `~/.cursor-api-proxy/sessions.log`) directly, so the proxy does not need to be
 running. It shows completion time, method, status, remote address, and path.
