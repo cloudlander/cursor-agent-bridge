@@ -639,6 +639,13 @@
     }
     $('agent-oauth-wait').textContent = 'Waiting for Cursor to confirm sign-in…';
     $('agent-oauth-dialog').showModal();
+    if (url) {
+      try {
+        window.open(url, '_blank', 'noopener');
+      } catch {
+        /* popup blocked — user can use Open link in the dialog */
+      }
+    }
   }
 
   function onAgentLoginTerminal(session) {
@@ -706,6 +713,7 @@
         return true;
       }
       showLoginGate();
+      void beginAgentOAuthLogin();
       return false;
     } catch (e) {
       showLoginGate(`Could not check Cursor auth: ${e.message}`);
