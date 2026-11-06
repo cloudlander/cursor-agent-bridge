@@ -8,11 +8,21 @@ import { resolveAgentAuthStatus } from "./agent-login.js";
 
 describe("resolveAgentAuthStatus", () => {
   const prevHome = process.env.HOME;
+  const prevXdgConfigHome = process.env.XDG_CONFIG_HOME;
   let tmpHome: string;
+
+  function useIsolatedHome(): void {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-auth-"));
+    process.env.HOME = tmpHome;
+    // readKeychainToken() prefers XDG_CONFIG_HOME over $HOME/.config (see token-cache.ts).
+    delete process.env.XDG_CONFIG_HOME;
+  }
 
   afterEach(() => {
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
+    if (prevXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prevXdgConfigHome;
     if (tmpHome) fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
@@ -23,8 +33,7 @@ describe("resolveAgentAuthStatus", () => {
   }
 
   it("is not authenticated when cli-config has authInfo but auth.json is missing", () => {
-    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-auth-"));
-    process.env.HOME = tmpHome;
+    useIsolatedHome();
 
     const cursorDir = path.join(tmpHome, ".cursor");
     fs.mkdirSync(cursorDir, { recursive: true });
@@ -42,8 +51,7 @@ describe("resolveAgentAuthStatus", () => {
   });
 
   it("is authenticated when auth.json has an access token", () => {
-    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "agent-auth-"));
-    process.env.HOME = tmpHome;
+    useIsolatedHome();
 
     const authDir = path.join(tmpHome, ".config", "cursor");
     fs.mkdirSync(authDir, { recursive: true });
