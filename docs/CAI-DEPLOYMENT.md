@@ -24,7 +24,15 @@ On application start, `app.sh`:
 - Runs bootstrap if `agent` or `dist/cli.js` missing
 - Copies existing `auth.json` from project or user home when present; otherwise logs a warning and still starts
 - Sets `CURSOR_AGENT_BIN` and bundled Node via `CURSOR_API_PROXY_NODE`
-- `exec` Node on `dist/cli.js`
+- Runs Node on `dist/cli.js` as a child until it exits (`app.sh` / `app.sh start`). **`app.py`** runs `app.sh keepalive` so Dashboard **Restart proxy** (`app.sh stop`) can kill the CLI and the worker brings it back without a full application restart.
+
+Optional **`app.sh` modes** (second argument or first subcommand):
+
+| Mode | Behavior |
+|------|----------|
+| `start` (default) | Bootstrap if needed, run CLI until killed; worker exits when CLI exits (CAI restarts the application). |
+| `stop` | Require `/healthz`, kill the CLI listener, exit when health is down. Dashboard **Restart proxy** uses this on CAI (not the macOS `cursor-api-proxy restart` launcher). |
+| `keepalive` | Same bootstrap as `start`; restart CLI automatically after exit. Default CAI application entry via **`app.py`**. |
 
 ## URLs
 
