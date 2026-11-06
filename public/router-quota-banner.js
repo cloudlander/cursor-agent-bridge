@@ -85,22 +85,6 @@
     track.appendChild(line);
     track.appendChild(line.cloneNode(true));
     bar.appendChild(track);
-
-    const actions = el('div', { class: 'router-quota-banner-actions' });
-    const cfgBtn = el(
-      'button',
-      { type: 'button', class: 'btn small' },
-      'Configure routing',
-    );
-    cfgBtn.addEventListener('click', () => {
-      if (window.RouterConfigUI?.open) {
-        window.RouterConfigUI.open();
-        return;
-      }
-      window.location.href = '/chat#routing';
-    });
-    actions.appendChild(cfgBtn);
-    bar.appendChild(actions);
   }
 
   async function refreshRouterQuotaBanner() {

@@ -38,8 +38,8 @@ import {
 import { recordProxyUsage } from "../token-usage.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
 import {
-  applyExecutedModelHeader,
-  applyModelRouteHeaders,
+  bridgeModelResponseHeaders,
+  bridgeWebStreamMeta,
 } from "../model-router.js";
 import { resolveModelWithOptionalRouting } from "../model-routing-flow.js";
 import { resolveRequestMode } from "../resolve-mode.js";
@@ -219,6 +219,7 @@ async function writeStructuredChatTurn(opts: {
   usagePathname?: string;
   /** Model id for sessions-log USAGE lines (executed catalog id). */
   usageLogModel?: string;
+  responseHeaders?: Record<string, string>;
   run: (
     listener?: (event: ToolTurnEvent) => void,
   ) => Promise<ToolTurnResult>;
@@ -241,11 +242,11 @@ async function writeStructuredChatTurn(opts: {
         body.usage.completion_tokens,
       );
     }
-    json(opts.res, 200, body);
+    json(opts.res, 200, body, opts.responseHeaders);
     return result;
   }
 
-  writeSseHeaders(opts.res);
+  writeSseHeaders(opts.res, opts.responseHeaders);
   const stopKeepalive = startSseKeepalive(opts.res);
   try {
     const writeChunk = (
@@ -401,7 +402,6 @@ export async function handleChatCompletions(
         availableCursorIds,
       });
   if (routingFlow.routeDecision) {
-    applyModelRouteHeaders(res, routingFlow.routeDecision);
     logModelRoute(config.verbose, routingFlow.routeDecision);
   }
   assignedConfigDir = routingFlow.configDir ?? assignedConfigDir;
@@ -426,7 +426,10 @@ export async function handleChatCompletions(
     return;
   }
   const cursorModel = decision.final;
-  applyExecutedModelHeader(res, cursorModel);
+  const bridgeResponseHeaders = bridgeModelResponseHeaders(
+    cursorModel,
+    routingFlow.routeDecision,
+  );
   if (routingFlow.rememberModel) {
     rememberResolvedModel(cursorModel, lastRequestedModelRef);
   }
@@ -519,6 +522,7 @@ export async function handleChatCompletions(
         promptLength: prompt.length,
         usageLogPath: config.sessionsLogPath,
         usagePathname: pathname,
+        responseHeaders: bridgeResponseHeaders,
         run: (listener) =>
           ctx.toolSessions.resume(record, submittedToolOutputs, listener),
       });
@@ -699,6 +703,7 @@ export async function handleChatCompletions(
         promptLength: agentPrompt.length,
         usageLogPath: config.sessionsLogPath,
         usagePathname: pathname,
+        responseHeaders: bridgeResponseHeaders,
         run: (listener) => ctx.toolSessions.collect(record!, listener),
       });
       reportRequestSuccess(configDir, Date.now() - startedAt);
@@ -780,7 +785,10 @@ export async function handleChatCompletions(
     reportRequestStart(configDir);
     const streamStart = Date.now();
 
-    writeSseHeaders(res, truncatedHeaders);
+    writeSseHeaders(res, {
+      ...truncatedHeaders,
+      ...bridgeResponseHeaders,
+    });
     const stopKeepalive = startSseKeepalive(res);
     res.on("error", () => {
       /* client disconnected mid-stream */
@@ -910,6 +918,7 @@ export async function handleChatCompletions(
                 completion_tokens: completionTokens,
                 total_tokens: promptTokens + completionTokens,
               },
+              ...bridgeWebStreamMeta(cursorModel, routingFlow.routeDecision),
             })}\n\n`,
           );
           res.write("data: [DONE]\n\n");
@@ -997,6 +1006,7 @@ export async function handleChatCompletions(
                 completion_tokens: completionTokens,
                 total_tokens: promptTokens + completionTokens,
               },
+              ...bridgeWebStreamMeta(cursorModel, routingFlow.routeDecision),
             })}\n\n`,
           );
           res.write("data: [DONE]\n\n");
@@ -1151,6 +1161,6 @@ export async function handleChatCompletions(
         total_tokens: totalTokens,
       },
     },
-    truncatedHeaders,
+    { ...truncatedHeaders, ...bridgeResponseHeaders },
   );
 }

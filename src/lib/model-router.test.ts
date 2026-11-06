@@ -5,7 +5,10 @@ import * as http from "node:http";
 
 import {
   applyModelRouteHeaders,
+  bridgeModelResponseHeaders,
+  bridgeWebStreamMeta,
   isModelRoutingEligible,
+  resolveRouterClassifierModel,
   routeModel,
   extractLastUserPromptText,
 } from "./model-router.js";
@@ -104,6 +107,41 @@ describe("applyModelRouteHeaders", () => {
   });
 });
 
+describe("bridgeModelResponseHeaders", () => {
+  it("merges executed and route headers for writeHead", () => {
+    const headers = bridgeModelResponseHeaders("claude-4.6-sonnet-medium", {
+      model: "claude-4.6-sonnet-medium",
+      routed: true,
+      reason: "classified",
+      remainingRatio: 0.5,
+    });
+    expect(headers["X-Bridge-Executed-Model"]).toBe(
+      "claude-4.6-sonnet-medium",
+    );
+    expect(headers["X-Bridge-Routed-Model"]).toBe("claude-4.6-sonnet-medium");
+    expect(headers["X-Bridge-Route-Reason"]).toBe("classified");
+  });
+});
+
+describe("bridgeWebStreamMeta", () => {
+  it("omits auto/default and includes route metadata", () => {
+    expect(bridgeWebStreamMeta("auto")).toEqual({});
+    expect(
+      bridgeWebStreamMeta("claude-4.6-sonnet-medium", {
+        model: "claude-4.6-sonnet-medium",
+        routed: true,
+        reason: "classified",
+      }),
+    ).toEqual({
+      bridge: {
+        executedModel: "claude-4.6-sonnet-medium",
+        routedModel: "claude-4.6-sonnet-medium",
+        routeReason: "classified",
+      },
+    });
+  });
+});
+
 describe("isModelRoutingEligible", () => {
   it("treats unset and auto as eligible, not default or explicit ids", () => {
     expect(isModelRoutingEligible(undefined)).toBe(true);
@@ -191,6 +229,53 @@ describe("routeModel", () => {
     expect(runAgentSync).not.toHaveBeenCalled();
   });
 
+  it("uses first route model as classifier when defaultModel is auto", () => {
+    const model = resolveRouterClassifierModel(
+      baseConfig({ defaultModel: "auto" }),
+      [
+        { model: "composer-2.5", when: "small" },
+        { model: "opus-4.6", when: "hard" },
+      ],
+      ids,
+    );
+    expect(model).toBe("composer-2.5");
+  });
+
+  it("resolveRouterClassifierModel never returns catalog sentinel auto", () => {
+    const model = resolveRouterClassifierModel(
+      baseConfig(),
+      [],
+      ["auto", "opus-4.6"],
+    );
+    expect(model).toBe("opus-4.6");
+    expect(model).not.toBe("auto");
+  });
+
+  it("classifies with a concrete classifier when defaultModel is auto", async () => {
+    vi.mocked(runAgentSync).mockResolvedValue({
+      code: 0,
+      stdout: '{"route":"0","why":"quick"}',
+      stderr: "",
+    });
+    const decision = await routeModel({
+      requested: "auto",
+      promptText: "fix typo",
+      config: baseConfig({ defaultModel: "auto" }),
+      availableCursorIds: ids,
+      routerTable: {
+        routes: [
+          { model: "composer-2.5", when: "small" },
+          { model: "opus-4.6", when: "hard" },
+        ],
+      },
+    });
+    expect(decision.reason).toBe("classified");
+    expect(decision.model).toBe("composer-2.5");
+    expect(runAgentSync).toHaveBeenCalled();
+    const lastArg = vi.mocked(runAgentSync).mock.calls[0]?.[8];
+    expect(lastArg).toBe("router:composer-2.5");
+  });
+
   it("classifies to route index", async () => {
     vi.mocked(runAgentSync).mockResolvedValue({
       code: 0,
@@ -228,6 +313,26 @@ describe("routeModel", () => {
     });
     expect(decision.reason).toBe("classifier-error");
     expect(decision.model).toBe("composer-2.5");
+  });
+
+  it("classifier error uses routine model when defaultModel is auto", async () => {
+    vi.mocked(runAgentSync).mockResolvedValue({
+      code: 1,
+      stdout: "",
+      stderr: "auth required",
+    });
+    const decision = await routeModel({
+      requested: "auto",
+      promptText: "task",
+      config: baseConfig({ defaultModel: "auto" }),
+      availableCursorIds: ids,
+      routerTable: {
+        routes: [{ model: "composer-2.5", when: "daily work" }],
+      },
+    });
+    expect(decision.reason).toBe("classifier-error");
+    expect(decision.model).toBe("composer-2.5");
+    expect(decision.model).not.toBe("auto");
   });
 
   it("continues tool turn on same model", async () => {

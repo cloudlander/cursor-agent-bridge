@@ -107,10 +107,6 @@ a:hover { text-decoration: underline; }
   padding-right: 48px;
   color: var(--muted);
 }
-.router-quota-banner-actions {
-  flex-shrink: 0;
-  padding: 4px 12px 4px 0;
-}
 @keyframes router-quota-scroll {
   from { transform: translateX(0); }
   to { transform: translateX(-50%); }

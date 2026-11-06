@@ -459,6 +459,7 @@
       if (gen.error) msg.errorDetail = gen.error;
       if (!msg.content?.trim()) msg.content = gen.error || 'Generation failed';
     }
+    assignExecutedModel(msg, gen.executedModel);
   }
 
   function markThreadDirty(id) {
@@ -1154,7 +1155,7 @@
     if (!isUser && isLast && !m.streaming && !busy) {
       actions.appendChild(actionBtn('Regenerate', 'Regenerate response', regenerateReply));
     }
-    if (!isUser && m.executedModel && !m.streaming) {
+    if (!isUser && m.executedModel && m.executedModel !== 'auto' && m.executedModel !== 'default' && !m.streaming) {
       actions.appendChild(el('span', {
         class: 'chat-msg-model-hint',
         title: `Executed model: ${m.executedModel}`,
@@ -1254,6 +1255,8 @@
     if (modeSel) modeSel.value = thread?.mode || state.config?.mode || 'agent';
     renderModelOptions();
     renderComposerState();
+    const routerBtn = $('chat-router-config');
+    if (routerBtn) routerBtn.hidden = !state.config?.routerEnabled;
   }
 
   function renderComposerState() {
@@ -1309,8 +1312,6 @@
       state.config = { defaultModel: 'auto', mode: 'agent' };
     }
     renderToolbar();
-    const routerBtn = $('chat-router-config');
-    if (routerBtn) routerBtn.hidden = !state.config?.routerEnabled;
     if (!activeThread()?.messages.length) renderMessages();
   }
 
@@ -1422,11 +1423,56 @@
     else renderMessages();
   }
 
+  function assignExecutedModel(msg, rawId) {
+    if (!msg || msg.role !== 'assistant') return false;
+    let id = String(rawId || '').trim();
+    if (!id || id === 'auto' || id === 'default') return false;
+    msg.executedModel = id;
+    return true;
+  }
+
   function captureExecutedModel(msg, res) {
-    const id =
-      res?.headers?.get('X-Bridge-Executed-Model')?.trim() ||
-      res?.headers?.get('X-Bridge-Routed-Model')?.trim();
-    if (id) msg.executedModel = id;
+    if (!res?.headers) return;
+    const executed = res.headers.get('X-Bridge-Executed-Model')?.trim() || '';
+    const routed = res.headers.get('X-Bridge-Routed-Model')?.trim() || '';
+    const reason = res.headers.get('X-Bridge-Route-Reason')?.trim() || '';
+    let id = executed;
+    if ((!id || id === 'auto' || id === 'default') && routed && routed !== 'auto' && routed !== 'default') {
+      if (reason === 'classified' || reason === 'classifier-default') id = routed;
+    }
+    assignExecutedModel(msg, id);
+  }
+
+  function applyBridgeStreamMeta(msg, bridge) {
+    if (!bridge || typeof bridge !== 'object') return;
+    assignExecutedModel(msg, bridge.executedModel);
+  }
+
+  async function syncLastAssistantExecutedModel(thread) {
+    if (!thread?.id || isReadOnlySession(thread.id)) return;
+    const local = thread.messages[thread.messages.length - 1];
+    if (!local || local.role !== 'assistant') return;
+    if (local.executedModel && local.executedModel !== 'auto' && local.executedModel !== 'default') {
+      return;
+    }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        await new Promise(r => setTimeout(r, 120));
+      }
+      try {
+        const r = await fetch(`/api/chat/threads/${encodeURIComponent(thread.id)}`);
+        if (!r.ok) continue;
+        const body = await r.json();
+        const msgs = body.session?.messages;
+        if (!Array.isArray(msgs) || !msgs.length) continue;
+        const last = msgs[msgs.length - 1];
+        if (last?.role === 'assistant' && assignExecutedModel(local, last.executedModel)) {
+          return;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   function applyGenerationEvent(msg, event) {
@@ -1448,7 +1494,7 @@
     }
     if (event.type === 'done') {
       msg.streaming = false;
-      if (event.executedModel) msg.executedModel = event.executedModel;
+      assignExecutedModel(msg, event.executedModel);
       if (event.error) {
         if (isBenignGenerationError(event.error) && msg.content?.trim()) {
           sanitizeAssistantMessage(msg);
@@ -1514,6 +1560,7 @@
       msg.streaming = false;
       msg.ts = Date.now();
       sanitizeAssistantMessage(msg);
+      await syncLastAssistantExecutedModel(thread);
       state.streams.delete(thread.id);
       touch(thread);
       renderComposerState();
@@ -1589,6 +1636,7 @@
           let json;
           try { json = JSON.parse(data); } catch { continue; }
           if (json.error) throw new Error(json.error.message || 'Agent error');
+          applyBridgeStreamMeta(msg, json.bridge);
           const delta = json.choices?.[0]?.delta;
           if (delta?.reasoning_content) msg.reasoning = (msg.reasoning || '') + delta.reasoning_content;
           if (delta?.content) msg.content += delta.content;
@@ -1612,6 +1660,7 @@
       msg.streaming = false;
       msg.ts = Date.now();
       sanitizeAssistantMessage(msg);
+      await syncLastAssistantExecutedModel(thread);
       state.streams.delete(thread.id);
       touch(thread);
       renderComposerState();

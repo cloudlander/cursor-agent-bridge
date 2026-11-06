@@ -41,6 +41,9 @@ export function json(
   res.end(JSON.stringify(body));
 }
 
+const SSE_EXPOSE_HEADERS =
+  "X-Bridge-Executed-Model, X-Bridge-Routed-Model, X-Bridge-Route-Reason, X-Bridge-Quota-Remaining";
+
 export function writeSseHeaders(
   res: http.ServerResponse,
   extraHeaders?: http.OutgoingHttpHeaders,
@@ -51,6 +54,7 @@ export function writeSseHeaders(
     "Cache-Control": "no-cache",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
+    "Access-Control-Expose-Headers": SSE_EXPOSE_HEADERS,
   });
 }
 
