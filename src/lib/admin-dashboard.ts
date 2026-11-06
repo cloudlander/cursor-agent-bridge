@@ -41,6 +41,7 @@ import {
   loadModelRouterTable,
   saveModelRouterTable,
 } from "./model-router-config.js";
+import { buildRouterQuotaResponse } from "./router-quota-api.js";
 import { readBody } from "./http.js";
 
 const ACCOUNT_USAGE_CACHE_MS = 45_000;
@@ -222,6 +223,10 @@ function sanitizedBridgeConfig(config: BridgeConfig): Record<string, unknown> {
     contextPreamble: config.contextPreamble,
     bridgePackageVersion: config.bridgePackageVersion,
     contextExtraConfigured: Boolean(config.contextExtra),
+    routerEnabled: config.routerEnabled,
+    routerConfigPath: config.routerConfigPath,
+    routerQuotaThreshold: config.routerQuotaThreshold,
+    routerMonthlyBudgetUsd: config.routerMonthlyBudgetUsd ?? 0,
   };
 }
 
@@ -447,6 +452,10 @@ export function handleAdminDashboard(
   }
   if (req.method === "GET" && pathname === "/api/config") {
     return json(res, 200, sanitizedBridgeConfig(config));
+  }
+  if (req.method === "GET" && pathname === "/api/router/quota") {
+    void buildRouterQuotaResponse(config).then((body) => json(res, 200, body));
+    return;
   }
   if (req.method === "GET" && pathname === "/api/router/config") {
     return json(res, 200, {

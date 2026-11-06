@@ -28,6 +28,7 @@ const SESSION_STATS_EXCLUDED_PATHS = new Set([
   "/favicon.ico",
   "/health",
   "/healthz",
+  "/model-router.json",
 ]);
 
 export function pathnameExcludedFromSessionStats(pathname: string): boolean {

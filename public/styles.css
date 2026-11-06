@@ -77,6 +77,91 @@ a:hover { text-decoration: underline; }
   z-index: 20;
 }
 
+.router-quota-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  background: #131a24;
+  min-height: 36px;
+  overflow: hidden;
+}
+.router-quota-banner.hidden { display: none !important; }
+.router-quota-banner[data-kind="warn"] {
+  border-left: 4px solid var(--yellow);
+}
+.router-quota-banner[data-kind="info"] {
+  border-left: 4px solid var(--teal);
+}
+.router-quota-marquee-track {
+  flex: 1;
+  display: flex;
+  width: max-content;
+  animation: router-quota-scroll 45s linear infinite;
+  padding: 8px 0;
+}
+.router-quota-marquee-text {
+  white-space: nowrap;
+  padding-right: 48px;
+  color: var(--muted);
+}
+.router-quota-banner-actions {
+  flex-shrink: 0;
+  padding: 4px 12px 4px 0;
+}
+@keyframes router-quota-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+.router-panel-highlight {
+  outline: 2px solid rgba(86, 212, 221, 0.55);
+  outline-offset: 2px;
+  transition: outline-color 0.3s;
+}
+
+.router-config-dialog {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0;
+  max-width: min(920px, 96vw);
+  width: 920px;
+  background: var(--panel);
+  color: var(--text);
+}
+.router-config-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.router-config-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.router-config-dialog-head h2 {
+  margin: 0;
+  font-size: 16px;
+  flex: 1;
+}
+.router-config-dialog-hint {
+  margin: 10px 16px 0;
+  font-size: 11px;
+}
+.router-config-dialog-body {
+  padding: 12px 16px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+}
+.router-config-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+
 .site-header {
   border-bottom: 1px solid var(--border);
   background: var(--panel);
@@ -1422,6 +1507,23 @@ html:has(body.chat-page) {
 
 /* ───── messages ───── */
 .chat-msg-time { font-size: 11px; color: var(--dim); align-self: center; margin-left: 4px; }
+.chat-msg-model-hint {
+  font-size: 11px;
+  color: var(--dim);
+  font-family: var(--mono);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  align-self: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.chat-msg.assistant:hover .chat-msg-model-hint {
+  opacity: 1;
+  pointer-events: auto;
+}
 .chat-msg-actions { opacity: 0; }
 .chat-msg:hover .chat-msg-actions { opacity: 1; }
 .chat-msg.user .chat-msg-body { display: flex; flex-direction: column; align-items: flex-end; }

@@ -109,6 +109,19 @@ describe("session log", () => {
     expect(stats.byPath).toEqual({ "/v1/chat/completions": 1 });
   });
 
+  it("excludes workspace model-router.json fetches from dashboard stats", () => {
+    const recent = new Date(Date.now() - 60_000).toISOString();
+    const stats = computeSessionStats(
+      [
+        `${recent} GET /model-router.json ::1 404`,
+        `${recent} POST /api/agent/chat ::1 200`,
+      ],
+      24,
+    );
+    expect(stats.total).toBe(1);
+    expect(stats.byPath).toEqual({ "/api/agent/chat": 1 });
+  });
+
   it("tails files and treats a missing file as empty", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "session-log-"));
     tempDirs.push(dir);

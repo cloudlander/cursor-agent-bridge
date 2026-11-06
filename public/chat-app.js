@@ -1154,6 +1154,12 @@
     if (!isUser && isLast && !m.streaming && !busy) {
       actions.appendChild(actionBtn('Regenerate', 'Regenerate response', regenerateReply));
     }
+    if (!isUser && m.executedModel && !m.streaming) {
+      actions.appendChild(el('span', {
+        class: 'chat-msg-model-hint',
+        title: `Executed model: ${m.executedModel}`,
+      }, m.executedModel));
+    }
     if (m.ts && !m.streaming) {
       const d = new Date(m.ts);
       actions.appendChild(el('span', { class: 'chat-msg-time', title: d.toLocaleString() },
@@ -1303,6 +1309,8 @@
       state.config = { defaultModel: 'auto', mode: 'agent' };
     }
     renderToolbar();
+    const routerBtn = $('chat-router-config');
+    if (routerBtn) routerBtn.hidden = !state.config?.routerEnabled;
     if (!activeThread()?.messages.length) renderMessages();
   }
 
@@ -1414,6 +1422,13 @@
     else renderMessages();
   }
 
+  function captureExecutedModel(msg, res) {
+    const id =
+      res?.headers?.get('X-Bridge-Executed-Model')?.trim() ||
+      res?.headers?.get('X-Bridge-Routed-Model')?.trim();
+    if (id) msg.executedModel = id;
+  }
+
   function applyGenerationEvent(msg, event) {
     if (event.type === 'snapshot') {
       msg.content = event.content || '';
@@ -1433,6 +1448,7 @@
     }
     if (event.type === 'done') {
       msg.streaming = false;
+      if (event.executedModel) msg.executedModel = event.executedModel;
       if (event.error) {
         if (isBenignGenerationError(event.error) && msg.content?.trim()) {
           sanitizeAssistantMessage(msg);
@@ -1463,6 +1479,8 @@
       });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       if (!res.body) throw new Error('No response body');
+
+      captureExecutedModel(msg, res);
 
       const reader = res.body.getReader();
       const dec = new TextDecoder();
@@ -1543,6 +1561,8 @@
         } catch { /* ignore */ }
         throw new Error(detail);
       }
+
+      captureExecutedModel(msg, res);
 
       const ctype = res.headers.get('content-type') || '';
       if (!res.body || ctype.includes('application/json')) {
@@ -2134,6 +2154,14 @@
     renderAll();
     void loadConfig();
     void loadModels();
+    window.RouterConfigUI?.init({ toast });
+    $('chat-router-config')?.addEventListener('click', () => {
+      window.RouterConfigUI?.open();
+    });
+    if (location.hash === '#routing') {
+      window.RouterConfigUI?.open();
+      history.replaceState(null, '', `${location.pathname}${location.search}`);
+    }
     startSessionSync();
     void pollSessionUpdates();
     const input = $('chat-input');

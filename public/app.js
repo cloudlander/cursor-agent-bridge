@@ -428,6 +428,16 @@
       wrap.appendChild(el('span', { class: 'ts' }, d.toLocaleTimeString() + ' '));
     }
     if (rest.startsWith('USAGE ')) {
+      try {
+        const payload = JSON.parse(rest.slice('USAGE '.length));
+        if (payload && typeof payload.model === 'string') {
+          wrap.appendChild(el('span', { class: 'ok' }, 'USAGE '));
+          wrap.appendChild(document.createTextNode(JSON.stringify(payload)));
+          return wrap;
+        }
+      } catch {
+        /* fall through */
+      }
       wrap.appendChild(el('span', { class: 'ok' }, rest));
     } else if (rest.includes(' ERROR ')) {
       wrap.appendChild(el('span', { class: 'err' }, rest));

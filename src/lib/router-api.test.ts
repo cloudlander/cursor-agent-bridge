@@ -2,16 +2,26 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BridgeConfig } from "./config.js";
 import { createRequestListener } from "./request-listener.js";
 import { loadModelRouterTable } from "./model-router-config.js";
 import type { ToolSessionRegistry } from "./tool-session-registry.js";
+import { initAccountPool } from "./account-pool.js";
+
+vi.mock("./quota-monitor.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./quota-monitor.js")>();
+  return {
+    ...actual,
+    getAccountQuotaRemainingRatio: vi.fn(async () => 0.55),
+  };
+});
 
 const tmpDirs: string[] = [];
 
 afterEach(() => {
+  initAccountPool([]);
   for (const dir of tmpDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -157,6 +167,41 @@ describe("router dashboard API", () => {
       expect(String((put.body as { error: string }).error)).toMatch(
         /At most 5 routes/i,
       );
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve())),
+      );
+    }
+  });
+
+  it("GET /api/router/quota returns per-account ratios without bridge key", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "router-quota-api-"));
+    tmpDirs.push(dir);
+    const config = testConfig(dir, path.join(dir, "model-router.json"));
+    config.configDirs = [path.join(dir, "acct")];
+    initAccountPool(config.configDirs);
+    const toolSessions = {
+      closeAll: async () => undefined,
+    } as ToolSessionRegistry;
+    const server = http.createServer(
+      createRequestListener({ version: "test", config }, { toolSessions }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      const get = await fetchJson(port, "/api/router/quota");
+      expect(get.status).toBe(200);
+      expect(get.body).toMatchObject({
+        enabled: true,
+        threshold: 0.15,
+      });
+      const accounts = (get.body as { accounts: unknown[] }).accounts;
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]).toMatchObject({
+        remainingRatio: 0.55,
+        status: "ok",
+      });
     } finally {
       await new Promise<void>((resolve, reject) =>
         server.close((err) => (err ? reject(err) : resolve())),

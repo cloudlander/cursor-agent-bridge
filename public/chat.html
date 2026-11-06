@@ -8,6 +8,7 @@
 </head>
 <body class="chat-page">
   <div id="upstream-sync-banner" class="upstream-sync-banner hidden" hidden aria-live="polite"></div>
+  <div id="router-quota-banner" class="router-quota-banner hidden" hidden aria-live="polite"></div>
   <div class="chat-shell" id="chat-shell">
     <div class="chat-backdrop" id="chat-backdrop"></div>
     <aside class="chat-sidebar" id="chat-sidebar">
@@ -45,6 +46,7 @@
             <option value="plan">plan</option>
             <option value="ask">ask</option>
           </select>
+          <button type="button" class="btn small" id="chat-router-config" title="Auto model routing" hidden>Routing</button>
           <button type="button" class="btn small" id="chat-export" title="Export as Markdown">Export</button>
           <button type="button" class="btn small" id="chat-theme" title="Toggle theme">☀️</button>
         </div>
@@ -82,9 +84,30 @@
     </div>
   </div>
 
+  <dialog id="router-config-dialog" class="router-config-dialog">
+    <div class="router-config-dialog-head">
+      <h2>Auto model routing</h2>
+      <span class="muted-text mono" id="router-summary" style="font-size: 12px;"></span>
+      <button type="button" class="btn small" id="router-config-close" aria-label="Close">✕</button>
+    </div>
+    <p class="muted-text router-config-dialog-hint">
+      Applies when requests omit <span class="mono">model</span> or use <span class="mono">auto</span>.
+      File: <span class="mono" id="router-config-path">…</span>
+    </p>
+    <div class="router-config-dialog-body" id="router-body">
+      <div class="empty">Loading…</div>
+    </div>
+    <div class="router-config-dialog-foot">
+      <button type="button" class="btn small" id="router-reload-btn">Reload</button>
+      <button type="button" class="btn small primary" id="router-save-btn">Save</button>
+    </div>
+  </dialog>
+
   <script src="/static/vendor/highlight.min.js"></script>
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/upstream-sync-banner.js"></script>
+  <script src="/static/router-quota-banner.js"></script>
+  <script src="/static/router-config-ui.js"></script>
   <script src="/static/chat-app.js"></script>
 </body>
 </html>
