@@ -119,6 +119,19 @@ function storagePaths(config: BridgeConfig) {
   return { storageDir, pidFile, serviceLog };
 }
 
+/** Cloudera AI Application worker (app.sh + CDSW env), not macOS ~/.local/bin launcher. */
+export function isCaiDeployment(): boolean {
+  const root = packageRoot();
+  if (!fs.existsSync(path.join(root, "app.sh"))) return false;
+  const env = process.env;
+  return Boolean(
+    env.CDSW_API_KEY?.trim() ||
+      env.CDSW_APP_PORT?.trim() ||
+      env.CDSW_PUBLIC_PORT?.trim() ||
+      env.CDSW_READONLY_PORT?.trim(),
+  );
+}
+
 function getStatus(
   config: BridgeConfig,
   version: string,
@@ -229,19 +242,30 @@ function runControl(
   if (!allowed.includes(action)) {
     return cb(new Error(`invalid action: ${action}`));
   }
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-  const cliPath = path.join(home, ".local", "bin", "cursor-api-proxy");
-  if (!fs.existsSync(cliPath)) {
-    return cb(new Error(`CLI not found at ${cliPath} (see docs/WIKI.md)`));
-  }
   const { serviceLog } = storagePaths(config);
   try {
     fs.mkdirSync(path.dirname(serviceLog), { recursive: true });
   } catch {
     /* ignore */
   }
-  const cmd = `sleep 0.4 && '${cliPath.replace(/'/g, "'\\''")}' ${action} >> '${serviceLog.replace(/'/g, "'\\''")}' 2>&1`;
-  const child = spawn("sh", ["-c", cmd], {
+
+  let shellCmd: string;
+  if (action === "restart" && isCaiDeployment()) {
+    const appSh = path.join(packageRoot(), "app.sh");
+    if (!fs.existsSync(appSh)) {
+      return cb(new Error(`CAI app.sh not found at ${appSh}`));
+    }
+    shellCmd = `sleep 0.4 && bash '${appSh.replace(/'/g, "'\\''")}' stop >> '${serviceLog.replace(/'/g, "'\\''")}' 2>&1`;
+  } else {
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+    const cliPath = path.join(home, ".local", "bin", "cursor-api-proxy");
+    if (!fs.existsSync(cliPath)) {
+      return cb(new Error(`CLI not found at ${cliPath} (see docs/WIKI.md)`));
+    }
+    shellCmd = `sleep 0.4 && '${cliPath.replace(/'/g, "'\\''")}' ${action} >> '${serviceLog.replace(/'/g, "'\\''")}' 2>&1`;
+  }
+
+  const child = spawn("sh", ["-c", shellCmd], {
     detached: true,
     stdio: "ignore",
     cwd: packageRoot(),

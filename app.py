@@ -1,1 +1,1 @@
-!./app.sh
+!./app.sh keepalive
