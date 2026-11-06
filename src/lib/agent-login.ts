@@ -7,7 +7,11 @@ import { ACCOUNTS_DIR } from "../cli/constants.js";
 import type { BridgeConfig } from "./config.js";
 import { readCursorCliAuth } from "./cursor-account-snapshot.js";
 import { resolveAgentCommand } from "./env.js";
-import { readKeychainToken, writeCachedToken } from "./token-cache.js";
+import {
+  readCachedToken,
+  readKeychainToken,
+  writeCachedToken,
+} from "./token-cache.js";
 
 /** Cursor CLI login URL (may span multiple stdout chunks). */
 export const AGENT_LOGIN_URL_RE =
@@ -91,8 +95,19 @@ export function resolveAgentAuthStatus(config: BridgeConfig): AgentAuthStatus {
     },
   );
 
+  // CLI login lives in macOS keychain or $HOME/.config/cursor/auth.json (see
+  // run-config-dir.ts), not in cli-config.json alone. authInfo without a token
+  // must not unlock the dashboard — matches app.sh ensure_cursor_cli_auth.
+  const sharedToken = readKeychainToken();
+  const hasCachedAccountToken = accounts.some((a) =>
+    Boolean(readCachedToken(a.configDir)),
+  );
+  const hasProfile = accounts.some((a) => a.authenticated);
+
   return {
-    authenticated: accounts.some((a) => a.authenticated),
+    authenticated:
+      Boolean(sharedToken) ||
+      (hasProfile && hasCachedAccountToken),
     viaApiKey: false,
     accounts,
   };
