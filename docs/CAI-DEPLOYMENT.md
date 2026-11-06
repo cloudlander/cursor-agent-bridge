@@ -109,4 +109,4 @@ The repo includes a five-route English **`model-router.json`** (Composer → Son
 
 Dashboard: `GET` / `PUT` `/api/router/config` (no bridge key) reads or updates the workspace `model-router.json` (or the path from `CURSOR_BRIDGE_ROUTER_CONFIG`).
 
-**Phase 3 (planned):** dashboard banner with rolling account quota remaining and in-UI route table editing.
+**Dashboard UI:** scrolling quota banner (`GET /api/router/quota`, poll ~90s) on `/` and `/chat`. Edit routes on **`/chat`** (toolbar **Routing** or banner **Configure routing**) via `GET/PUT /api/router/config` (no bridge key).

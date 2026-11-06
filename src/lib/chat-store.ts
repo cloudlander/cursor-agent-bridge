@@ -22,6 +22,8 @@ export type ChatMessage = {
   error?: boolean;
   /** Human-readable failure reason when `error` is set (content may still hold a partial reply). */
   errorDetail?: string;
+  /** Cursor catalog model id actually executed (when auto-routing or catalog resolution applied). */
+  executedModel?: string;
   streaming?: boolean;
 };
 
@@ -503,6 +505,7 @@ export async function finalizeWebThreadAssistant(
     content: string;
     reasoning?: string;
     error?: string;
+    executedModel?: string;
   },
 ): Promise<void> {
   await storeMutex.run(() => {
@@ -521,6 +524,9 @@ export async function finalizeWebThreadAssistant(
     msg.error = !!update.error;
     if (update.error) msg.errorDetail = update.error;
     else delete msg.errorDetail;
+    if (update.executedModel?.trim()) {
+      msg.executedModel = update.executedModel.trim();
+    }
     msg.ts = Date.now();
     thread.updatedAt = Date.now();
     writeStoreSync(storePath, store);

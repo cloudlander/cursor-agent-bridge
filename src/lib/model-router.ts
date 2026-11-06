@@ -319,3 +319,12 @@ export function applyModelRouteHeaders(
     );
   }
 }
+
+/** Final Cursor catalog model id used for the agent run (for logs and web UI). */
+export function applyExecutedModelHeader(
+  res: http.ServerResponse,
+  model: string,
+): void {
+  const id = model?.trim();
+  if (id) res.setHeader("X-Bridge-Executed-Model", id);
+}

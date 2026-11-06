@@ -15,6 +15,7 @@ export type GenerationSnapshot = {
   reasoning: string;
   status: GenerationStatus;
   error?: string;
+  executedModel?: string;
   startedAt: number;
   updatedAt: number;
 };
@@ -24,7 +25,7 @@ type StreamListener = (event: GenerationStreamEvent) => void;
 export type GenerationStreamEvent =
   | { type: "snapshot"; content: string; reasoning: string; status: GenerationStatus; error?: string }
   | { type: "delta"; content?: string; reasoning?: string }
-  | { type: "done"; error?: string };
+  | { type: "done"; error?: string; executedModel?: string };
 
 type ActiveGeneration = {
   threadId: string;
@@ -38,6 +39,7 @@ type ActiveGeneration = {
   listeners: Set<StreamListener>;
   persistTimer: ReturnType<typeof setTimeout> | null;
   config: BridgeConfig;
+  executedModel?: string;
 };
 
 const active = new Map<string, ActiveGeneration>();
@@ -49,6 +51,7 @@ function snapshotOf(gen: ActiveGeneration): GenerationSnapshot {
     reasoning: gen.reasoning,
     status: gen.status,
     error: gen.error,
+    executedModel: gen.executedModel,
     startedAt: gen.startedAt,
     updatedAt: gen.updatedAt,
   };
@@ -86,6 +89,7 @@ function flushPersist(gen: ActiveGeneration): void {
     content: gen.content,
     reasoning: gen.reasoning || undefined,
     error: gen.status === "error" ? gen.error : undefined,
+    executedModel: gen.executedModel,
   }).catch(() => undefined);
 }
 
@@ -156,14 +160,23 @@ export function appendWebGenerationDelta(
 
 export function finishWebGeneration(
   threadId: string,
-  outcome: { ok: true } | { ok: false; error: string },
+  outcome:
+    | { ok: true; executedModel?: string }
+    | { ok: false; error: string; executedModel?: string },
 ): void {
   const gen = active.get(threadId);
   if (!gen) return;
   gen.status = outcome.ok ? "done" : "error";
   gen.error = outcome.ok ? undefined : outcome.error;
+  if (outcome.executedModel?.trim()) {
+    gen.executedModel = outcome.executedModel.trim();
+  }
   gen.updatedAt = Date.now();
-  notify(gen, { type: "done", error: gen.error });
+  notify(gen, {
+    type: "done",
+    error: gen.error,
+    executedModel: gen.executedModel,
+  });
   flushPersist(gen);
   for (const listener of gen.listeners) gen.listeners.delete(listener);
   active.delete(threadId);
@@ -223,7 +236,11 @@ export function writeGenerationSse(
   });
 
   if (gen.status !== "running") {
-    writeEvent({ type: "done", error: gen.error });
+    writeEvent({
+      type: "done",
+      error: gen.error,
+      executedModel: gen.executedModel,
+    });
     res.end();
     return () => undefined;
   }

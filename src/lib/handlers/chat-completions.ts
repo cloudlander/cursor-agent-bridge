@@ -37,7 +37,10 @@ import {
 } from "../request-log.js";
 import { recordProxyUsage } from "../token-usage.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
-import { applyModelRouteHeaders } from "../model-router.js";
+import {
+  applyExecutedModelHeader,
+  applyModelRouteHeaders,
+} from "../model-router.js";
 import { resolveModelWithOptionalRouting } from "../model-routing-flow.js";
 import { resolveRequestMode } from "../resolve-mode.js";
 import { resolveWorkspace } from "../workspace.js";
@@ -214,6 +217,8 @@ async function writeStructuredChatTurn(opts: {
   promptLength: number;
   usageLogPath?: string;
   usagePathname?: string;
+  /** Model id for sessions-log USAGE lines (executed catalog id). */
+  usageLogModel?: string;
   run: (
     listener?: (event: ToolTurnEvent) => void,
   ) => Promise<ToolTurnResult>;
@@ -231,7 +236,7 @@ async function writeStructuredChatTurn(opts: {
       recordProxyUsage(
         opts.usageLogPath,
         opts.usagePathname,
-        opts.model,
+        opts.usageLogModel ?? opts.model,
         body.usage.prompt_tokens,
         body.usage.completion_tokens,
       );
@@ -312,7 +317,7 @@ async function writeStructuredChatTurn(opts: {
       recordProxyUsage(
         opts.usageLogPath,
         opts.usagePathname,
-        opts.model,
+        opts.usageLogModel ?? opts.model,
         promptTokens,
         completionTokens,
       );
@@ -421,6 +426,7 @@ export async function handleChatCompletions(
     return;
   }
   const cursorModel = decision.final;
+  applyExecutedModelHeader(res, cursorModel);
   if (routingFlow.rememberModel) {
     rememberResolvedModel(cursorModel, lastRequestedModelRef);
   }
@@ -469,7 +475,7 @@ export async function handleChatCompletions(
   logTrafficRequest(
     config.verbose,
     config.verboseFull,
-    model ?? cursorModel,
+    cursorModel,
     trafficMessages,
     !!body.stream,
   );
@@ -509,6 +515,7 @@ export async function handleChatCompletions(
         id,
         created,
         model: displayModel,
+        usageLogModel: cursorModel,
         promptLength: prompt.length,
         usageLogPath: config.sessionsLogPath,
         usagePathname: pathname,
@@ -519,7 +526,7 @@ export async function handleChatCompletions(
       logTrafficResponse(
         config.verbose,
         config.verboseFull,
-        model ?? cursorModel,
+        cursorModel,
         normalizeAssistantReplyText(result.text),
         !!body.stream,
       );
@@ -688,6 +695,7 @@ export async function handleChatCompletions(
         id,
         created,
         model: displayModel,
+        usageLogModel: cursorModel,
         promptLength: agentPrompt.length,
         usageLogPath: config.sessionsLogPath,
         usagePathname: pathname,
@@ -704,7 +712,7 @@ export async function handleChatCompletions(
       logTrafficResponse(
         config.verbose,
         config.verboseFull,
-        model ?? cursorModel,
+        cursorModel,
         normalizeAssistantReplyText(result.text),
         !!body.stream,
       );
@@ -787,8 +795,17 @@ export async function handleChatCompletions(
       chunkWriter.write(delta);
       if (webThreadId) appendWebGenerationDelta(webThreadId, { content: delta });
     };
-    const finishWeb = (outcome: { ok: true } | { ok: false; error: string }) => {
-      if (webThreadId) finishWebGeneration(webThreadId, outcome);
+    const finishWeb = (
+      outcome:
+        | { ok: true }
+        | { ok: false; error: string },
+    ) => {
+      if (webThreadId) {
+        finishWebGeneration(webThreadId, {
+          ...outcome,
+          executedModel: cursorModel,
+        });
+      }
     };
     const streamResponseMeta = () => ({
       wireDeltaChars: chunkWriter.wireDeltaChars(),
@@ -856,7 +873,7 @@ export async function handleChatCompletions(
           logTrafficResponse(
             config.verbose,
             config.verboseFull,
-            model ?? cursorModel,
+            cursorModel,
             normalizedAccumulated,
             true,
             streamResponseMeta(),
@@ -877,7 +894,7 @@ export async function handleChatCompletions(
           recordProxyUsage(
             config.sessionsLogPath,
             pathname,
-            displayModel ?? cursorModel,
+            cursorModel,
             promptTokens,
             completionTokens,
           );
@@ -941,7 +958,7 @@ export async function handleChatCompletions(
         logTrafficResponse(
           config.verbose,
           config.verboseFull,
-          model ?? cursorModel,
+          cursorModel,
           normalizedAccumulated,
           true,
           streamResponseMeta(),
@@ -962,7 +979,7 @@ export async function handleChatCompletions(
         recordProxyUsage(
           config.sessionsLogPath,
           pathname,
-          displayModel ?? cursorModel,
+          cursorModel,
           promptTokens,
           completionTokens,
         );
@@ -1091,7 +1108,7 @@ export async function handleChatCompletions(
 
   reportRequestSuccess(configDir, syncLatency);
   const content = normalizeAssistantReplyText(out.stdout.trim());
-  logTrafficResponse(config.verbose, config.verboseFull, model ?? cursorModel, content, false);
+  logTrafficResponse(config.verbose, config.verboseFull, cursorModel, content, false);
   maybeRecordProxyChatSession(
     config,
     pathname,
@@ -1107,7 +1124,7 @@ export async function handleChatCompletions(
   recordProxyUsage(
     config.sessionsLogPath,
     pathname,
-    displayModel ?? cursorModel,
+    cursorModel,
     promptTokens,
     completionTokens,
   );

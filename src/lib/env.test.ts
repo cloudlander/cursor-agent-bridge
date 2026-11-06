@@ -17,7 +17,7 @@ describe("loadEnvConfig", () => {
     expect(loaded.agentBin).toBe("agent");
     expect(loaded.host).toBe("127.0.0.1");
     expect(loaded.port).toBe(8765);
-    expect(loaded.defaultModel).toBe("default");
+    expect(loaded.defaultModel).toBe("auto");
     expect(loaded.force).toBe(false);
     expect(loaded.approveMcps).toBe(false);
     expect(loaded.strictModel).toBe(true);
@@ -40,6 +40,36 @@ describe("loadEnvConfig", () => {
     expect(loaded.routerQuotaThreshold).toBe(0.1);
     expect(loaded.routerMonthlyBudgetUsd).toBe(300);
     expect(loaded.routerTimeoutMs).toBe(8000);
+  });
+
+  it("uses defaultModel auto when router is enabled and DEFAULT_MODEL unset", () => {
+    expect(
+      loadEnvConfig({
+        env: { CURSOR_BRIDGE_ROUTER_ENABLED: "true" },
+        cwd: "/w",
+      }).defaultModel,
+    ).toBe("auto");
+  });
+
+  it("uses defaultModel default when router is disabled and DEFAULT_MODEL unset", () => {
+    expect(
+      loadEnvConfig({
+        env: { CURSOR_BRIDGE_ROUTER_ENABLED: "false" },
+        cwd: "/w",
+      }).defaultModel,
+    ).toBe("default");
+  });
+
+  it("honors explicit CURSOR_BRIDGE_DEFAULT_MODEL when router is enabled", () => {
+    expect(
+      loadEnvConfig({
+        env: {
+          CURSOR_BRIDGE_ROUTER_ENABLED: "true",
+          CURSOR_BRIDGE_DEFAULT_MODEL: "composer-2.5",
+        },
+        cwd: "/w",
+      }).defaultModel,
+    ).toBe("composer-2.5");
   });
 
   it("applies env aliases with expected precedence", () => {

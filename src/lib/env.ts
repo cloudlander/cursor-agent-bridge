@@ -485,6 +485,17 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
   const mode = tryParseExecutionModeEnv(firstDefined(env, ["CURSOR_BRIDGE_MODE"]));
   const dshAutoMode = envBool(env, ["CURSOR_BRIDGE_DSH_AUTO_MODE"], false);
 
+  const defaultModelExplicit = Object.prototype.hasOwnProperty.call(
+    env,
+    "CURSOR_BRIDGE_DEFAULT_MODEL",
+  );
+  let defaultModel = normalizeModelId(
+    envString(env, ["CURSOR_BRIDGE_DEFAULT_MODEL"]),
+  );
+  if (!defaultModelExplicit && routerEnabled) {
+    defaultModel = "auto";
+  }
+
   return {
     agentBin: resolveAgentBinary(env, platform),
     agentNode: envString(env, ["CURSOR_AGENT_NODE"]),
@@ -493,9 +504,7 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     host,
     port,
     requiredKey: resolveInboundApiKey(env),
-    defaultModel: normalizeModelId(
-      envString(env, ["CURSOR_BRIDGE_DEFAULT_MODEL"]),
-    ),
+    defaultModel,
     force,
     approveMcps: envBool(env, ["CURSOR_BRIDGE_APPROVE_MCPS"], false),
     strictModel: envBool(env, ["CURSOR_BRIDGE_STRICT_MODEL"], true),
