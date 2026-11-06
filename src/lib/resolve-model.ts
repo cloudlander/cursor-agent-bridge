@@ -1,9 +1,5 @@
 import type { BridgeConfig } from "./config.js";
 
-export type ResolveModelOptions = {
-  skipSessionMemory?: boolean;
-};
-
 /**
  * Resolve the requested model (already normalized) to the final model string,
  * applying strictModel and lastRequestedModelRef semantics.
@@ -12,17 +8,12 @@ export function resolveModel(
   requested: string | undefined,
   lastRequestedModelRef: { current?: string },
   config: BridgeConfig,
-  options?: ResolveModelOptions,
 ): string {
   const isDefault = requested === "default";
   const explicitModel = requested && !isDefault ? requested : undefined;
 
   // "default" matches ACP catalog name for session default model — pass through directly
   if (isDefault) return "default";
-
-  if (options?.skipSessionMemory) {
-    return explicitModel ?? config.defaultModel;
-  }
 
   return (
     explicitModel ??

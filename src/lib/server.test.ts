@@ -83,10 +83,6 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: true,
     bridgePackageVersion: "0.0.0-test",
-    routerEnabled: false,
-    routerConfigPath: "/tmp/model-router.json",
-    routerQuotaThreshold: 0.1,
-    routerTimeoutMs: 8000,
     authKeepalive: {
       enabled: false,
       intervalMs: 240_000,

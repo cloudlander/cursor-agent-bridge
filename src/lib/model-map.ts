@@ -106,7 +106,7 @@ export function resolveToCursorModel(requested: string | undefined): string | un
   return ANTHROPIC_TO_CURSOR[key] ?? mapClaudeDatedVariant(key) ?? requested.trim();
 }
 
-export function matchAvailableModel(
+function matchAvailableModel(
   candidate: string | undefined,
   availableCursorIds: string[],
 ): string | undefined {

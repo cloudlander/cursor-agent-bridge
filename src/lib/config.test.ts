@@ -24,8 +24,6 @@ describe("loadBridgeConfig", () => {
     expect(config.contextPreamble).toBe(true);
     expect(config.bridgePackageVersion).toMatch(/^\d+\.\d+\.\d+/);
     expect(config.contextExtra).toBeUndefined();
-    expect(config.routerEnabled).toBe(false);
-    expect(config.routerQuotaThreshold).toBe(0.1);
   });
 
   it("assembles config from the centralized env layer", () => {

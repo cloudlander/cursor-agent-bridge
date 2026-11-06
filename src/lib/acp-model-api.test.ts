@@ -54,10 +54,6 @@ function config(acpEnv: Record<string, string>): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: false,
     bridgePackageVersion: "0.0.0-test",
-    routerEnabled: false,
-    routerConfigPath: "/tmp/model-router.json",
-    routerQuotaThreshold: 0.1,
-    routerTimeoutMs: 8000,
   };
 }
 

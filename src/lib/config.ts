@@ -87,11 +87,6 @@ export type BridgeConfig = {
   contextExtra?: string;
   /** Background Cursor OAuth / API-key session refresh (see CURSOR_BRIDGE_AUTH_KEEPALIVE*). */
   authKeepalive?: AuthKeepaliveOptions;
-  routerEnabled: boolean;
-  routerConfigPath: string;
-  routerQuotaThreshold: number;
-  routerMonthlyBudgetUsd?: number;
-  routerTimeoutMs: number;
 };
 
 export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
@@ -154,10 +149,5 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     bridgePackageVersion: readBridgePackageVersion(),
     contextExtra: env.contextExtra,
     authKeepalive: loadAuthKeepaliveOptions(envSource),
-    routerEnabled: env.routerEnabled,
-    routerConfigPath: env.routerConfigPath,
-    routerQuotaThreshold: env.routerQuotaThreshold,
-    routerMonthlyBudgetUsd: env.routerMonthlyBudgetUsd,
-    routerTimeoutMs: env.routerTimeoutMs,
   };
 }
