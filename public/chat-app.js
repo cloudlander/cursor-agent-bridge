@@ -1,6 +1,19 @@
 (() => {
   'use strict';
 
+  const _fetch = globalThis.fetch.bind(globalThis);
+  function apiFetch(input, init) {
+    if (
+      typeof input === "string" &&
+      input.startsWith("/") &&
+      !input.startsWith("//") &&
+      typeof bridgePath === "function"
+    ) {
+      return _fetch(bridgePath(input), init);
+    }
+    return _fetch(input, init);
+  }
+
   const THREADS_KEY = 'cursor-bridge-chat-threads';
   const ACTIVE_KEY = 'cursor-bridge-chat-active';
   const THEME_KEY = 'cursor-bridge-chat-theme';
@@ -158,7 +171,8 @@
       }
     }
     if (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path)) {
-      return `/api/workspace-file?path=${encodeURIComponent(path)}`;
+      const q = `/api/workspace-file?path=${encodeURIComponent(path)}`;
+      return typeof bridgePath === "function" ? bridgePath(q) : q;
     }
     return p;
   }
@@ -172,13 +186,15 @@
 
   function workspaceDownloadUrl(raw) {
     const base = toWorkspaceFileUrl(raw);
-    if (!base.startsWith('/api/workspace-file')) return base;
+    const ws = typeof bridgePath === "function" ? bridgePath("/api/workspace-file") : "/api/workspace-file";
+    if (!base.includes("/api/workspace-file") && !base.startsWith(ws)) return base;
     return base.includes('?') ? `${base}&download=1` : `${base}?download=1`;
   }
 
   function workspaceInlinePdfUrl(raw) {
     const base = toWorkspaceFileUrl(raw);
-    if (!base.startsWith('/api/workspace-file')) return base;
+    const ws = typeof bridgePath === "function" ? bridgePath("/api/workspace-file") : "/api/workspace-file";
+    if (!base.includes("/api/workspace-file") && !base.startsWith(ws)) return base;
     return base.includes('?') ? `${base}&inline=1` : `${base}?inline=1`;
   }
 
@@ -756,7 +772,7 @@
 
   async function fetchActiveGenerations() {
     try {
-      const r = await fetch('/api/chat/generations');
+      const r = await apiFetch('/api/chat/generations');
       if (!r.ok) return [];
       const data = await r.json();
       return Array.isArray(data.active) ? data.active : [];
@@ -791,7 +807,7 @@
         localStorage.setItem(MIGRATED_KEY, '1');
         return;
       }
-      const r = await fetch('/api/chat/migrate', {
+      const r = await apiFetch('/api/chat/migrate', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ threads }),
@@ -810,7 +826,7 @@
     try {
       await migrateLocalThreadsIfNeeded();
       const [threadsRes, activeGens] = await Promise.all([
-        fetch('/api/chat/threads'),
+        apiFetch('/api/chat/threads'),
         fetchActiveGenerations(),
       ]);
       if (!threadsRes.ok) throw new Error(String(threadsRes.status));
@@ -896,7 +912,7 @@
     try {
       const body = { threads };
       if (state.dirtyActiveId) body.activeId = state.activeId;
-      await fetch('/api/chat/threads', {
+      await apiFetch('/api/chat/threads', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
@@ -910,7 +926,7 @@
 
   async function refreshSessionCatalog() {
     try {
-      const r = await fetch('/api/chat/threads');
+      const r = await apiFetch('/api/chat/threads');
       if (!r.ok) return;
       const data = await r.json();
       state.sessionCatalog = Array.isArray(data.sessions) ? data.sessions : [];
@@ -976,7 +992,7 @@
   async function fetchAndApplySession(id) {
     const entry = catalogEntry(id);
     try {
-      const r = await fetch(`/api/chat/threads/${encodeURIComponent(id)}`);
+      const r = await apiFetch(`/api/chat/threads/${encodeURIComponent(id)}`);
       if (!r.ok) return false;
       const body = await r.json();
       const session = body.session;
@@ -1058,7 +1074,7 @@
     try {
       const prevCatalog = state.sessionCatalog;
       const [threadsRes, activeGens] = await Promise.all([
-        fetch('/api/chat/threads?compact=1'),
+        apiFetch('/api/chat/threads?compact=1'),
         fetchActiveGenerations(),
       ]);
       if (!threadsRes.ok) return;
@@ -1224,7 +1240,7 @@
       if (!state.activeId) ensureActiveThread();
     }
     try {
-      await fetch(`/api/chat/threads/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await apiFetch(`/api/chat/threads/${encodeURIComponent(id)}`, { method: 'DELETE' });
     } catch {
       toast('Failed to delete on server');
     }
@@ -1239,7 +1255,7 @@
     for (const ac of state.streams.values()) ac.abort();
     for (const t of webWithMessages) {
       try {
-        await fetch(`/api/chat/threads/${encodeURIComponent(t.id)}`, { method: 'DELETE' });
+        await apiFetch(`/api/chat/threads/${encodeURIComponent(t.id)}`, { method: 'DELETE' });
       } catch { /* ignore */ }
     }
     state.threads = state.threads.filter(t => t.readOnly);
@@ -1722,7 +1738,7 @@
 
   async function loadConfig() {
     try {
-      const r = await fetch('/api/config');
+      const r = await apiFetch('/api/config');
       if (!r.ok) throw new Error(String(r.status));
       state.config = await r.json();
     } catch {
@@ -1734,7 +1750,7 @@
 
   async function loadModels() {
     try {
-      const r = await fetch('/api/agent/models');
+      const r = await apiFetch('/api/agent/models');
       if (!r.ok) throw new Error(String(r.status));
       const data = await r.json();
       state.models = (data.data || []).filter(m => m && m.id);
@@ -1885,7 +1901,7 @@
     patchThreadListBusyState();
 
     try {
-      const res = await fetch(`/api/chat/generations/${encodeURIComponent(thread.id)}/stream`, {
+      const res = await apiFetch(`/api/chat/generations/${encodeURIComponent(thread.id)}/stream`, {
         signal: ac.signal,
       });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -1955,7 +1971,7 @@
     patchThreadListBusyState();
 
     try {
-      const res = await fetch('/api/agent/chat', {
+      const res = await apiFetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(buildPayload(thread)),
@@ -2074,7 +2090,10 @@
   function uploadAttachmentMultipart(file, previewUrl, onProgress) {
     return new Promise((resolve) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/chat/upload');
+      xhr.open(
+        'POST',
+        typeof bridgePath === "function" ? bridgePath('/api/chat/upload') : '/api/chat/upload',
+      );
       xhr.responseType = 'json';
       xhr.upload.onprogress = (ev) => {
         if (ev.lengthComputable && typeof onProgress === 'function') {
@@ -2326,7 +2345,7 @@
     const t = activeThread();
     if (!t) return;
     state.streams.get(t.id)?.abort();
-    void fetch(`/api/chat/generations/${encodeURIComponent(t.id)}`, { method: 'DELETE' }).catch(() => undefined);
+    void apiFetch(`/api/chat/generations/${encodeURIComponent(t.id)}`, { method: 'DELETE' }).catch(() => undefined);
   }
 
   // ───────────────────────── composer / chrome ─────────────────────────
@@ -2557,7 +2576,7 @@
         const payload = { threads };
         if (state.dirtyActiveId) payload.activeId = state.activeId;
         const body = JSON.stringify(payload);
-        fetch('/api/chat/threads', {
+        apiFetch('/api/chat/threads', {
           method: 'PUT',
           headers: { 'content-type': 'application/json' },
           body,

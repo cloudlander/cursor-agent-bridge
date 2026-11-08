@@ -37,6 +37,9 @@ import {
   handleUpstreamSyncApi,
   upstreamSyncApiMatches,
 } from "./upstream-sync.js";
+import { getBridgePublicContext } from "./bridge-request-context.js";
+import { prepareBridgeHtml } from "./bridge-html.js";
+import { publicPath } from "./http-public-path.js";
 
 const ACCOUNT_USAGE_CACHE_MS = 45_000;
 let accountUsageCache:
@@ -103,6 +106,26 @@ function serveFile(res: http.ServerResponse, filePath: string): void {
   });
 }
 
+function serveBridgeHtml(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  filePath: string,
+): void {
+  const ctx = getBridgePublicContext(req);
+  if (!ctx) return serveFile(res, filePath);
+  fs.readFile(filePath, (err, data) => {
+    if (err) return notFound(res);
+    const body = prepareBridgeHtml(data.toString("utf8"), ctx);
+    const buf = Buffer.from(body);
+    res.writeHead(200, {
+      "content-type": "text/html; charset=utf-8",
+      "content-length": buf.length,
+      "cache-control": "no-cache",
+    });
+    res.end(buf);
+  });
+}
+
 function launchdLoadedSync(): boolean {
   try {
     const out = execSync("launchctl list 2>/dev/null", { encoding: "utf8" });
@@ -136,7 +159,10 @@ function getStatus(
   config: BridgeConfig,
   version: string,
   cb: (s: Record<string, unknown>) => void,
+  req?: http.IncomingMessage,
 ): void {
+  const ctx = req ? getBridgePublicContext(req) : undefined;
+  const mount = ctx?.mount ?? "";
   const root = packageRoot();
   const publicDir = path.join(root, "public");
   const docsDir = path.join(root, "docs");
@@ -193,7 +219,11 @@ function getStatus(
     storageDir,
     sessionsLogPath: config.sessionsLogPath,
     appsDir: appsDirOf(config),
-    deployedApps: listApps(appsDirOf(config)),
+    deployedApps: listApps(appsDirOf(config)).map((a) => ({
+      ...a,
+      url: publicPath(a.url, mount, config.appSegment),
+      shortUrl: publicPath(a.shortUrl, mount, config.appSegment),
+    })),
     serviceLog,
     pidFile,
     apiKeyConfigured: Boolean(env.CURSOR_API_KEY ?? env.CURSOR_AUTH_TOKEN),
@@ -206,8 +236,15 @@ function getStatus(
   });
 }
 
-function sanitizedBridgeConfig(config: BridgeConfig): Record<string, unknown> {
+function sanitizedBridgeConfig(
+  config: BridgeConfig,
+  req?: http.IncomingMessage,
+): Record<string, unknown> {
+  const ctx = req ? getBridgePublicContext(req) : undefined;
   return {
+    appSegment: config.appSegment,
+    publicBase: ctx?.publicBase ?? `/${config.appSegment}`,
+    mount: ctx?.mount ?? "",
     agentBin: config.agentBin,
     useAcp: config.useAcp,
     host: config.host,
@@ -346,16 +383,16 @@ export function handleAdminDashboard(
   }
 
   if (req.method === "GET" && pathname === "/") {
-    return serveFile(res, path.join(publicDir, "index.html"));
+    return serveBridgeHtml(req, res, path.join(publicDir, "index.html"));
   }
   if (req.method === "GET" && pathname === "/wiki") {
-    return serveFile(res, path.join(publicDir, "wiki.html"));
+    return serveBridgeHtml(req, res, path.join(publicDir, "wiki.html"));
   }
   if (req.method === "GET" && pathname === "/chat") {
-    return serveFile(res, path.join(publicDir, "chat.html"));
+    return serveBridgeHtml(req, res, path.join(publicDir, "chat.html"));
   }
   if (req.method === "GET" && pathname === "/plugins") {
-    return serveFile(res, path.join(publicDir, "plugins.html"));
+    return serveBridgeHtml(req, res, path.join(publicDir, "plugins.html"));
   }
   if (req.method === "POST" && pathname === "/api/apps/deploy") {
     let raw = "";
@@ -379,7 +416,13 @@ export function handleAdminDashboard(
         config.workspace,
       );
       if (!result.ok) return json(res, 400, { error: result.error });
-      json(res, 200, result);
+      const ctx = getBridgePublicContext(req);
+      const mount = ctx?.mount ?? "";
+      json(res, 200, {
+        ...result,
+        url: publicPath(result.url, mount, config.appSegment),
+        shortUrl: publicPath(result.shortUrl, mount, config.appSegment),
+      });
     });
     return;
   }
@@ -461,10 +504,10 @@ export function handleAdminDashboard(
     return;
   }
   if (req.method === "GET" && pathname === "/api/status") {
-    return getStatus(config, version, (s) => json(res, 200, s));
+    return getStatus(config, version, (s) => json(res, 200, s), req);
   }
   if (req.method === "GET" && pathname === "/api/config") {
-    return json(res, 200, sanitizedBridgeConfig(config));
+    return json(res, 200, sanitizedBridgeConfig(config, req));
   }
   if (req.method === "GET" && pathname === "/api/log") {
     const n = Math.min(5000, Math.max(1, Number(q.lines) || 100));

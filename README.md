@@ -344,6 +344,7 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 |----------|---------|-------------|
 | `CURSOR_BRIDGE_HOST` | `127.0.0.1` | Bind address |
 | `CURSOR_BRIDGE_PORT` | `8765` | Port |
+| `CURSOR_BRIDGE_APP_SEGMENT` | `cursor-agent` (CAI may persist `agent-*`) | Public URL segment: `{mount}/{segment}/chat`, `…/v1/…`. See [docs/PUBLIC-PATH.md](./docs/PUBLIC-PATH.md). |
 | `CURSOR_BRIDGE_API_KEY` | — | If set, require `Authorization: Bearer <key>` (or `x-api-key`) on **`/v1/*`** and **`/health`** only |
 | `CURSOR_BRIDGE_DISABLE_CDSW_INBOUND_KEY` | — | When `1`, do not auto-use `CDSW_API_KEY` for `/v1` auth in CAI applications |
 | `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` | — | Cursor access token passed to spawned CLI/ACP children (automation, headless). Same value can be used for both names. |

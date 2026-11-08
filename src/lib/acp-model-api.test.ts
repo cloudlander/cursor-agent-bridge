@@ -53,6 +53,7 @@ function config(acpEnv: Record<string, string>): BridgeConfig {
     multiPort: false,
     winCmdlineMax: 30_000,
     contextPreamble: false,
+    appSegment: "cursor-agent",
     bridgePackageVersion: "0.0.0-test",
   };
 }

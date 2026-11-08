@@ -3,7 +3,7 @@ import * as http from "node:http";
 import type { BridgeConfig } from "../config.js";
 import { json, readBodyLimited } from "../http.js";
 import { ApiError } from "./store.js";
-import { resolvePublicOrigin } from "./public-origin.js";
+import { resolvePublicAppBase } from "./public-origin.js";
 import {
   addMarketplace,
   getInstalledPlugins,
@@ -212,7 +212,7 @@ export async function handlePluginApi(
         String(body.name ?? ""),
         body.server,
         body.configDir,
-        resolvePublicOrigin(req),
+        resolvePublicAppBase(req, config),
       );
       return json(res, 200, result);
     }
@@ -225,7 +225,7 @@ export async function handlePluginApi(
         decodeURIComponent(loginMatch[1]),
         String(body.server ?? ""),
         body.configDir,
-        resolvePublicOrigin(req),
+        resolvePublicAppBase(req, config),
       );
       return json(res, 200, result);
     }

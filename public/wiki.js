@@ -11,7 +11,7 @@
 
   async function loadStatus() {
     try {
-      const r = await fetch('/api/status');
+      const r = await fetch(bridgePath('/api/status'));
       if (!r.ok) throw new Error();
       const s = await r.json();
       const dot = document.getElementById('status-dot');
@@ -66,7 +66,7 @@
   async function render() {
     applyRenderer();
     try {
-      const r = await fetch('/api/wiki');
+      const r = await fetch(bridgePath('/api/wiki'));
       const md = await r.text();
       const html = marked.parse(md);
       const wiki = document.getElementById('wiki');

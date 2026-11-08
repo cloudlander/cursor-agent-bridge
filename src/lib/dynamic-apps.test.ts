@@ -15,6 +15,7 @@ import {
 function baseConfig(sessionsLogPath: string): BridgeConfig {
   return {
     sessionsLogPath,
+    appSegment: "cursor-agent",
   } as BridgeConfig;
 }
 
@@ -105,14 +106,14 @@ describe("dynamic-apps", () => {
     expect(data.apps.map((a) => a.name)).toEqual(["x"]);
   });
 
-  it("redirects /apps/name to trailing slash", async () => {
+  it("serves app index without trailing-slash redirect loop", async () => {
     const appsDir = appsDirOf(config);
     fs.mkdirSync(path.join(appsDir, "r"), { recursive: true });
     fs.writeFileSync(path.join(appsDir, "r", "index.html"), "r");
 
     const res = await invoke("/apps/r", config);
-    expect(res.status).toBe(302);
-    expect(res.headers.location).toBe("/apps/r/");
+    expect(res.status).toBe(200);
+    expect(res.body).toBe("r");
   });
 
   it("serves registered apps at short top-level paths", async () => {

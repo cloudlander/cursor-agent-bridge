@@ -40,6 +40,7 @@ Optional **`app.sh` modes** (second argument or first subcommand):
 |----------|-----|
 | In-engine loopback | `http://127.0.0.1:${CDSW_APP_PORT}/` |
 | Health (no auth) | `http://127.0.0.1:${CDSW_APP_PORT}/healthz` |
+| Dashboard (browser) | `https://<cluster>/proxy/<id>/{appSegment}/` — segment from `CURSOR_BRIDGE_APP_SEGMENT` or persisted `.bridge-app-segment`. Virtual root `…/proxy/<id>/` redirects via bootstrap. See [PUBLIC-PATH.md](./PUBLIC-PATH.md). |
 | OpenAI base (auth) | `http://127.0.0.1:${CDSW_APP_PORT}/v1` |
 | Public subdomain | `https://model-gateway.${CDSW_DOMAIN}/` (when configured) |
 

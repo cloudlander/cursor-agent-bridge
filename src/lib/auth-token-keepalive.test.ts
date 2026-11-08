@@ -46,6 +46,7 @@ const baseConfig: BridgeConfig = {
   multiPort: false,
   winCmdlineMax: 30_000,
   contextPreamble: true,
+    appSegment: "cursor-agent",
   bridgePackageVersion: "test",
 };
 

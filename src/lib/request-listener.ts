@@ -17,6 +17,7 @@ import {
 } from "./admin-dashboard.js";
 import { handleAnthropicCountTokens } from "./handlers/anthropic-count-tokens.js";
 import { json, readBody } from "./http.js";
+import { applyBridgeIncomingPath } from "./bridge-incoming-path.js";
 import { appendSessionLine, logIncoming } from "./request-log.js";
 import type { ToolSessionRegistry } from "./tool-session-registry.js";
 
@@ -46,7 +47,31 @@ export function createRequestListener(
     );
     const remoteAddress = req.socket?.remoteAddress ?? "unknown";
     const method = req.method ?? "?";
-    const pathname = url.pathname;
+    let pathname = url.pathname;
+
+    const pathPhase = applyBridgeIncomingPath(req, config, res);
+    if (pathPhase.kind === "healthz") {
+      if (req.method === "GET") {
+        res.writeHead(200, { "content-type": "text/plain" });
+        res.end("ok\n");
+      } else {
+        res.writeHead(405, { "content-type": "text/plain" });
+        res.end("method not allowed\n");
+      }
+      return;
+    }
+    if (
+      pathPhase.kind === "bootstrap" ||
+      pathPhase.kind === "not_found"
+    ) {
+      return;
+    }
+
+    const urlAfter = new URL(
+      req.url || "/",
+      `${protocol}://${req.headers.host || "localhost"}`,
+    );
+    pathname = urlAfter.pathname;
 
     // Skip request logging for the admin dashboard's own traffic
     // (status/log/stats polls, asset loads, control actions). These are
@@ -68,12 +93,6 @@ export function createRequestListener(
     }
 
     try {
-      if (req.method === "GET" && pathname === "/healthz") {
-        res.writeHead(200, { "content-type": "text/plain" });
-        res.end("ok\n");
-        return;
-      }
-
       if (req.method === "GET" && pathname === "/api/agent/models") {
         await handleModels(res, {
           config,

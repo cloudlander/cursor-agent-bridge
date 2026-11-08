@@ -89,6 +89,7 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
       skewSec: 300,
       mode: "refresh",
     },
+    appSegment: "cursor-agent",
     ...overrides,
   };
 }
@@ -133,6 +134,7 @@ describe("startBridgeServer", () => {
   let servers: (http.Server | https.Server)[] = [];
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     for (const s of servers) {
       await new Promise((r) => s.close(r));
     }
@@ -215,7 +217,7 @@ describe("startBridgeServer", () => {
 
     const { status, body } = await fetchServer(servers[0], "/");
     expect(status).toBe(200);
-    expect(body).toContain("cursor-api-proxy");
+    expect(body).toMatch(/Redirecting|cursor-agent/);
   });
 
   it("GET /api/agent-auth reports unauthenticated without API key or accounts", async () => {
@@ -297,6 +299,7 @@ describe("startBridgeServer", () => {
   });
 
   it("serves GET /api/upstream-sync without Authorization when requiredKey is set", async () => {
+    vi.stubEnv("CURSOR_BRIDGE_UPSTREAM_SYNC", "");
     servers = startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
