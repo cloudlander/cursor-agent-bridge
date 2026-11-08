@@ -230,7 +230,7 @@ describe("runAcpStream", () => {
     expect(chunks.join("")).toContain("Hello from fake ACP");
   });
 
-  it("streams message chunks and ignores thought chunks", async () => {
+  it("streams message chunks and ignores thought chunks without onThoughtChunk", async () => {
     const chunks: string[] = [];
     const result = await runAcpStream(
       node,
@@ -247,6 +247,25 @@ describe("runAcpStream", () => {
     expect(result.code).toBe(0);
     expect(chunks.join("")).toBe("Hello from fake ACP");
     expect(chunks.join("")).not.toContain("SECRET_THOUGHT");
+  });
+
+  it("streams thought chunks via onThoughtChunk", async () => {
+    const thoughts: string[] = [];
+    const result = await runAcpStream(
+      node,
+      [fakeServerPath],
+      "stream test",
+      {
+        cwd,
+        timeoutMs: 5000,
+        skipAuthenticate: true,
+        env: { FAKE_ACP_SCENARIO: "with_thought" },
+      },
+      () => {},
+      (t) => thoughts.push(t),
+    );
+    expect(result.code).toBe(0);
+    expect(thoughts.join("")).toBe("SECRET_THOUGHT");
   });
 
   it("sends session/set_config_option with configId when model is set", async () => {
