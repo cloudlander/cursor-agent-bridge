@@ -77,7 +77,7 @@ Then open `https://model-gateway.${CDSW_DOMAIN}/aigc-course/` (or loopback on th
 
 ## Upstream auto-sync (optional)
 
-Set `CURSOR_BRIDGE_UPSTREAM_SYNC=true` on the application only when this deployment is a **git clone with push credentials** and you want weekly merges from [cursor-api-proxy](https://github.com/anyrobert/cursor-api-proxy). The proxy runs `git`, `rsync`, and `npm test` on the engine; successful server-side updates show a dashboard/chat banner and recommend **restart** (redeploy/restart the CAI application). Default is **off** so production apps do not mutate their own checkout.
+Set `CURSOR_BRIDGE_UPSTREAM_SYNC=true` on the application only when this deployment is a **git clone with push credentials** and you want weekly merges from [cursor-api-proxy](https://github.com/anyrobert/cursor-api-proxy). The proxy runs `git` and `npm test` on the engine (uses `rsync` when installed, else a Node mirror); successful server-side updates show a dashboard/chat banner and recommend **restart** (redeploy/restart the CAI application). Default is **off** so production apps do not mutate their own checkout.
 
 ## Failure modes (quick diagnosis)
 
