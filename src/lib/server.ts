@@ -13,7 +13,7 @@ import {
 } from "./auth-token-keepalive.js";
 import { killAllChildProcesses } from "./process.js";
 import { ToolSessionRegistry } from "./tool-session-registry.js";
-import { appsDirOf } from "./dynamic-apps.js";
+import { appsDirOf, registerBridgeAppSegment } from "./dynamic-apps.js";
 import { maybeAutoSyncCliCache, redeployAll } from "./plugins/manager.js";
 import { startUpstreamSyncScheduler } from "./upstream-sync.js";
 
@@ -203,6 +203,7 @@ export function setupGracefulShutdown(
 
 function startSingleServer(opts: BridgeServerOptions): BridgeHttpServer {
   const { config } = opts;
+  registerBridgeAppSegment(config.appSegment);
 
   const toolSessions = new ToolSessionRegistry();
   const handleRequest = createRequestListener(opts, { toolSessions });
@@ -254,6 +255,7 @@ function startSingleServer(opts: BridgeServerOptions): BridgeHttpServer {
     console.log(`- default model: ${config.defaultModel}`);
     console.log(`- force: ${config.force}`);
     console.log(`- approve mcps: ${config.approveMcps}`);
+    console.log(`- Public app segment: /${config.appSegment}/`);
     console.log(`- ${formatInboundAuthStartupLog(process.env)}`);
     console.log(`- sessions log: ${config.sessionsLogPath}`);
     console.log(`- user apps: ${appsDirOf(config)} (hot deploy at /apps/{name}/ and /{name}/)`);

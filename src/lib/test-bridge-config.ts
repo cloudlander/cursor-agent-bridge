@@ -33,6 +33,7 @@ export function testBridgeConfig(
     winCmdlineMax: 30_000,
     contextPreamble: true,
     bridgePackageVersion: "0.0.0-test",
+    appSegment: "cursor-agent",
     ...overrides,
   };
 }

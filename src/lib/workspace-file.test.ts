@@ -40,6 +40,7 @@ function baseConfig(workspace: string): BridgeConfig {
     multiPort: false,
     winCmdlineMax: 8191,
     contextPreamble: false,
+    appSegment: "cursor-agent",
     bridgePackageVersion: "test",
   };
 }

@@ -52,6 +52,7 @@ function testConfig(dir: string): BridgeConfig {
     multiPort: false,
     winCmdlineMax: 30_000,
     contextPreamble: false,
+    appSegment: "cursor-agent",
     bridgePackageVersion: "test",
   };
 }

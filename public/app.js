@@ -131,7 +131,10 @@
   }
 
   async function fetchJSON(url, opts = {}) {
-    const r = await fetch(url, opts);
+    const r = await fetch(
+      typeof bridgePath === "function" ? bridgePath(url) : url,
+      opts,
+    );
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     return r.json();
   }

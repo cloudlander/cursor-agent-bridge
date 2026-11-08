@@ -34,6 +34,7 @@ function baseConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     multiPort: false,
     winCmdlineMax: 30_000,
     contextPreamble: true,
+    appSegment: "cursor-agent",
     bridgePackageVersion: "0.0.0-test",
     ...overrides,
   };

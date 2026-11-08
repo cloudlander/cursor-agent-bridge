@@ -7,6 +7,7 @@ import {
   loadAuthKeepaliveOptions,
   type AuthKeepaliveOptions,
 } from "./auth-token-keepalive.js";
+import { resolveAppSegment } from "./app-segment.js";
 import { loadEnvConfig, resolveAgentCommand, type EnvOptions } from "./env.js";
 
 function readBridgePackageVersion(): string {
@@ -87,6 +88,8 @@ export type BridgeConfig = {
   contextExtra?: string;
   /** Background Cursor OAuth / API-key session refresh (see CURSOR_BRIDGE_AUTH_KEEPALIVE*). */
   authKeepalive?: AuthKeepaliveOptions;
+  /** URL path segment for this bridge instance (public URLs: {mount}/{appSegment}/…). */
+  appSegment: string;
 };
 
 export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
@@ -149,5 +152,6 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     bridgePackageVersion: readBridgePackageVersion(),
     contextExtra: env.contextExtra,
     authKeepalive: loadAuthKeepaliveOptions(envSource),
+    appSegment: resolveAppSegment(env.sessionsLogPath, envSource),
   };
 }

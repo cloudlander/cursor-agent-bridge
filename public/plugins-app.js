@@ -3,7 +3,9 @@ function $(id) {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
+  const res = await fetch(
+    typeof bridgePath === "function" ? bridgePath(path) : path,
+    {
     ...opts,
     headers: {
       Accept: "application/json",

@@ -39,7 +39,7 @@
 
   async function dismissBanner() {
     try {
-      await fetch('/api/upstream-sync/dismiss', {
+      await fetch(bridgePath('/api/upstream-sync/dismiss'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: '{}',
@@ -123,7 +123,7 @@
 
   async function refreshUpstreamSyncBanner() {
     try {
-      const res = await fetch('/api/upstream-sync');
+      const res = await fetch(bridgePath('/api/upstream-sync'));
       if (!res.ok) return;
       const data = await res.json();
       renderBanner(data.banner);

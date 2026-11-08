@@ -3,6 +3,8 @@ import * as http from "node:http";
 import * as path from "node:path";
 
 import type { BridgeConfig } from "./config.js";
+import { getBridgePublicContext } from "./bridge-request-context.js";
+import { publicPath } from "./http-public-path.js";
 import { json } from "./http.js";
 
 /** Safe app directory name (alphanumeric, dot, dash, underscore). */
@@ -20,7 +22,13 @@ export const RESERVED_APP_SEGMENTS = new Set([
   "chat",
   "plugins",
   "callback",
+  "cursor-agent",
 ]);
+
+/** Reserve this instance’s public path segment so user apps cannot use the same short name. */
+export function registerBridgeAppSegment(segment: string): void {
+  RESERVED_APP_SEGMENTS.add(segment);
+}
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -66,9 +74,18 @@ function notFound(res: http.ServerResponse): void {
   res.end("not found\n");
 }
 
-function redirect(res: http.ServerResponse, location: string): void {
-  res.writeHead(302, { location, "cache-control": "no-store" });
-  res.end();
+function mapAppsPublic(
+  apps: AppSummary[],
+  req: http.IncomingMessage,
+  config: BridgeConfig,
+): AppSummary[] {
+  const ctx = getBridgePublicContext(req);
+  const mount = ctx?.mount ?? "";
+  return apps.map((a) => ({
+    ...a,
+    url: publicPath(a.url, mount, config.appSegment),
+    shortUrl: publicPath(a.shortUrl, mount, config.appSegment),
+  }));
 }
 
 function serveFile(res: http.ServerResponse, filePath: string): void {
@@ -341,7 +358,10 @@ export function handleDynamicApps(
   const appsDir = appsDirOf(config);
 
   if (req.method === "GET" && pathname === "/api/apps") {
-    json(res, 200, { appsDir, apps: listApps(appsDir) });
+    json(res, 200, {
+      appsDir,
+      apps: mapAppsPublic(listApps(appsDir), req, config),
+    });
     return true;
   }
 
@@ -353,17 +373,14 @@ export function handleDynamicApps(
         res.end();
         return true;
       }
-      const html = renderAppsIndexHtml(listApps(appsDir));
+      const html = renderAppsIndexHtml(
+        mapAppsPublic(listApps(appsDir), req, config),
+      );
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "cache-control": "no-store",
       });
       res.end(html);
-      return true;
-    }
-
-    if (appsRoute.rel === "" && pathname.endsWith(`/apps/${appsRoute.name}`)) {
-      redirect(res, `/apps/${appsRoute.name}/`);
       return true;
     }
 
@@ -384,10 +401,6 @@ export function handleDynamicApps(
         return false;
       }
       notFound(res);
-      return true;
-    }
-    if (shortRoute.rel === "" && pathname === `/${shortRoute.name}`) {
-      redirect(res, `/${shortRoute.name}/`);
       return true;
     }
     return handleAppAssetRoute(
