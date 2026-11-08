@@ -13,7 +13,14 @@ const IMAGE_EXTENSIONS = new Set([
   ".jpeg",
   ".gif",
   ".webp",
+]);
+
+/** Served only as download / attachment — not with inline=1 in browser (XSS). */
+const INLINE_BLOCKED_EXTENSIONS = new Set([
+  ".html",
+  ".htm",
   ".svg",
+  ".xml",
 ]);
 
 const DOWNLOAD_EXTENSIONS = new Set([
@@ -99,12 +106,23 @@ function isBlockedBasename(resolvedPath: string): boolean {
   return false;
 }
 
+function managedDirRoot(workspaceDir: string, relDir: string): string {
+  return path.join(realRoot(workspaceDir), relDir);
+}
+
+function isUnderUploadsDir(resolvedPath: string, workspaceDir: string): boolean {
+  return isUnderRoot(resolvedPath, managedDirRoot(workspaceDir, UPLOADS_DIR));
+}
+
+function isUnderOutputsDir(resolvedPath: string, workspaceDir: string): boolean {
+  return isUnderRoot(resolvedPath, managedDirRoot(workspaceDir, OUTPUTS_DIR));
+}
+
 function isUnderManagedDir(resolvedPath: string, workspaceDir: string): boolean {
-  for (const rel of [UPLOADS_DIR, OUTPUTS_DIR]) {
-    const root = path.join(realRoot(workspaceDir), rel);
-    if (isUnderRoot(resolvedPath, root)) return true;
-  }
-  return false;
+  return (
+    isUnderUploadsDir(resolvedPath, workspaceDir) ||
+    isUnderOutputsDir(resolvedPath, workspaceDir)
+  );
 }
 
 function isCursorProjectAsset(resolvedPath: string): boolean {
@@ -158,6 +176,14 @@ export function classifyWorkspaceFile(
   }
   if (!stat.isFile() || stat.size > MAX_WORKSPACE_FILE_SERVE_BYTES) return null;
 
+  if (ext === ".svg") {
+    if (isUnderUploadsDir(resolvedPath, config.workspace)) return "download";
+    if (isUnderRoot(resolvedPath, config.workspace)) return "inline-image";
+    if (isUnderOutputsDir(resolvedPath, config.workspace)) return "inline-image";
+    if (isCursorProjectAsset(resolvedPath)) return "inline-image";
+    return null;
+  }
+
   if (IMAGE_EXTENSIONS.has(ext)) {
     if (isUnderRoot(resolvedPath, config.workspace)) return "inline-image";
     if (isUnderManagedDir(resolvedPath, config.workspace)) return "inline-image";
@@ -202,10 +228,12 @@ function serveFile(
   filePath: string,
   mode: WorkspaceFileServeMode,
   forceDownload: boolean,
+  forceInline = false,
 ): void {
   const ext = path.extname(filePath).toLowerCase();
   const mime = mimeForPath(filePath);
-  const asDownload = forceDownload || mode === "download";
+  const pdfInline = forceInline && ext === ".pdf" && mode === "download";
+  const asDownload = forceDownload || (mode === "download" && !pdfInline);
   fs.stat(filePath, (err, stat) => {
     if (err || !stat.isFile()) {
       res.writeHead(404, { "content-type": "text/plain" });
@@ -216,11 +244,12 @@ function serveFile(
       "content-type": mime,
       "content-length": stat.size,
       "cache-control": "public, max-age=3600",
+      "x-content-type-options": "nosniff",
     };
     if (asDownload) {
       const name = path.basename(filePath);
       headers["content-disposition"] = `attachment; filename="${name.replace(/"/g, "")}"`;
-    } else if (!IMAGE_EXTENSIONS.has(ext)) {
+    } else if (pdfInline || (!IMAGE_EXTENSIONS.has(ext) && mode !== "inline-image")) {
       headers["content-disposition"] = "inline";
     }
     res.writeHead(200, headers);
@@ -246,6 +275,7 @@ export function handleWorkspaceFile(
   }
 
   const forceDownload = params.get("download") === "1";
+  const wantInline = params.get("inline") === "1";
   const resolved = resolveWorkspaceFilePath(rawPath, config);
   if (!resolved) {
     res.writeHead(404, { "content-type": "text/plain" });
@@ -259,9 +289,19 @@ export function handleWorkspaceFile(
     res.end("not found\n");
     return;
   }
+  const ext = path.extname(resolved).toLowerCase();
+  if (wantInline && INLINE_BLOCKED_EXTENSIONS.has(ext)) {
+    const trustedSvgInline = ext === ".svg" && mode === "inline-image";
+    if (!trustedSvgInline) {
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found\n");
+      return;
+    }
+  }
   if (forceDownload && mode === "inline-image") {
     serveFile(res, resolved, "download", true);
     return;
   }
-  serveFile(res, resolved, mode, forceDownload);
+  const allowPdfInline = wantInline && ext === ".pdf" && mode === "download";
+  serveFile(res, resolved, mode, forceDownload, allowPdfInline);
 }

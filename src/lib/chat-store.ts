@@ -571,6 +571,101 @@ export async function saveWebThreads(
   await writeChatStore(config, store);
 }
 
+export type WebThreadSyncMessage = {
+  role: string;
+  content?: unknown;
+  attachments?: Array<{
+    name?: string;
+    mimeType?: string;
+    path?: string;
+    url?: string;
+    size?: number;
+  }>;
+};
+
+/** Text payload from an OpenAI-style message (string or text parts). */
+export function extractMessageTextForStore(m: {
+  content?: unknown;
+  role?: string;
+}): string {
+  if (typeof m.content === "string") return m.content.trim();
+  if (Array.isArray(m.content)) {
+    return m.content
+      .filter(
+        (p: { type?: string; text?: string }) =>
+          p?.type === "text" && typeof p.text === "string",
+      )
+      .map((p: { text: string }) => p.text.trim())
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}
+
+function normalizeStoredAttachments(
+  raw: WebThreadSyncMessage["attachments"],
+): ChatAttachment[] | undefined {
+  if (!Array.isArray(raw) || !raw.length) return undefined;
+  const out: ChatAttachment[] = [];
+  for (const a of raw) {
+    if (!a || typeof a.path !== "string" || !a.path.trim()) continue;
+    const filePath = a.path.trim();
+    const att: ChatAttachment = {
+      name:
+        typeof a.name === "string" && a.name.trim()
+          ? a.name.trim()
+          : path.basename(filePath),
+      mimeType:
+        typeof a.mimeType === "string" && a.mimeType.trim()
+          ? a.mimeType.trim()
+          : "application/octet-stream",
+      path: filePath,
+    };
+    if (typeof a.size === "number" && Number.isFinite(a.size)) att.size = a.size;
+    if (typeof a.url === "string" && a.url.startsWith("/api/workspace-file")) {
+      att.url = a.url;
+    }
+    out.push(att);
+  }
+  return out.length ? out : undefined;
+}
+
+function preserveAttachmentsFromPrevious(
+  prevMessages: ChatMessage[],
+  role: "user" | "assistant",
+  content: string,
+  incoming?: ChatAttachment[],
+): ChatAttachment[] | undefined {
+  if (incoming?.length) return incoming;
+  const trimmed = content.trim();
+  for (let i = prevMessages.length - 1; i >= 0; i--) {
+    const pm = prevMessages[i];
+    if (
+      pm.role === role &&
+      pm.content.trim() === trimmed &&
+      pm.attachments?.length
+    ) {
+      return pm.attachments;
+    }
+  }
+  return undefined;
+}
+
+export function webThreadMessagesFromApiBody(
+  messages: WebThreadSyncMessage[],
+): ChatMessage[] {
+  const now = Date.now();
+  return messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => {
+      const role = m.role as "user" | "assistant";
+      const content = extractMessageTextForStore(m);
+      const attachments = normalizeStoredAttachments(m.attachments);
+      return { role, content: content.trim(), attachments, ts: now };
+    })
+    .filter((m) => m.content || m.attachments?.length);
+}
+
 /** Persist user/assistant history from a web `/api/agent/chat` request (server source of truth). */
 export async function syncWebThreadFromChatRequest(
   config: BridgeConfig,
@@ -578,22 +673,9 @@ export async function syncWebThreadFromChatRequest(
   opts: {
     model?: string;
     mode?: string;
-    messages: Array<{ role: string; content: string }>;
+    messages: WebThreadSyncMessage[];
   },
 ): Promise<void> {
-  const chatMessages: ChatMessage[] = opts.messages
-    .filter(
-      (m) =>
-        (m.role === "user" || m.role === "assistant") &&
-        typeof m.content === "string" &&
-        m.content.trim(),
-    )
-    .map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content.trim(),
-      ts: Date.now(),
-    }));
-
   await storeMutex.run(() => {
     const storePath = chatStorePath(config);
     const store = readStoreSync(storePath);
@@ -616,7 +698,24 @@ export async function syncWebThreadFromChatRequest(
     if (opts.model !== undefined) thread.model = opts.model;
     if (opts.mode !== undefined) thread.mode = opts.mode;
 
-    const streamingAssistant = [...(thread.messages ?? [])]
+    const prevMessages = thread.messages ?? [];
+    const incoming = webThreadMessagesFromApiBody(opts.messages);
+    const chatMessages: ChatMessage[] = incoming.map((m) => {
+      const attachments = preserveAttachmentsFromPrevious(
+        prevMessages,
+        m.role,
+        m.content,
+        m.attachments,
+      );
+      return {
+        role: m.role,
+        content: m.content,
+        ts: m.ts ?? now,
+        ...(attachments?.length ? { attachments } : {}),
+      };
+    });
+
+    const streamingAssistant = [...prevMessages]
       .reverse()
       .find((m) => m.role === "assistant" && m.streaming);
 

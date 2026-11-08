@@ -61,7 +61,11 @@ import {
   resolveToolChoice,
   type PendingClientToolCall,
 } from "../tool-types.js";
-import { recordApiSession, syncWebThreadFromChatRequest } from "../chat-store.js";
+import {
+  recordApiSession,
+  syncWebThreadFromChatRequest,
+  type WebThreadSyncMessage,
+} from "../chat-store.js";
 import {
   ToolSessionError,
   toolSessionOwnerKey,
@@ -735,10 +739,17 @@ export async function handleChatCompletions(
 
     let agentSignal: AbortSignal;
     if (webThreadId) {
+      const syncMessages: WebThreadSyncMessage[] = cleanMessages
+        .filter((m: { role?: string }) => m?.role === "user" || m?.role === "assistant")
+        .map((m: any) => ({
+          role: String(m.role),
+          content: m.content,
+          attachments: Array.isArray(m.attachments) ? m.attachments : undefined,
+        }));
       await syncWebThreadFromChatRequest(config, webThreadId, {
         model: displayModel,
         mode,
-        messages: trafficMessages,
+        messages: syncMessages,
       }).catch(() => undefined);
       const reg = startWebGeneration(config, webThreadId);
       if (reg.existed) {
