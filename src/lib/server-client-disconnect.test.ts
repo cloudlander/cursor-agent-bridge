@@ -109,11 +109,10 @@ describe("client disconnect", () => {
       });
     });
 
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     }) as http.Server[];
-    await new Promise<void>((r) => servers[0].on("listening", () => r()));
 
     const disconnected = requestThenDisconnect(
       servers[0],

@@ -41,6 +41,10 @@ import {
   type MarketplaceDef,
 } from "./store.js";
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 function pluginId(marketplaceId: string, name: string): string {
   return `${marketplaceId}/${name}`;
 }
@@ -209,6 +213,7 @@ export async function syncCliCachePlugins(config: BridgeConfig): Promise<{
   const imported: string[] = [];
   const skipped: string[] = [];
   for (const entry of discoverCliCacheCatalog(config)) {
+    await yieldToEventLoop();
     const id = pluginId(entry.marketplaceId, entry.name);
     if (installed.has(id)) {
       skipped.push(id);
@@ -372,6 +377,7 @@ export async function redeployAll(config: BridgeConfig): Promise<{ count: number
     for (const plugin of reg.plugins) {
       plugin.deployed = deployInstalledPlugin(plugin, config);
       n++;
+      await yieldToEventLoop();
     }
     writeRegistry(config, reg);
     return { count: n };
@@ -447,10 +453,40 @@ export async function startCatalogMcpLogin(
   });
 }
 
-/** Import CLI-cached plugins on startup so the UI works without manual Sync or any bridge API key. */
+/** Import CLI-cached plugins so the Plugins UI works without manual Sync or any bridge API key. */
 export async function maybeAutoSyncCliCache(config: BridgeConfig): Promise<void> {
   const raw = process.env.CURSOR_BRIDGE_PLUGINS_AUTO_SYNC_CLI?.trim().toLowerCase();
   if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return;
   if (process.env.VITEST === "true") return;
   await syncCliCachePlugins(config);
+}
+
+let pluginsUiInitPromise: Promise<void> | undefined;
+
+/**
+ * One-time CLI cache import + redeploy for the Plugins UI. Does not run at bridge
+ * listen time; agent `/v1` traffic does not depend on this.
+ */
+export async function ensurePluginsUiInitialized(
+  config: BridgeConfig,
+): Promise<void> {
+  if (process.env.VITEST === "true") return;
+  if (!pluginsUiInitPromise) {
+    pluginsUiInitPromise = (async () => {
+      console.log(
+        "[plugins] Initializing registry (first Plugins page or API access)…",
+      );
+      try {
+        await maybeAutoSyncCliCache(config);
+      } catch {
+        /* empty cache or first run */
+      }
+      try {
+        await redeployAll(config);
+      } catch {
+        /* first-run or empty registry */
+      }
+    })();
+  }
+  await pluginsUiInitPromise;
 }

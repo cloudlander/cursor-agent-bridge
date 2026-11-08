@@ -7,6 +7,7 @@ import {
 } from "./bridge-request-context.js";
 import { bootstrapRedirectHtml } from "./bridge-html.js";
 import {
+  externalPathnameFromRequest,
   isBootstrapPath,
   isDirectInternalRoute,
   mountFromBootstrapPathname,
@@ -20,17 +21,14 @@ export type IncomingPathResult =
   | { kind: "routed" }
   | { kind: "not_found" };
 
-function pathnameOfUrl(url: string): string {
-  return (url.split("?")[0] ?? "/") || "/";
-}
-
 function queryOfUrl(url: string): string {
   const i = url.indexOf("?");
   return i >= 0 ? url.slice(i) : "";
 }
 
+/** Single-segment user app short URL `/{name}/`, not nested paths like `/proxy/8100/…`. */
 function isLegacyUserAppShortPath(pathname: string): boolean {
-  const short = pathname.match(/^\/([^/]+)(?:\/(.*))?$/);
+  const short = pathname.match(/^\/([^/]+)\/?$/);
   if (!short?.[1] || short[1].includes(".")) return false;
   return true;
 }
@@ -45,7 +43,7 @@ export function applyBridgeIncomingPath(
   res: http.ServerResponse,
 ): IncomingPathResult {
   const rawUrl = req.url ?? "/";
-  const externalPathname = pathnameOfUrl(rawUrl);
+  const externalPathname = externalPathnameFromRequest(req);
   const query = queryOfUrl(rawUrl);
 
   if (externalPathname === "/healthz") {

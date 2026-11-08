@@ -11,7 +11,9 @@ export function resolvePublicOrigin(req: http.IncomingMessage): string | undefin
     headerFirst(req.headers["x-forwarded-protocol"]) ??
     "http";
   const host =
-    headerFirst(req.headers["x-forwarded-host"]) ?? req.headers.host?.trim();
+    headerFirst(req.headers["x-forwarded-host"]) ??
+    headerFirst(req.headers["x-forwarded-server"]) ??
+    req.headers.host?.trim();
   if (!host) return undefined;
   try {
     const origin = new URL(`${protoHeader}://${host}`).origin;
@@ -42,4 +44,28 @@ export function resolvePublicAppBase(
   const mount = ctx?.mount ?? "";
   const basePath = ctx?.publicBase ?? publicBasePath(mount, config.appSegment);
   return `${origin.replace(/\/$/, "")}${basePath.startsWith("/") ? basePath : `/${basePath}`}`;
+}
+
+/** Browser-reachable URLs for dashboard Status (OpenAI + Cursor /v1 clients). */
+export function resolvePublicEndpointUrls(
+  req: http.IncomingMessage,
+  config: BridgeConfig,
+): { openAiApiBase: string; cursorApiBase: string } {
+  const appBase = resolvePublicAppBase(req, config);
+  const ctx = getBridgePublicContext(req);
+  const mount = ctx?.mount ?? "";
+  const basePath = ctx?.publicBase ?? publicBasePath(mount, config.appSegment);
+  const pathBase = basePath.startsWith("/") ? basePath : `/${basePath}`;
+  if (appBase) {
+    return {
+      openAiApiBase: `${appBase}/v1`,
+      cursorApiBase: `${appBase}/v1`,
+    };
+  }
+  const host = config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
+  const origin = `http://${host}:${config.port}`;
+  return {
+    openAiApiBase: `${origin}${pathBase}/v1`,
+    cursorApiBase: `${origin}${pathBase}/v1`,
+  };
 }

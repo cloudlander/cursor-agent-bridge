@@ -89,9 +89,8 @@ function baseConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 }
 
 async function start(config: BridgeConfig): Promise<string> {
-  const [server] = startBridgeServer({ version: "test", config });
+  const [server] = await startBridgeServer({ version: "test", config });
   servers.push(server as http.Server);
-  await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No port");
   return `http://127.0.0.1:${address.port}`;

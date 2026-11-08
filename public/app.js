@@ -179,12 +179,42 @@
       el('div', { class: 'k' }, 'Service log'), el('div', { class: 'v mono', style: 'font-size: 11px; word-break: break-all;' }, s.serviceLog),
     );
 
-    const copy = el('div', { class: 'copy-row' },
-      el('span', { class: 'label' }, 'health'),
+    const publicBlock = [];
+    if (s.publicOpenAiApiBase || s.publicCursorApiBase) {
+      publicBlock.push(
+        el('p', {
+          class: 'muted-text',
+          style: 'margin: 14px 0 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;',
+        }, 'Public URLs'),
+      );
+      if (s.publicOpenAiApiBase) {
+        publicBlock.push(
+          el('div', { class: 'copy-row' },
+            el('span', { class: 'label' }, 'OpenAI API'),
+            el('code', {}, s.publicOpenAiApiBase),
+          ),
+          el('div', { class: 'copy-row' },
+            el('span', { class: 'label' }, 'OpenAI chat completions'),
+            el('code', {}, `${s.publicOpenAiApiBase}/chat/completions`),
+          ),
+        );
+      }
+      if (s.publicCursorApiBase) {
+        publicBlock.push(
+          el('div', { class: 'copy-row' },
+            el('span', { class: 'label' }, 'Cursor API'),
+            el('code', {}, `${s.publicCursorApiBase}/messages`),
+          ),
+        );
+      }
+    }
+
+    const healthRow = el('div', { class: 'copy-row', style: 'margin-top: 10px;' },
+      el('span', { class: 'label' }, 'Health (process)'),
       el('code', {}, `curl -s http://${s.host}:${s.port}/healthz`),
     );
 
-    $('status-body').replaceChildren(kv, copy);
+    $('status-body').replaceChildren(kv, ...publicBlock, healthRow);
   }
 
   function renderApps(data) {
@@ -219,7 +249,13 @@
   }
 
   function renderConfig(cfg) {
-    const skip = new Set(['requiredKey']);
+    const skip = new Set([
+      'requiredKey',
+      'appSegment',
+      'mount',
+      'publicBase',
+      'externalPathname',
+    ]);
     const rows = Object.entries(cfg)
       .filter(([k]) => !skip.has(k))
       .sort((a, b) => a[0].localeCompare(b[0]))

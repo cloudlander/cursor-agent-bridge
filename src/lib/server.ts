@@ -14,7 +14,6 @@ import {
 import { killAllChildProcesses } from "./process.js";
 import { ToolSessionRegistry } from "./tool-session-registry.js";
 import { appsDirOf, registerBridgeAppSegment } from "./dynamic-apps.js";
-import { maybeAutoSyncCliCache, redeployAll } from "./plugins/manager.js";
 import { startUpstreamSyncScheduler } from "./upstream-sync.js";
 
 function acpLauncherLabel(acpArgs: string[]): string {
@@ -30,16 +29,16 @@ export type BridgeServerOptions = {
 
 export type BridgeHttpServer = http.Server | https.Server;
 
-export function startBridgeServer(
+export async function startBridgeServer(
   opts: BridgeServerOptions,
-): BridgeHttpServer[] {
+): Promise<BridgeHttpServer[]> {
   const { config } = opts;
   const servers: BridgeHttpServer[] = [];
 
   if (config.configDirs && config.configDirs.length > 0) {
     if (config.multiPort) {
       // In multi-port mode, we don't need a central pool. We spawn a server for each configDir
-      config.configDirs.forEach((dir, index) => {
+      for (const [index, dir] of config.configDirs.entries()) {
         const port = config.port + index;
         const serverOpts = {
           ...opts,
@@ -50,16 +49,14 @@ export function startBridgeServer(
             multiPort: false, // Disable multi-port for child servers to prevent recursion
           },
         };
-        const server = startSingleServer(serverOpts);
-        servers.push(server);
-      });
+        servers.push(await startSingleServer(serverOpts));
+      }
       return servers;
-    } else {
-      initAccountPool(config.configDirs);
     }
+    initAccountPool(config.configDirs);
   }
 
-  servers.push(startSingleServer(opts));
+  servers.push(await startSingleServer(opts));
   return servers;
 }
 
@@ -201,7 +198,48 @@ export function setupGracefulShutdown(
   signals.on("SIGINT", () => onSignal("SIGINT"));
 }
 
-function startSingleServer(opts: BridgeServerOptions): BridgeHttpServer {
+function logListenBanner(opts: BridgeServerOptions): void {
+  const { config } = opts;
+  console.log(
+    `- agent bin: ${config.agentBin}`,
+  );
+  console.log(
+    `- ACP: ${config.useAcp ? "yes" : "no"}${config.useAcp ? ` (launcher: ${acpLauncherLabel(config.acpArgs)})` : ""}`,
+  );
+  console.log(`- workspace: ${config.workspace}`);
+  console.log(`- mode: ${config.mode}`);
+  console.log(`- default model: ${config.defaultModel}`);
+  console.log(`- force: ${config.force}`);
+  console.log(`- approve mcps: ${config.approveMcps}`);
+  console.log(`- Public app segment: /${config.appSegment}/`);
+  console.log(`- ${formatInboundAuthStartupLog(process.env)}`);
+  console.log(`- sessions log: ${config.sessionsLogPath}`);
+  console.log(`- user apps: ${appsDirOf(config)} (hot deploy at /apps/{name}/ and /{name}/)`);
+  console.log(
+    `- chat-only workspace: ${config.chatOnlyWorkspace ? "yes (isolated temp dir)" : "no"}`,
+  );
+  console.log(
+    `- verbose traffic: ${config.verbose ? "yes (CURSOR_BRIDGE_VERBOSE=true)" : "no"}`,
+  );
+  if (config.verbose) {
+    console.log(
+      `- verbose full bodies: ${config.verboseFull ? "yes (CURSOR_BRIDGE_VERBOSE_FULL=true)" : "no (preview truncated)"}`,
+    );
+  }
+  console.log(
+    `- max mode: ${config.maxMode ? "yes (CURSOR_BRIDGE_MAX_MODE=true)" : "no"}`,
+  );
+  console.log(
+    `- Windows cmdline budget: ${config.winCmdlineMax} (prompt tail truncation when over limit; Windows only)`,
+  );
+  if (config.configDirs && config.configDirs.length > 0) {
+    console.log(
+      `- account pool: enabled with ${config.configDirs.length} configuration directories`,
+    );
+  }
+}
+
+async function startSingleServer(opts: BridgeServerOptions): Promise<BridgeHttpServer> {
   const { config } = opts;
   registerBridgeAppSegment(config.appSegment);
 
@@ -241,65 +279,29 @@ function startSingleServer(opts: BridgeServerOptions): BridgeHttpServer {
     void toolSessions.closeAll();
   });
 
-  server.listen(config.port, config.host, () => {
-    const scheme = useTls ? "https" : "http";
-    console.log(
-      `cursor-api-proxy listening on ${scheme}://${config.host}:${config.port}`,
-    );
-    console.log(`- agent bin: ${config.agentBin}`);
-    console.log(
-      `- ACP: ${config.useAcp ? "yes" : "no"}${config.useAcp ? ` (launcher: ${acpLauncherLabel(config.acpArgs)})` : ""}`,
-    );
-    console.log(`- workspace: ${config.workspace}`);
-    console.log(`- mode: ${config.mode}`);
-    console.log(`- default model: ${config.defaultModel}`);
-    console.log(`- force: ${config.force}`);
-    console.log(`- approve mcps: ${config.approveMcps}`);
-    console.log(`- Public app segment: /${config.appSegment}/`);
-    console.log(`- ${formatInboundAuthStartupLog(process.env)}`);
-    console.log(`- sessions log: ${config.sessionsLogPath}`);
-    console.log(`- user apps: ${appsDirOf(config)} (hot deploy at /apps/{name}/ and /{name}/)`);
-    console.log(
-      `- chat-only workspace: ${config.chatOnlyWorkspace ? "yes (isolated temp dir)" : "no"}`,
-    );
-    console.log(
-      `- verbose traffic: ${config.verbose ? "yes (CURSOR_BRIDGE_VERBOSE=true)" : "no"}`,
-    );
-    if (config.verbose) {
+  startAuthTokenKeepalive(
+    config,
+    config.authKeepalive ?? loadAuthKeepaliveOptions(process.env),
+  );
+
+  await new Promise<void>((resolve, reject) => {
+    const onListen = () => {
+      const scheme = useTls ? "https" : "http";
       console.log(
-        `- verbose full bodies: ${config.verboseFull ? "yes (CURSOR_BRIDGE_VERBOSE_FULL=true)" : "no (preview truncated)"}`,
+        `cursor-api-proxy listening on ${scheme}://${config.host}:${config.port}`,
       );
-    }
-    console.log(
-      `- max mode: ${config.maxMode ? "yes (CURSOR_BRIDGE_MAX_MODE=true)" : "no"}`,
-    );
-    console.log(
-      `- Windows cmdline budget: ${config.winCmdlineMax} (prompt tail truncation when over limit; Windows only)`,
-    );
-    if (config.configDirs && config.configDirs.length > 0) {
-      console.log(
-        `- account pool: enabled with ${config.configDirs.length} configuration directories`,
-      );
-    }
-    startAuthTokenKeepalive(
-      config,
-      config.authKeepalive ?? loadAuthKeepaliveOptions(process.env),
-    );
-    if (process.env.VITEST !== "true") {
-      void (async () => {
-        try {
-          await maybeAutoSyncCliCache(config);
-        } catch {
-          /* empty cache or first run */
-        }
-        try {
-          await redeployAll(config);
-        } catch {
-          /* first-run or empty registry */
-        }
+      logListenBanner(opts);
+      if (process.env.VITEST !== "true") {
         startUpstreamSyncScheduler(config);
-      })();
-    }
+      }
+      resolve();
+    };
+    const onError = (err: NodeJS.ErrnoException) => {
+      server.off("listening", onListen);
+      reject(err);
+    };
+    server.once("error", onError);
+    server.listen(config.port, config.host, onListen);
   });
 
   return server;

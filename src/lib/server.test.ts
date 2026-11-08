@@ -142,13 +142,10 @@ describe("startBridgeServer", () => {
   });
 
   it("responds 200 on GET /health", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/health");
     expect(status).toBe(200);
@@ -161,13 +158,10 @@ describe("startBridgeServer", () => {
   });
 
   it("responds 200 on GET /v1/models", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/v1/models");
     expect(status).toBe(200);
@@ -178,13 +172,10 @@ describe("startBridgeServer", () => {
   });
 
   it("returns 401 when requiredKey is set and Authorization is missing", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/health");
     expect(status).toBe(401);
@@ -193,13 +184,10 @@ describe("startBridgeServer", () => {
   });
 
   it("GET /healthz bypasses requiredKey", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/healthz");
     expect(status).toBe(200);
@@ -207,13 +195,10 @@ describe("startBridgeServer", () => {
   });
 
   it("serves dashboard GET / without Authorization when requiredKey is set", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/");
     expect(status).toBe(200);
@@ -228,13 +213,10 @@ describe("startBridgeServer", () => {
     delete process.env.CURSOR_AUTH_TOKEN;
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "cap-auth-"));
 
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ configDirs: [] }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/api/agent-auth");
     expect(status).toBe(200);
@@ -251,13 +233,10 @@ describe("startBridgeServer", () => {
   });
 
   it("serves GET /chat without Authorization when requiredKey is set", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/chat");
     expect(status).toBe(200);
@@ -265,13 +244,10 @@ describe("startBridgeServer", () => {
   });
 
   it("serves GET /plugins and plugin API without Authorization when requiredKey is set", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const page = await fetchServer(servers[0], "/plugins");
     expect(page.status).toBe(200);
@@ -300,13 +276,10 @@ describe("startBridgeServer", () => {
 
   it("serves GET /api/upstream-sync without Authorization when requiredKey is set", async () => {
     vi.stubEnv("CURSOR_BRIDGE_UPSTREAM_SYNC", "");
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const res = await fetchServer(servers[0], "/api/upstream-sync");
     expect(res.status).toBe(200);
@@ -315,13 +288,10 @@ describe("startBridgeServer", () => {
   });
 
   it("GET /api/agent/models bypasses requiredKey", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/api/agent/models");
     expect(status).toBe(200);
@@ -329,13 +299,10 @@ describe("startBridgeServer", () => {
   });
 
   it("POST /api/agent/chat bypasses requiredKey and reaches the agent", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/api/agent/chat", {
       method: "POST",
@@ -354,13 +321,10 @@ describe("startBridgeServer", () => {
   it("does not append session logs for dashboard /api/status and /api/log polling", async () => {
     const appendSessionLineMock = vi.mocked(appendSessionLine);
     appendSessionLineMock.mockClear();
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const statusRes = await fetchServer(servers[0], "/api/status");
     expect(statusRes.status).toBe(200);
@@ -374,13 +338,10 @@ describe("startBridgeServer", () => {
   });
 
   it("POST /api/log/clear archives and truncates sessions log", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     // Ensure starting state.
     try {
@@ -429,13 +390,10 @@ describe("startBridgeServer", () => {
   });
 
   it("returns 200 when requiredKey matches Authorization", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status } = await fetchServer(servers[0], "/health", {
       headers: { Authorization: "Bearer secret123" },
@@ -444,13 +402,10 @@ describe("startBridgeServer", () => {
   });
 
   it("accepts x-api-key when requiredKey is set (Claude Code)", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status } = await fetchServer(servers[0], "/health", {
       headers: { "x-api-key": "secret123" },
@@ -459,13 +414,10 @@ describe("startBridgeServer", () => {
   });
 
   it("returns Anthropic-shaped 401 for /v1/messages when key is wrong", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ requiredKey: "secret123" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/v1/messages", {
       method: "POST",
@@ -479,13 +431,10 @@ describe("startBridgeServer", () => {
   });
 
   it("POST /v1/messages/count_tokens returns input_tokens without calling the agent", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(
       servers[0],
@@ -506,13 +455,10 @@ describe("startBridgeServer", () => {
   });
 
   it("returns 404 for unknown path", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/unknown");
     expect(status).toBe(404);
@@ -521,13 +467,10 @@ describe("startBridgeServer", () => {
   });
 
   it("returns 200 for POST /v1/completions (non-streaming)", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/v1/completions", {
       method: "POST",
@@ -543,13 +486,10 @@ describe("startBridgeServer", () => {
   });
 
   it("returns 200 for POST /v1/chat/completions (non-streaming)", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(
       servers[0],
@@ -569,13 +509,10 @@ describe("startBridgeServer", () => {
   });
 
   it("returns OpenAI Responses shape for POST /v1/responses", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/v1/responses", {
       method: "POST",
@@ -600,13 +537,10 @@ describe("startBridgeServer", () => {
   it("maps Chat Completions reasoning_effort to a Cursor model variant", async () => {
     const runMock = vi.mocked(run);
     runMock.mockClear();
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status } = await fetchServer(servers[0], "/v1/chat/completions", {
       method: "POST",
@@ -624,13 +558,10 @@ describe("startBridgeServer", () => {
   it("maps Responses reasoning.effort to a Cursor model variant", async () => {
     const runMock = vi.mocked(run);
     runMock.mockClear();
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status } = await fetchServer(servers[0], "/v1/responses", {
       method: "POST",
@@ -646,13 +577,10 @@ describe("startBridgeServer", () => {
   });
 
   it("rejects reasoning effort unavailable for the model family", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(
       servers[0],
@@ -671,13 +599,10 @@ describe("startBridgeServer", () => {
   });
 
   it("streams OpenAI Responses semantic SSE events", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(servers[0], "/v1/responses", {
       method: "POST",
@@ -698,13 +623,10 @@ describe("startBridgeServer", () => {
   it("keeps the prompt out of argv and passes it via stdin when promptViaStdin is true (non-streaming)", async () => {
     const runMock = vi.mocked(run);
     runMock.mockClear();
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ promptViaStdin: true }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const marker = "UNIQUE_PROMPT_MARKER_argv_e2big";
     const { status } = await fetchServer(servers[0], "/v1/chat/completions", {
@@ -726,13 +648,10 @@ describe("startBridgeServer", () => {
   it("appends the prompt to argv (no stdin) when promptViaStdin is false (non-streaming)", async () => {
     const runMock = vi.mocked(run);
     runMock.mockClear();
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ promptViaStdin: false }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const marker = "UNIQUE_PROMPT_MARKER_argv_default";
     const { status } = await fetchServer(servers[0], "/v1/chat/completions", {
@@ -750,13 +669,10 @@ describe("startBridgeServer", () => {
   });
 
   it("returns display model when request is default and defaultModel is set", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "0.1.0",
       config: createTestConfig({ defaultModel: "composer-1.5" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(
       servers[0],
@@ -775,13 +691,10 @@ describe("startBridgeServer", () => {
   });
 
   it("echoes default when request is default and defaultModel is unset", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "0.1.0",
       config: createTestConfig({ defaultModel: "default" }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(
       servers[0],
@@ -800,13 +713,10 @@ describe("startBridgeServer", () => {
   });
 
   it("returns 400 for invalid body.mode on POST /v1/chat/completions", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig(),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status, body } = await fetchServer(
       servers[0],
@@ -828,13 +738,10 @@ describe("startBridgeServer", () => {
   it("maps a DSH plan system prompt to Cursor plan mode", async () => {
     const runMock = vi.mocked(run);
     runMock.mockClear();
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ dshAutoMode: true }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status } = await fetchServer(servers[0], "/v1/chat/completions", {
       method: "POST",
@@ -859,13 +766,10 @@ describe("startBridgeServer", () => {
   it("maps a normal DSH system prompt to Cursor agent mode", async () => {
     const runMock = vi.mocked(run);
     runMock.mockClear();
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ dshAutoMode: true }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status } = await fetchServer(servers[0], "/v1/chat/completions", {
       method: "POST",
@@ -888,13 +792,10 @@ describe("startBridgeServer", () => {
   it("infers DSH plan mode for the Responses API", async () => {
     const runMock = vi.mocked(run);
     runMock.mockClear();
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({ dshAutoMode: true }),
     });
-    await new Promise<void>((resolve) =>
-      servers[0].on("listening", () => resolve()),
-    );
 
     const { status } = await fetchServer(servers[0], "/v1/responses", {
       method: "POST",
@@ -912,7 +813,7 @@ describe("startBridgeServer", () => {
   });
 
   it("should spawn multiple servers when multiPort is true", async () => {
-    servers = startBridgeServer({
+    servers = await startBridgeServer({
       version: "1.0.0",
       config: createTestConfig({
         configDirs: ["/dir1", "/dir2"],
@@ -923,11 +824,6 @@ describe("startBridgeServer", () => {
 
     expect(servers.length).toBe(2);
 
-    await Promise.all(
-      servers.map(
-        (s) => new Promise<void>((resolve) => s.on("listening", resolve)),
-      ),
-    );
 
     const res1 = await fetchServer(servers[0], "/health");
     const res2 = await fetchServer(servers[1], "/health");
