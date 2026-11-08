@@ -257,17 +257,110 @@ function isGitRepo(repoRoot: string): boolean {
   return fs.existsSync(path.join(repoRoot, ".git"));
 }
 
+/** Match rsync --exclude patterns (name at any path segment, or full relative path). */
+export function upstreamSyncPathExcluded(relativePosix: string): boolean {
+  const parts = relativePosix.split("/").filter(Boolean);
+  const base = parts[parts.length - 1] ?? "";
+  for (const pattern of RSYNC_EXCLUDES) {
+    if (pattern.includes("/")) {
+      if (
+        relativePosix === pattern ||
+        relativePosix.startsWith(`${pattern}/`)
+      ) {
+        return true;
+      }
+    } else if (parts.some((p) => p === pattern) || base === pattern) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function collectNonExcludedRelFiles(root: string): Set<string> {
+  const rels = new Set<string>();
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      const rel = path.relative(root, full).split(path.sep).join("/");
+      if (upstreamSyncPathExcluded(rel)) continue;
+      if (ent.isDirectory()) {
+        stack.push(full);
+      } else if (ent.isFile()) {
+        rels.add(rel);
+      }
+    }
+  }
+  return rels;
+}
+
+function pruneEmptyDirsExceptExcluded(destRoot: string, dir = destRoot): void {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!ent.isDirectory()) continue;
+    const full = path.join(dir, ent.name);
+    const rel = path.relative(destRoot, full).split(path.sep).join("/");
+    if (upstreamSyncPathExcluded(rel)) continue;
+    pruneEmptyDirsExceptExcluded(destRoot, full);
+    if (fs.readdirSync(full).length === 0) {
+      fs.rmdirSync(full);
+    }
+  }
+}
+
+/** Node mirror of `rsync -a --delete` with AGENTS.md exclude list (for hosts without rsync). */
+export function mirrorDirectoryFromUpstream(srcDir: string, destDir: string): void {
+  fs.mkdirSync(destDir, { recursive: true });
+  const srcFiles = collectNonExcludedRelFiles(srcDir);
+
+  for (const rel of srcFiles) {
+    const from = path.join(srcDir, rel);
+    const to = path.join(destDir, rel);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
+    const st = fs.statSync(from);
+    fs.utimesSync(to, st.atime, st.mtime);
+  }
+
+  const destStack = [destDir];
+  while (destStack.length > 0) {
+    const dir = destStack.pop()!;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, ent.name);
+      const rel = path.relative(destDir, full).split(path.sep).join("/");
+      if (upstreamSyncPathExcluded(rel)) continue;
+      if (ent.isDirectory()) {
+        destStack.push(full);
+      } else if (ent.isFile() && !srcFiles.has(rel)) {
+        fs.unlinkSync(full);
+      }
+    }
+  }
+  pruneEmptyDirsExceptExcluded(destDir);
+}
+
 async function rsyncFromUpstream(
   upstreamDir: string,
   destRoot: string,
 ): Promise<void> {
+  const useRsync = await commandOk("rsync", ["--version"]);
   for (const dir of RSYNC_DIRS) {
     const src = path.join(upstreamDir, dir);
     if (!fs.existsSync(src)) continue;
     const dest = path.join(destRoot, dir);
     fs.mkdirSync(dest, { recursive: true });
-    const args = ["-a", "--delete", ...RSYNC_EXCLUDES.flatMap((e) => ["--exclude", e]), `${src}/`, `${dest}/`];
-    await runCommand("rsync", args);
+    if (useRsync) {
+      const args = [
+        "-a",
+        "--delete",
+        ...RSYNC_EXCLUDES.flatMap((e) => ["--exclude", e]),
+        `${src}/`,
+        `${dest}/`,
+      ];
+      await runCommand("rsync", args);
+    } else {
+      mirrorDirectoryFromUpstream(src, dest);
+    }
   }
 }
 
@@ -308,11 +401,11 @@ export async function runUpstreamSync(
     if (!opts.enabled) {
       return { outcome: "failure", phase: "disabled", message: "Upstream sync is disabled" };
     }
-    if (!(await commandOk("git", ["--version"])) || !(await commandOk("rsync", ["--version"]))) {
+    if (!(await commandOk("git", ["--version"]))) {
       return {
         outcome: "failure",
         phase: "precheck",
-        message: "git and rsync are required for upstream sync",
+        message: "git is required for upstream sync",
       };
     }
     if (!isGitRepo(repoRoot)) {

@@ -8,10 +8,12 @@ import {
   changedPathsNeedRestart,
   compareSemver,
   loadUpstreamSyncOptions,
+  mirrorDirectoryFromUpstream,
   parseSemver,
   pickLatestSemverTag,
   readUpstreamSyncState,
   stateFilePath,
+  upstreamSyncPathExcluded,
   writeUpstreamSyncState,
 } from "./upstream-sync.js";
 
@@ -53,6 +55,35 @@ describe("upstream-sync options", () => {
       CURSOR_BRIDGE_UPSTREAM_SYNC_PUSH: "false",
     });
     expect(opts.pushEnabled).toBe(false);
+  });
+});
+
+describe("upstream-sync mirror (no rsync)", () => {
+  it("excludes bridge-only path segments like rsync", () => {
+    expect(upstreamSyncPathExcluded("lib/chat-api.ts")).toBe(true);
+    expect(upstreamSyncPathExcluded("lib/plugins/foo.ts")).toBe(true);
+    expect(upstreamSyncPathExcluded("lib/handlers/foo.ts")).toBe(false);
+  });
+
+  it("copies upstream files, deletes extras, keeps excluded dest files", () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), "upstream-mirror-"));
+    const src = path.join(base, "src-up");
+    const dest = path.join(base, "src-dst");
+    fs.mkdirSync(path.join(src, "lib"), { recursive: true });
+    fs.mkdirSync(path.join(dest, "lib"), { recursive: true });
+    fs.writeFileSync(path.join(src, "lib", "new.ts"), "upstream");
+    fs.writeFileSync(path.join(dest, "lib", "stale.ts"), "remove-me");
+    fs.writeFileSync(path.join(dest, "lib", "chat-api.ts"), "bridge");
+
+    mirrorDirectoryFromUpstream(src, dest);
+
+    expect(fs.readFileSync(path.join(dest, "lib", "new.ts"), "utf8")).toBe(
+      "upstream",
+    );
+    expect(fs.existsSync(path.join(dest, "lib", "stale.ts"))).toBe(false);
+    expect(fs.readFileSync(path.join(dest, "lib", "chat-api.ts"), "utf8")).toBe(
+      "bridge",
+    );
   });
 });
 
