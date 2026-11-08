@@ -111,23 +111,25 @@ function createChatCompletionChunkWriter(
 ) {
   let roleSent = false;
   let wireDeltaChars = 0;
+  const ensureRole = () => {
+    if (roleSent) return;
+    roleSent = true;
+    res.write(
+      `data: ${JSON.stringify({
+        id: meta.id,
+        object: "chat.completion.chunk",
+        created: meta.created,
+        model: meta.model,
+        choices: [
+          { index: 0, delta: { role: "assistant" }, finish_reason: null },
+        ],
+      })}\n\n`,
+    );
+  };
   const write = (contentDelta: string) => {
     if (!contentDelta) return;
     wireDeltaChars += contentDelta.length;
-    if (!roleSent) {
-      roleSent = true;
-      res.write(
-        `data: ${JSON.stringify({
-          id: meta.id,
-          object: "chat.completion.chunk",
-          created: meta.created,
-          model: meta.model,
-          choices: [
-            { index: 0, delta: { role: "assistant" }, finish_reason: null },
-          ],
-        })}\n\n`,
-      );
-    }
+    ensureRole();
     res.write(
       `data: ${JSON.stringify({
         id: meta.id,
@@ -140,7 +142,26 @@ function createChatCompletionChunkWriter(
       })}\n\n`,
     );
   };
-  return { write, wireDeltaChars: () => wireDeltaChars };
+  const writeReasoning = (reasoningDelta: string) => {
+    if (!reasoningDelta) return;
+    ensureRole();
+    res.write(
+      `data: ${JSON.stringify({
+        id: meta.id,
+        object: "chat.completion.chunk",
+        created: meta.created,
+        model: meta.model,
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_content: reasoningDelta },
+            finish_reason: null,
+          },
+        ],
+      })}\n\n`,
+    );
+  };
+  return { write, writeReasoning, wireDeltaChars: () => wireDeltaChars };
 }
 
 export type ChatCompletionsCtx = {
@@ -752,6 +773,10 @@ export async function handleChatCompletions(
       chunkWriter.write(delta);
       if (webThreadId) appendWebGenerationDelta(webThreadId, { content: delta });
     };
+    const writeReasoningDelta = (delta: string) => {
+      chunkWriter.writeReasoning(delta);
+      if (webThreadId) appendWebGenerationDelta(webThreadId, { reasoning: delta });
+    };
     const finishWeb = (outcome: { ok: true } | { ok: false; error: string }) => {
       if (webThreadId) finishWebGeneration(webThreadId, outcome);
     };
@@ -777,6 +802,7 @@ export async function handleChatCompletions(
         configDir,
         agentSignal,
         modelCatalogName,
+        writeReasoningDelta,
       )
         .then(({ code, stderr: stderrOut }) => {
           stopKeepalive();

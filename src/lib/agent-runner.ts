@@ -170,6 +170,7 @@ export function runAgentStream(
   configDir?: string,
   signal?: AbortSignal,
   modelDisplayName?: string,
+  onThoughtChunk?: StreamLineHandler,
 ): Promise<{ code: number; stderr: string }> {
   if (shouldUseAcp(config, stdinPrompt)) {
     const invocation = acpInvocation(
@@ -198,6 +199,7 @@ export function runAgentStream(
         signal,
       },
       onLine,
+      onThoughtChunk,
     ).then((result) => {
       cacheTokenForAccount(configDir);
       if (tempDir) {

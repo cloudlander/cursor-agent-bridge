@@ -595,6 +595,7 @@ export function runAcpStream(
   prompt: AcpPromptInput,
   opts: AcpRunOptions,
   onChunk: (text: string) => void,
+  onThoughtChunk?: (text: string) => void,
 ): Promise<AcpStreamResult> {
   const promptBlocks = normalizeAcpPrompt(prompt);
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -681,6 +682,7 @@ export function runAcpStream(
           autoApprovePermissions: opts.autoApprovePermissions,
           stdin: child.stdin,
           onAgentTextChunk: onChunk,
+          onAgentThoughtChunk: onThoughtChunk,
         });
       } catch {
         /* ignore notification handler errors */
