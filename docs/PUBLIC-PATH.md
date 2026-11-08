@@ -7,7 +7,7 @@ The bridge is served under a **fixed application path segment** (default `cursor
 - **Internal routing** unchanged: `/chat`, `/api/...`, `/v1/...`, `/static/...`
 - **Public URLs**: `{mount}/{appSegment}{internal}`
 - **`/healthz`**: always at server root (CAI probes)
-- **No `CURSOR_BRIDGE_MOUNT` env**: mount is derived per request from (in order) the request pathname, `X-Forwarded-Prefix` / `X-Forwarded-Uri`, or the `cursor_bridge_mount` cookie set by the bootstrap page when the edge strips the proxy prefix
+- **No `CURSOR_BRIDGE_MOUNT` env**: mount is derived per request from (in order) the external request pathname, `X-Forwarded-Prefix` / `X-Forwarded-Uri`, or empty. Pathnames are taken from origin-form paths (`/proxy/8100/...`) or absolute request targets (`https://host/proxy/8100/...`). Dashboard **Status** shows full public OpenAI API and Agent chat URLs. The browser may still infer mount from `location.pathname` when server context is empty; do not use a shared cookie (multiple proxies on one host would clash).
 
 ## Environment
 
@@ -37,8 +37,8 @@ location /proxy/1080/ {
 
 **Option B — strip prefix at the edge** (common on CAI): upstream may see `/agent-xxx/...` while the browser shows `/proxy/1080/agent-xxx/...`. Then either:
 
-- Set `X-Forwarded-Prefix: /proxy/8080` (or `X-Forwarded-Uri` with the full public path), or
-- Rely on the bootstrap redirect setting `cursor_bridge_mount` before the first dashboard load (users should open `…/proxy/8080/` once, not deep-link without going through bootstrap).
+- Set `X-Forwarded-Prefix: /proxy/8080` (or `X-Forwarded-Uri` with the full public path) so server-side redirects and OAuth URLs are correct when the edge strips the prefix, and/or
+- Ensure users open the app via the full public URL (`…/proxy/8080/agent-xxx/…`); client `bridge-path.js` derives mount from the address bar when the server sees a stripped path.
 
 ## Client assets
 

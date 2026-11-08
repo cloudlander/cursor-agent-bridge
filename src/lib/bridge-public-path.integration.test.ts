@@ -40,11 +40,57 @@ describe("public path routing", () => {
       expect(await health.text()).toContain("ok");
 
       const status = await fetch(
-        `http://127.0.0.1:${port}/proxy/1080/cursor-agent/api/config`,
+        `http://127.0.0.1:${port}/proxy/1080/cursor-agent/api/status`,
+        {
+          headers: {
+            "X-Forwarded-Host": "example.test",
+            "X-Forwarded-Proto": "https",
+          },
+        },
       );
       expect(status.status).toBe(200);
-      const body = (await status.json()) as { appSegment?: string };
-      expect(body.appSegment).toBe("cursor-agent");
+      const body = (await status.json()) as { publicOpenAiApiBase?: string };
+      expect(body.publicOpenAiApiBase).toBe(
+        "https://example.test/proxy/1080/cursor-agent/v1",
+      );
+
+      const configRes = await fetch(
+        `http://127.0.0.1:${port}/proxy/1080/cursor-agent/api/config`,
+      );
+      expect(configRes.status).toBe(200);
+      const cfg = (await configRes.json()) as Record<string, unknown>;
+      expect(cfg).not.toHaveProperty("appSegment");
+      expect(cfg).not.toHaveProperty("mount");
+      expect(cfg).not.toHaveProperty("publicBase");
+      expect(cfg).not.toHaveProperty("externalPathname");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("injects mount on dashboard HTML for full public path", async () => {
+    const config = loadBridgeConfig({
+      env: {
+        CURSOR_BRIDGE_APP_SEGMENT: "agent-0435a2",
+        CURSOR_BRIDGE_SESSIONS_LOG: "/tmp/bridge-dashboard-mount-test.log",
+      },
+      cwd: process.cwd(),
+    });
+    const listener = createRequestListener(
+      { version: "test", config },
+      { toolSessions: new ToolSessionRegistry() },
+    );
+    const { server, port } = await listen(listener);
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:${port}/proxy/8100/agent-0435a2/`,
+      );
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('__BRIDGE_MOUNT__="/proxy/8100"');
+      expect(html).toContain(
+        '__BRIDGE_PUBLIC_BASE__="/proxy/8100/agent-0435a2"',
+      );
     } finally {
       server.close();
     }
@@ -64,16 +110,18 @@ describe("public path routing", () => {
     );
     const { server, port } = await listen(listener);
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/agent-x/api/config`, {
-        headers: { "X-Forwarded-Prefix": "/proxy/8080" },
+      const res = await fetch(`http://127.0.0.1:${port}/agent-x/api/status`, {
+        headers: {
+          "X-Forwarded-Prefix": "/proxy/8080",
+          "X-Forwarded-Host": "example.test",
+          "X-Forwarded-Proto": "https",
+        },
       });
       expect(res.status).toBe(200);
-      const body = (await res.json()) as {
-        publicBase?: string;
-        mount?: string;
-      };
-      expect(body.mount).toBe("/proxy/8080");
-      expect(body.publicBase).toBe("/proxy/8080/agent-x");
+      const body = (await res.json()) as { publicCursorApiBase?: string };
+      expect(body.publicCursorApiBase).toBe(
+        "https://example.test/proxy/8080/agent-x/v1",
+      );
     } finally {
       server.close();
     }

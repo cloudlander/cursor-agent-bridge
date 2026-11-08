@@ -59,9 +59,8 @@ function config(acpEnv: Record<string, string>): BridgeConfig {
 }
 
 async function start(acpEnv: Record<string, string> = {}): Promise<string> {
-  const [server] = startBridgeServer({ version: "test", config: config(acpEnv) });
+  const [server] = await startBridgeServer({ version: "test", config: config(acpEnv) });
   servers.push(server as http.Server);
-  await new Promise<void>((resolve) => server.once("listening", resolve));
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("No port");
   return `http://127.0.0.1:${address.port}`;

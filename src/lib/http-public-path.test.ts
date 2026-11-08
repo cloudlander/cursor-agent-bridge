@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  externalPathnameFromRequest,
   forwardedMountFromHeaders,
   isBootstrapPath,
   mountFromBootstrapPathname,
-  mountFromCookie,
   publicPath,
   resolveEffectiveMount,
   splitPublicPath,
@@ -89,10 +89,47 @@ describe("resolveEffectiveMount", () => {
     expect(resolveEffectiveMount("", headers, seg)).toBe("/proxy/8080");
   });
 
-  it("uses cookie when no path or header", () => {
+  it("returns empty when no path or header", () => {
+    expect(resolveEffectiveMount("", {}, seg)).toBe("");
+  });
+});
+
+describe("externalPathnameFromRequest", () => {
+  it("keeps origin-form paths", () => {
     expect(
-      resolveEffectiveMount("", { cookie: "cursor_bridge_mount=%2Fproxy%2F8080" }, seg),
-    ).toBe("/proxy/8080");
+      externalPathnameFromRequest({
+        url: "/proxy/8100/agent-0435a2/?q=1",
+        headers: { host: "example.com" },
+      }),
+    ).toBe("/proxy/8100/agent-0435a2/");
+  });
+
+  it("parses absolute https targets", () => {
+    const host =
+      "36s9bogysp6zcziv.shared.apps.xim.ip-10-17-78-24.support.fuse.cloudera.com";
+    expect(
+      externalPathnameFromRequest({
+        url: `https://${host}/proxy/8100/agent-0435a2/`,
+        headers: { host },
+      }),
+    ).toBe("/proxy/8100/agent-0435a2/");
+  });
+});
+
+describe("splitPublicPath absolute URL guard", () => {
+  it("does not treat absolute URL as path segment", () => {
+    const host =
+      "36s9bogysp6zcziv.shared.apps.xim.ip-10-17-78-24.support.fuse.cloudera.com";
+    expect(
+      splitPublicPath(
+        `https://${host}/proxy/8100/agent-0435a2/`,
+        "agent-0435a2",
+      ),
+    ).toEqual({
+      kind: "found",
+      mount: "/proxy/8100",
+      internal: "/",
+    });
   });
 });
 
@@ -113,10 +150,3 @@ describe("mountFromBootstrapPathname", () => {
   });
 });
 
-describe("mountFromCookie", () => {
-  it("reads cursor_bridge_mount", () => {
-    expect(
-      mountFromCookie("foo=1; cursor_bridge_mount=%2Fproxy%2F8080"),
-    ).toBe("/proxy/8080");
-  });
-});

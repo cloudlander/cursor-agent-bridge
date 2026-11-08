@@ -107,7 +107,8 @@ Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (neve
 
 | Area | Location | Notes |
 |------|----------|--------|
-| HTTP server, shutdown, plugin auto-sync | `src/lib/server.ts` | Upstream graceful shutdown + bridge keepalive/plugins |
+| HTTP server, shutdown | `src/lib/server.ts` | Upstream graceful shutdown + bridge keepalive |
+| Plugin UI lazy init | `src/lib/plugins/manager.ts` (`ensurePluginsUiInitialized`), `plugin-api.ts` | CLI cache sync + redeploy on first `/plugins` or `/api/plugins/*` |
 | Route dispatch | `src/lib/request-listener.ts` | `/v1/*`, admin, chat, plugins; CDSW via `bridge-api-auth.ts` |
 | Env aliases & defaults | `src/lib/env.ts`, `src/lib/config.ts` | **`CURSOR_BRIDGE_USE_ACP=true` by default**; CDSW inbound key |
 | Spawn CLI / ACP | `src/lib/agent-runner.ts`, `src/lib/cursor-cli.ts` | |

@@ -11,6 +11,7 @@ import {
   type CursorAccountDashboardSnapshot,
 } from "./cursor-account-snapshot.js";
 import { chatApiMatches, handleChatApi } from "./chat-api.js";
+import { ensurePluginsUiInitialized } from "./plugins/manager.js";
 import { handlePluginApi, pluginApiMatches } from "./plugins/plugin-api.js";
 import {
   handleMcpOAuthCallback,
@@ -40,6 +41,7 @@ import {
 import { getBridgePublicContext } from "./bridge-request-context.js";
 import { prepareBridgeHtml } from "./bridge-html.js";
 import { publicPath } from "./http-public-path.js";
+import { resolvePublicEndpointUrls } from "./plugins/public-origin.js";
 
 const ACCOUNT_USAGE_CACHE_MS = 45_000;
 let accountUsageCache:
@@ -204,12 +206,17 @@ function getStatus(
   const launchdLoaded = process.platform === "darwin" ? launchdLoadedSync() : false;
 
   const env = process.env;
+  const publicEndpoints = req
+    ? resolvePublicEndpointUrls(req, config)
+    : undefined;
   cb({
     running,
     pid,
     port: config.port,
     host: config.host,
     version,
+    publicOpenAiApiBase: publicEndpoints?.openAiApiBase,
+    publicCursorApiBase: publicEndpoints?.cursorApiBase,
     uptimeSeconds: Math.floor((Date.now() - START_TIME) / 1000),
     launchdLoaded,
     plistPath,
@@ -238,13 +245,9 @@ function getStatus(
 
 function sanitizedBridgeConfig(
   config: BridgeConfig,
-  req?: http.IncomingMessage,
+  _req?: http.IncomingMessage,
 ): Record<string, unknown> {
-  const ctx = req ? getBridgePublicContext(req) : undefined;
   return {
-    appSegment: config.appSegment,
-    publicBase: ctx?.publicBase ?? `/${config.appSegment}`,
-    mount: ctx?.mount ?? "",
     agentBin: config.agentBin,
     useAcp: config.useAcp,
     host: config.host,
@@ -392,7 +395,15 @@ export function handleAdminDashboard(
     return serveBridgeHtml(req, res, path.join(publicDir, "chat.html"));
   }
   if (req.method === "GET" && pathname === "/plugins") {
-    return serveBridgeHtml(req, res, path.join(publicDir, "plugins.html"));
+    void ensurePluginsUiInitialized(config)
+      .then(() =>
+        serveBridgeHtml(req, res, path.join(publicDir, "plugins.html")),
+      )
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        json(res, 503, { error: msg });
+      });
+    return;
   }
   if (req.method === "POST" && pathname === "/api/apps/deploy") {
     let raw = "";

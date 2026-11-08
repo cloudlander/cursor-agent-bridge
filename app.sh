@@ -319,12 +319,7 @@ prepare_worker_env() {
   else
     log "  LLM /v1 auth: CDSW_API_KEY=${CDSW_API_KEY} (automatic; plugins UI needs no bridge key)"
   fi
-  log "  listen: http://${CURSOR_BRIDGE_HOST}:${CURSOR_BRIDGE_PORT}/"
-  log "  dashboard: http://${CURSOR_BRIDGE_HOST}:${CURSOR_BRIDGE_PORT}/"
-  log "  health: http://${CURSOR_BRIDGE_HOST}:${CURSOR_BRIDGE_PORT}/healthz"
-  if [[ -n "${CDSW_DOMAIN:-}" ]]; then
-    log "  subdomain URL: https://model-gateway.${CDSW_DOMAIN}/"
-  fi
+  log "  bridge port: ${CURSOR_BRIDGE_PORT} on ${CURSOR_BRIDGE_HOST} (CLI not started yet)"
 
   if bootstrap_needed; then
     log "Bootstrapping project-local CAI runtime (agent, npm, and/or build)..."
@@ -347,11 +342,39 @@ prepare_worker_env() {
   log "  bridge timeout: ${CURSOR_BRIDGE_TIMEOUT_MS} ms"
 }
 
+log_bridge_ready_urls() {
+  log "  listen: http://${CURSOR_BRIDGE_HOST}:${CURSOR_BRIDGE_PORT}/"
+  log "  dashboard: http://${CURSOR_BRIDGE_HOST}:${CURSOR_BRIDGE_PORT}/"
+  log "  health: http://${CURSOR_BRIDGE_HOST}:${CURSOR_BRIDGE_PORT}/healthz"
+  if [[ -n "${CDSW_DOMAIN:-}" ]]; then
+    log "  subdomain URL: https://model-gateway.${CDSW_DOMAIN}/"
+  fi
+}
+
+wait_cli_healthz() {
+  local i
+  local max_wait="${CURSOR_BRIDGE_STARTUP_WAIT_SEC:-120}"
+  local steps=$((max_wait * 5))
+  for i in $(seq 1 "${steps}"); do
+    if healthz_ok; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
 run_cli_until_exit() {
   mkdir -p "${ROOT}/.cai"
   "${NODE_BIN}" "${ROOT}/dist/cli.js" &
   local cli_pid=$!
   echo "${cli_pid}" >"${CLI_PIDFILE}"
+  if wait_cli_healthz; then
+    log "Bridge ready."
+    log_bridge_ready_urls
+  else
+    log "WARNING: /healthz did not respond within ${CURSOR_BRIDGE_STARTUP_WAIT_SEC:-120}s (pid ${cli_pid}); dashboard may be unreachable."
+  fi
   wait "${cli_pid}" || true
   local code=$?
   rm -f "${CLI_PIDFILE}" 2>/dev/null || true

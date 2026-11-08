@@ -2,6 +2,8 @@
  * Split and compose public URL paths: {mount}/{appSegment}{internal}.
  */
 
+import type * as http from "node:http";
+
 export const APP_SEGMENT_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/;
 
 /** Built-in segments that must not be used as CURSOR_BRIDGE_APP_SEGMENT. */
@@ -57,6 +59,13 @@ export function splitPublicPath(
   appSegment: string,
 ): SplitPublicPathResult {
   let path = pathname || "/";
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(path)) {
+    try {
+      path = new URL(path).pathname || "/";
+    } catch {
+      return { kind: "missing" };
+    }
+  }
   if (!path.startsWith("/")) path = `/${path}`;
   if (path.includes("/../") || path.endsWith("/..") || path === "/..") {
     return { kind: "missing" };
@@ -109,6 +118,39 @@ function headerFirst(value: string | string[] | undefined): string | undefined {
 }
 
 /**
+ * Pathname the bridge treats as the external URL (before strip to internal routes).
+ * Handles origin-form (`/proxy/8100/...`) and absolute-form (`https://host/proxy/8100/...`)
+ * request targets from reverse proxies.
+ */
+export function externalPathnameFromRequest(
+  req: Pick<http.IncomingMessage, "url" | "headers">,
+): string {
+  const raw = req.url ?? "/";
+  const q = raw.indexOf("?");
+  const withoutQuery = (q >= 0 ? raw.slice(0, q) : raw) || "/";
+  if (withoutQuery.startsWith("/")) {
+    return withoutQuery;
+  }
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(withoutQuery)) {
+    try {
+      return new URL(withoutQuery).pathname || "/";
+    } catch {
+      return "/";
+    }
+  }
+  const proto =
+    headerFirst(req.headers["x-forwarded-proto"])?.toLowerCase() === "https"
+      ? "https"
+      : "http";
+  const host = headerFirst(req.headers.host) || "localhost";
+  try {
+    return new URL(withoutQuery, `${proto}://${host}`).pathname || "/";
+  } catch {
+    return withoutQuery.startsWith("/") ? withoutQuery : `/${withoutQuery}`;
+  }
+}
+
+/**
  * Mount prefix from reverse proxies that strip the path before upstream (CAI).
  * Trusted when the edge overwrites these headers (not from browsers directly).
  */
@@ -126,7 +168,13 @@ export function forwardedMountFromHeaders(
       return "";
     }
   }
-  for (const name of ["x-forwarded-uri", "x-original-uri", "x-original-url"]) {
+  for (const name of [
+    "x-forwarded-uri",
+    "x-original-uri",
+    "x-original-url",
+    "x-request-uri",
+    "x-envoy-original-path",
+  ]) {
     const raw = headerFirst(headers[name]);
     if (!raw) continue;
     try {
@@ -140,26 +188,24 @@ export function forwardedMountFromHeaders(
   return "";
 }
 
-export const BRIDGE_MOUNT_COOKIE = "cursor_bridge_mount";
-
-export function mountFromCookie(
-  cookieHeader: string | string[] | undefined,
+function mountFromReferer(
+  referer: string | undefined,
+  appSegment: string,
 ): string {
-  const raw = headerFirst(cookieHeader);
-  if (!raw) return "";
-  const match = raw.match(/(?:^|;\s*)cursor_bridge_mount=([^;]*)/);
-  if (!match?.[1]) return "";
+  if (!referer?.trim()) return "";
   try {
-    const decoded = decodeURIComponent(match[1].trim());
-    const trimmed = decoded.replace(/\/+$/, "") || "";
-    if (!trimmed) return "";
-    return normalizeMount(trimmed.startsWith("/") ? trimmed : `/${trimmed}`);
+    const pathname = new URL(referer).pathname;
+    const split = splitPublicPath(pathname, appSegment);
+    if (split.kind === "found" && split.mount) return split.mount;
+    const bootstrap = mountFromBootstrapPathname(pathname);
+    if (bootstrap && bootstrap !== `/${appSegment}`) return bootstrap;
   } catch {
-    return "";
+    /* ignore */
   }
+  return "";
 }
 
-/** Prefer mount embedded in the request path; else proxy headers; else bootstrap cookie. */
+/** Prefer mount in the request path; else forwarding headers; else Referer; otherwise none. */
 export function resolveEffectiveMount(
   pathMount: string,
   headers: Record<string, string | string[] | undefined>,
@@ -168,7 +214,7 @@ export function resolveEffectiveMount(
   if (pathMount) return pathMount;
   const fromHeader = forwardedMountFromHeaders(headers, appSegment);
   if (fromHeader) return fromHeader;
-  return mountFromCookie(headers.cookie);
+  return mountFromReferer(headerFirst(headers.referer), appSegment);
 }
 
 /** Mount prefix on virtual-path bootstrap URLs (path still includes mount at the edge). */

@@ -123,7 +123,7 @@ Deploy static web apps (HTML/CSS/JS) under **`/apps/{name}/`** or the short alia
 
 **Tips:**
 
-- On startup the proxy **auto-imports** plugins already in Cursor CLI’s `plugins/cache/` (disable with `CURSOR_BRIDGE_PLUGINS_AUTO_SYNC_CLI=0`).
+- On **first** open of the Plugins page (or any `/api/plugins/*` call), the proxy **auto-imports** CLI `plugins/cache/` entries and redeploys the registry (disable auto-import with `CURSOR_BRIDGE_PLUGINS_AUTO_SYNC_CLI=0`). Agent runs via `/v1` do not wait on this.
 - For CLI-only MCP (e.g. Atlassian already in your local `mcp.json`), use **OAuth login** on the catalog row or `POST /api/plugins/mcp-login` — no Import and no bridge API key.
 - Set `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` and point `CURSOR_BRIDGE_WORKSPACE` at your vault/repo if you also want **project** `.cursor/skills` in addition to proxy-deployed plugins.
 - Use **Redeploy all** after changing account pool dirs or moving the plugin store.

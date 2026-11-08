@@ -11,6 +11,7 @@ import {
   installPlugin,
   listMarketplaces,
   patchPluginConfig,
+  ensurePluginsUiInitialized,
   redeployAll,
   refreshMarketplace,
   removeMarketplace,
@@ -91,6 +92,8 @@ export async function handlePluginApi(
   const q = parseQuery(url);
 
   try {
+    await ensurePluginsUiInitialized(config);
+
     if (req.method === "GET" && pathname === "/plugins") {
       return;
     }

@@ -58,7 +58,7 @@ npm run typecheck && npm run build && npm test
 1. `GET /healthz` → `ok`
 2. `GET /` → bootstrap
 3. `GET /cursor-agent/` → dashboard
-4. `GET /proxy/1080/cursor-agent/api/config` → JSON 含 `appSegment`、`publicBase`
+4. `GET /proxy/1080/cursor-agent/api/config` → 运维配置字段（不含 `appSegment` / `mount` / `publicBase`）；`GET …/api/status` → `publicOpenAiApiBase`、`publicCursorApiBase`
 
 ## 运维约定
 

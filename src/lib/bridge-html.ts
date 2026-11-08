@@ -30,6 +30,85 @@ function injectConfigScript(ctx: BridgePublicContext): string {
 window.__BRIDGE_APP_SEGMENT__=${seg};
 window.__BRIDGE_MOUNT__=${mount};
 window.__BRIDGE_PUBLIC_BASE__=${base};
+(function () {
+  function segmentBoundaryIndex(p, appSeg) {
+    var needle = "/" + appSeg;
+    var searchFrom = 0;
+    while (searchFrom < p.length) {
+      var i = p.indexOf(needle, searchFrom);
+      if (i < 0) return -1;
+      var after = p[i + needle.length];
+      if ((i === 0 || p[i - 1] === "/") && (after === undefined || after === "/" || after === "")) {
+        return i;
+      }
+      searchFrom = i + 1;
+    }
+    return -1;
+  }
+  function mountFromLocation(appSeg) {
+    if (typeof location === "undefined") return "";
+    var i = segmentBoundaryIndex(location.pathname, appSeg);
+    if (i < 0) return "";
+    return i === 0 ? "" : location.pathname.slice(0, i).replace(/\\/+$/, "");
+  }
+  function maybeSyncMountFromLocation() {
+    var appSeg = window.__BRIDGE_APP_SEGMENT__;
+    if (!appSeg || window.__BRIDGE_MOUNT__) return;
+    var locMount = mountFromLocation(appSeg);
+    if (!locMount) return;
+    window.__BRIDGE_MOUNT__ = locMount;
+    window.__BRIDGE_PUBLIC_BASE__ = locMount + "/" + appSeg;
+  }
+  function bridgeExempt(p) {
+    return p === "/healthz" || p === "/health";
+  }
+  function fixRootPathAttr(el, attr) {
+    var val = el.getAttribute(attr);
+    if (!val || !val.startsWith("/") || bridgeExempt(val) || /^https?:\\/\\//i.test(val)) return;
+    var pub = window.__BRIDGE_PUBLIC_BASE__ || "";
+    if (!pub) return;
+    var appSeg = window.__BRIDGE_APP_SEGMENT__;
+    var serverOnly = "/" + appSeg;
+    if (val === serverOnly || val.indexOf(serverOnly + "/") === 0) {
+      el.setAttribute(attr, pub + val.slice(serverOnly.length));
+      return;
+    }
+    var prefixes = ["/static/", "/api/", "/chat", "/plugins", "/wiki", "/apps", "/callback"];
+    var ok = val === "/" || prefixes.some(function (pre) {
+      return val === pre.replace(/\\/$/, "") || val.indexOf(pre) === 0;
+    });
+    if (ok) el.setAttribute(attr, pub + val);
+  }
+  function fixAllRootPathAttrs() {
+    if (!window.__BRIDGE_PUBLIC_BASE__ || !document.querySelectorAll) return;
+    var sel = "link[href], script[src], a[href]";
+    document.querySelectorAll(sel).forEach(function (el) {
+      if (el.getAttribute("href")) fixRootPathAttr(el, "href");
+      if (el.getAttribute("src")) fixRootPathAttr(el, "src");
+    });
+  }
+  maybeSyncMountFromLocation();
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", fixAllRootPathAttrs);
+  } else {
+    fixAllRootPathAttrs();
+  }
+  if (typeof MutationObserver !== "undefined") {
+    new MutationObserver(function (ms) {
+      for (var m = 0; m < ms.length; m++) {
+        var nodes = ms[m].addedNodes;
+        for (var n = 0; n < nodes.length; n++) {
+          var el = nodes[n];
+          if (!el || el.nodeType !== 1) continue;
+          var tag = el.tagName;
+          if (tag === "LINK" && el.getAttribute("href")) fixRootPathAttr(el, "href");
+          if (tag === "SCRIPT" && el.getAttribute("src")) fixRootPathAttr(el, "src");
+          if (tag === "A" && el.getAttribute("href")) fixRootPathAttr(el, "href");
+        }
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  }
+})();
 </script>`;
 }
 
@@ -47,24 +126,17 @@ export function bootstrapRedirectHtml(
 (function () {
   var APP = ${seg};
   var SERVER_MOUNT = ${serverMount};
-  function setMountCookie(mount) {
-    if (!mount) return;
-    document.cookie = "cursor_bridge_mount=" + encodeURIComponent(mount) + "; path=/; SameSite=Lax";
-  }
   var p = location.pathname;
   var needle = "/" + APP;
   var i = p.indexOf(needle);
   if (i >= 0) {
     var after = p[i + needle.length];
     if ((i === 0 || p[i - 1] === "/") && (after === undefined || after === "/" || after === "")) {
-      var m0 = i === 0 ? "" : p.slice(0, i).replace(/\\/$/, "");
-      setMountCookie(SERVER_MOUNT || m0);
       location.replace(p.slice(0, i + needle.length) + "/");
       return;
     }
   }
   var mount = SERVER_MOUNT || p.replace(/\\/?index\\.html$/i, "").replace(/\\/$/, "");
-  setMountCookie(mount);
   location.replace((mount ? mount : "") + "/" + APP + "/");
 })();
 </script>
@@ -92,8 +164,6 @@ export function prepareBridgeHtml(
   ctx: BridgePublicContext,
 ): string {
   let html = raw;
-  html = rewriteRootAbsoluteAttr(html, "href", ctx);
-  html = rewriteRootAbsoluteAttr(html, "src", ctx);
   const headIdx = html.search(/<head[^>]*>/i);
   const inject = injectConfigScript(ctx);
   if (headIdx >= 0) {
@@ -104,6 +174,8 @@ export function prepareBridgeHtml(
   } else {
     html = inject + html;
   }
+  html = rewriteRootAbsoluteAttr(html, "href", ctx);
+  html = rewriteRootAbsoluteAttr(html, "src", ctx);
   const bridgePathTag = `<script src="${ctx.publicBase}/static/bridge-path.js"></script>`;
   if (!html.includes("bridge-path.js")) {
     html = html.replace(

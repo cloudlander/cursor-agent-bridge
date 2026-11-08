@@ -100,7 +100,7 @@ async function main(): Promise<void> {
     env: mergedEnv,
     mode: args.mode,
   });
-  const servers = startBridgeServer({ version: pkg.version, config });
+  const servers = await startBridgeServer({ version: pkg.version, config });
   setupGracefulShutdown(servers);
 }
 

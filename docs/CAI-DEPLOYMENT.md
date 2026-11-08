@@ -25,6 +25,8 @@ On application start, `app.sh`:
 - Copies existing `auth.json` from project or user home when present; otherwise logs a warning and still starts
 - Sets `CURSOR_AGENT_BIN` and bundled Node via `CURSOR_API_PROXY_NODE`
 - Runs Node on `dist/cli.js` as a child until it exits (`app.sh` / `app.sh start`). **`app.py`** runs `app.sh keepalive` so Dashboard **Restart proxy** (`app.sh stop`) can kill the CLI and the worker brings it back without a full application restart.
+- Plugin registry init (CLI cache import + redeploy) runs on **first** visit to `/plugins` or `/api/plugins/*`, not at listen time — dashboard, chat, and `/v1` start as soon as the port is up.
+- Logs loopback dashboard URLs in `.cai/startup.log` only after `/healthz` responds (default wait up to **120s**, override with `CURSOR_BRIDGE_STARTUP_WAIT_SEC`). Earlier log lines show the chosen port while bootstrap or Node startup is still running.
 
 Optional **`app.sh` modes** (second argument or first subcommand):
 
