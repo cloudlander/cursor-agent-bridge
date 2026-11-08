@@ -116,4 +116,30 @@ describe("workspace-file", () => {
     const url = workspaceFileUrlForPath("/tmp/report.pdf", true);
     expect(url).toContain("download=1");
   });
+
+  it("classifies svg under uploads as download not inline image", () => {
+    const upDir = path.join(tmpDir, ".cursor-api-proxy", "uploads");
+    fs.mkdirSync(upDir, { recursive: true });
+    const svg = path.join(upDir, "chart.svg");
+    fs.writeFileSync(svg, "<svg></svg>");
+    const resolved = resolveWorkspaceFilePath(svg, config)!;
+    expect(classifyWorkspaceFile(resolved, config)).toBe("download");
+  });
+
+  it("classifies agent svg under outputs as inline image", () => {
+    const outDir = path.join(tmpDir, ".cursor-api-proxy", "outputs");
+    fs.mkdirSync(outDir, { recursive: true });
+    const svg = path.join(outDir, "diagram.svg");
+    fs.writeFileSync(svg, "<svg></svg>");
+    const resolved = resolveWorkspaceFilePath(svg, config)!;
+    expect(classifyWorkspaceFile(resolved, config)).toBe("inline-image");
+    expect(isAllowedWorkspaceFile(resolved, config)).toBe(true);
+  });
+
+  it("classifies workspace-root agent svg as inline image", () => {
+    const svg = path.join(tmpDir, "plot.svg");
+    fs.writeFileSync(svg, "<svg></svg>");
+    const resolved = resolveWorkspaceFilePath(svg, config)!;
+    expect(classifyWorkspaceFile(resolved, config)).toBe("inline-image");
+  });
 });

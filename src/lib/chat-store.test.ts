@@ -10,6 +10,8 @@ import {
   readChatStore,
   mergeWebThreadPair,
   saveWebThreads,
+  syncWebThreadFromChatRequest,
+  webThreadMessagesFromApiBody,
   type WebChatThread,
 } from "./chat-store.js";
 
@@ -226,5 +228,87 @@ describe("chat store persistence", () => {
     } finally {
       process.env.HOME = prevHome;
     }
+  });
+});
+
+describe("webThreadMessagesFromApiBody", () => {
+  it("keeps attachment-only user messages", () => {
+    const msgs = webThreadMessagesFromApiBody([
+      {
+        role: "user",
+        content: "",
+        attachments: [
+          {
+            name: "a.png",
+            mimeType: "image/png",
+            path: "/tmp/ws/.cursor-api-proxy/uploads/a.png",
+          },
+        ],
+      },
+    ]);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].content).toBe("");
+    expect(msgs[0].attachments?.[0]?.path).toContain("uploads/a.png");
+  });
+
+  it("extracts text from multipart content", () => {
+    const msgs = webThreadMessagesFromApiBody([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "hello" },
+          { type: "image_url", image_url: { url: "https://x/y" } },
+        ],
+      },
+    ]);
+    expect(msgs[0].content).toBe("hello");
+  });
+});
+
+describe("syncWebThreadFromChatRequest", () => {
+  it("persists attachments from chat sync", async () => {
+    const config = makeTmpConfig();
+    const threadId = "sync-att-thread";
+    await syncWebThreadFromChatRequest(config, threadId, {
+      messages: [
+        {
+          role: "user",
+          content: "see file",
+          attachments: [
+            {
+              name: "doc.pdf",
+              mimeType: "application/pdf",
+              path: path.join(config.workspace, ".cursor-api-proxy/uploads/u1.pdf"),
+            },
+          ],
+        },
+      ],
+    });
+    const store = await readChatStore(config);
+    const thread = store.threads.find((t) => t.id === threadId);
+    expect(thread?.messages[0]?.attachments?.[0]?.name).toBe("doc.pdf");
+  });
+
+  it("preserves attachments when sync payload omits them", async () => {
+    const config = makeTmpConfig();
+    const threadId = "sync-preserve";
+    const filePath = path.join(config.workspace, ".cursor-api-proxy/uploads/keep.png");
+    await syncWebThreadFromChatRequest(config, threadId, {
+      messages: [
+        {
+          role: "user",
+          content: "pic",
+          attachments: [
+            { name: "keep.png", mimeType: "image/png", path: filePath },
+          ],
+        },
+      ],
+    });
+    await syncWebThreadFromChatRequest(config, threadId, {
+      messages: [{ role: "user", content: "pic" }],
+    });
+    const store = await readChatStore(config);
+    const thread = store.threads.find((t) => t.id === threadId);
+    expect(thread?.messages[0]?.attachments?.[0]?.path).toBe(filePath);
   });
 });

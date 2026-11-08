@@ -61,6 +61,15 @@
   const IMAGE_JPEG_QUALITY = 0.85;
 
   let markedReady = false;
+  let mermaidReady = false;
+  let mermaidActiveTheme = null;
+  let mermaidIdSeq = 0;
+  /** Max Mermaid source characters per diagram (client render). */
+  const MAX_MERMAID_CHARS = 12_000;
+  /** Max diagrams rendered per assistant message. */
+  const MAX_MERMAID_PER_MESSAGE = 16;
+  const mermaidUtils = window.ChatMermaidUtils || {};
+  const MERMAID_HEAD_RE = /^(flowchart|graph)\s+(TB|BT|RL|LR|TD|DT)\b/i;
 
   // ───────────────────────── helpers ─────────────────────────
 
@@ -167,6 +176,146 @@
     return base.includes('?') ? `${base}&download=1` : `${base}?download=1`;
   }
 
+  function workspaceInlinePdfUrl(raw) {
+    const base = toWorkspaceFileUrl(raw);
+    if (!base.startsWith('/api/workspace-file')) return base;
+    return base.includes('?') ? `${base}&inline=1` : `${base}?inline=1`;
+  }
+
+  function resolveAttachmentUrl(att) {
+    if (att?.path) return toWorkspaceFileUrl(att.path);
+    const url = String(att?.url || '').trim();
+    if (url && !url.startsWith('blob:')) return url;
+    return '';
+  }
+
+  function rehydrateThreadAttachments(thread) {
+    for (const m of thread?.messages || []) {
+      if (!Array.isArray(m.attachments)) continue;
+      for (const a of m.attachments) {
+        if (a.path) a.url = toWorkspaceFileUrl(a.path);
+      }
+    }
+  }
+
+  function isImageAttachment(a) {
+    return (a?.mimeType || '').startsWith('image/');
+  }
+
+  function isPdfAttachment(a) {
+    const mime = a?.mimeType || '';
+    const name = a?.name || '';
+    return mime === 'application/pdf' || /\.pdf$/i.test(name);
+  }
+
+  function openMermaidLightbox(diagramEl) {
+    const svg = diagramEl?.querySelector?.('svg');
+    if (!svg) return;
+    const existing = document.getElementById('chat-mermaid-lightbox');
+    if (existing) existing.remove();
+    const backdrop = el('div', {
+      id: 'chat-mermaid-lightbox',
+      class: 'chat-mermaid-lightbox',
+      role: 'dialog',
+      'aria-label': 'Diagram preview',
+    });
+    let onResize;
+    const close = () => {
+      if (onResize) window.removeEventListener('resize', onResize);
+      backdrop.remove();
+      document.removeEventListener('keydown', onKey);
+    };
+    const onKey = e => {
+      if (e.key === 'Escape') close();
+    };
+    backdrop.addEventListener('click', e => {
+      if (e.target === backdrop) close();
+    });
+    document.addEventListener('keydown', onKey);
+    const diagramHost = el('div', { class: 'chat-mermaid-lightbox-diagram' });
+    diagramHost.appendChild(svg.cloneNode(true));
+    const scrollEl = el('div', { class: 'chat-mermaid-lightbox-scroll' }, diagramHost);
+    const layoutLightbox = () => {
+      if (typeof mermaidUtils.layoutMermaidLightbox === 'function') {
+        mermaidUtils.layoutMermaidLightbox(diagramHost, scrollEl);
+      }
+    };
+    onResize = () => layoutLightbox();
+    const panel = el('div', { class: 'chat-mermaid-lightbox-panel' },
+      el('button', {
+        type: 'button',
+        class: 'chat-mermaid-lightbox-close',
+        title: 'Close',
+        'aria-label': 'Close',
+        onclick: close,
+      }, '×'),
+      scrollEl,
+    );
+    panel.addEventListener('click', e => e.stopPropagation());
+    backdrop.appendChild(panel);
+    document.body.appendChild(backdrop);
+    window.addEventListener('resize', onResize);
+    requestAnimationFrame(() => {
+      layoutLightbox();
+      requestAnimationFrame(layoutLightbox);
+    });
+  }
+
+  function wireMermaidZoomButtons(root) {
+    if (!root) return;
+    root.querySelectorAll('.chat-mermaid-zoom').forEach(btn => {
+      if (btn.dataset.wired) return;
+      btn.dataset.wired = '1';
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const diagramEl = btn.closest('.chat-mermaid-diagram-wrap')?.querySelector('.chat-mermaid-diagram');
+        if (diagramEl) openMermaidLightbox(diagramEl);
+      });
+    });
+  }
+
+  function openImageLightbox(src, alt) {
+    const existing = document.getElementById('chat-image-lightbox');
+    if (existing) existing.remove();
+    const backdrop = el('div', {
+      id: 'chat-image-lightbox',
+      class: 'chat-image-lightbox',
+      role: 'dialog',
+      'aria-label': alt || 'Image preview',
+    });
+    const close = () => backdrop.remove();
+    backdrop.addEventListener('click', e => {
+      if (e.target === backdrop) close();
+    });
+    const panel = el('div', { class: 'chat-image-lightbox-panel' },
+      el('button', {
+        type: 'button',
+        class: 'chat-image-lightbox-close',
+        title: 'Close',
+        onclick: close,
+      }, '×'),
+      el('img', { src, alt: alt || '', class: 'chat-image-lightbox-img' }),
+    );
+    panel.addEventListener('click', e => e.stopPropagation());
+    backdrop.appendChild(panel);
+    document.body.appendChild(backdrop);
+  }
+
+  function openAttachment(att) {
+    const url = resolveAttachmentUrl(att);
+    if (!url) return;
+    if (isImageAttachment(att)) {
+      openImageLightbox(url, att.name || 'attachment');
+      return;
+    }
+    if (isPdfAttachment(att)) {
+      window.open(workspaceInlinePdfUrl(att.path || url), '_blank', 'noopener,noreferrer');
+      return;
+    }
+    const dl = workspaceDownloadUrl(att.path || url);
+    window.open(dl, '_blank', 'noopener,noreferrer');
+  }
+
   function rewriteLocalPathsInMarkdown(text) {
     let out = String(text || '').replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (match, alt, url) => {
       const next = toWorkspaceFileUrl(url);
@@ -178,6 +327,90 @@
       return `[${label}](${next})`;
     });
     return out;
+  }
+
+  function isMermaidCodeLang(lang) {
+    return String(lang || '').trim().toLowerCase() === 'mermaid';
+  }
+
+  /** Detect Mermaid when the model omits the ```mermaid fence language. */
+  function looksLikeMermaidSource(text) {
+    const t = String(text || '').trimStart();
+    if (!t) return false;
+    if (/^(sequenceDiagram|classDiagram|stateDiagram-v?\d|erDiagram|gantt\b|pie\b|gitGraph\b|journey\b|timeline\b|mindmap\b|quadrantChart\b|xychart-beta\b|sankey-beta\b|block-beta\b|C4Context\b)/i.test(t)) {
+      return true;
+    }
+    return MERMAID_HEAD_RE.test(t) && /(-->|-\.->|---)/.test(t);
+  }
+
+  function mermaidDiagramContinues(line) {
+    const t = String(line || '').trim();
+    if (!t) return true;
+    if (MERMAID_HEAD_RE.test(t)) return true;
+    if (/^subgraph\b/i.test(t)) return true;
+    if (/^end\s*$/i.test(t)) return true;
+    if (/^(classDef|class|style|linkStyle)\b/i.test(t)) return true;
+    if (/(-->|-\.->|---)/.test(t)) return true;
+    if (/^[\w][\w0-9-]*\s*[\[({"]/.test(t)) return true;
+    return false;
+  }
+
+  /** Wrap bare flowchart blocks so marked runs them through the Mermaid renderer. */
+  function promoteBareMermaidFences(md) {
+    if (/```\s*mermaid\b/i.test(md)) return md;
+    const lines = String(md || '').split('\n');
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (MERMAID_HEAD_RE.test(line.trim())) {
+        const chunk = [line];
+        i += 1;
+        while (i < lines.length) {
+          const next = lines[i];
+          if (!mermaidDiagramContinues(next)) break;
+          chunk.push(next);
+          i += 1;
+        }
+        if (chunk.length >= 2 && /(-->|-\.->|---)/.test(chunk.join('\n'))) {
+          out.push('```mermaid', ...chunk, '```');
+          continue;
+        }
+        out.push(...chunk);
+        continue;
+      }
+      out.push(line);
+      i += 1;
+    }
+    return out.join('\n');
+  }
+
+  function prepareMermaidSource(source) {
+    if (typeof mermaidUtils.prepareMermaidSource === 'function') {
+      return mermaidUtils.prepareMermaidSource(source);
+    }
+    return String(source || '')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/\r\n/g, '\n');
+  }
+
+  function mermaidBlockHtml(text) {
+    return (
+      `<div class="chat-mermaid-block" data-mermaid-pending="1">` +
+      `<div class="chat-code-head">` +
+      `<span class="chat-code-lang mono">mermaid</span>` +
+      `<button type="button" class="chat-code-copy" data-copy="1">Copy</button>` +
+      `</div>` +
+      `<pre class="chat-mermaid-src" hidden>${escapeHtml(text)}</pre>` +
+      `<div class="chat-mermaid-diagram-wrap">` +
+      `<div class="chat-mermaid-diagram" aria-busy="true" role="img" aria-label="Diagram"></div>` +
+      `<button type="button" class="chat-mermaid-zoom" title="Enlarge diagram" aria-label="Enlarge diagram">⤢</button>` +
+      `</div>` +
+      `<div class="chat-mermaid-fallback" hidden>` +
+      `<pre><code class="mono">${escapeHtml(text)}</code></pre>` +
+      `</div>` +
+      `</div>`
+    );
   }
 
   function highlightCode(text, lang) {
@@ -210,6 +443,9 @@
               ? code.lang
               : infostring;
           const language = (lang || '').split(/\s+/)[0];
+          if (isMermaidCodeLang(language) || (!language && looksLikeMermaidSource(text))) {
+            return mermaidBlockHtml(text);
+          }
           const inner = highlightCode(text, language);
           return (
             `<div class="chat-code-block">` +
@@ -276,7 +512,7 @@
 
   function renderMarkdown(text) {
     initMarked();
-    const normalized = rewriteLocalPathsInMarkdown(text || '');
+    const normalized = promoteBareMermaidFences(rewriteLocalPathsInMarkdown(text || ''));
     if (markedReady && marked.parse) {
       try {
         return sanitizeHtml(marked.parse(normalized));
@@ -285,6 +521,171 @@
       }
     }
     return escapeHtml(normalized).replace(/\n/g, '<br>');
+  }
+
+  function currentMermaidTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'default';
+  }
+
+  function initMermaid(force) {
+    if (typeof mermaid === 'undefined') return false;
+    const theme = currentMermaidTheme();
+    if (!force && mermaidReady && mermaidActiveTheme === theme) return true;
+    try {
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        htmlLabels: false,
+        maxTextSize: 50_000,
+        maxEdges: 200,
+        theme,
+        fontFamily: 'var(--sans, system-ui, sans-serif)',
+      });
+      mermaidReady = true;
+      mermaidActiveTheme = theme;
+    } catch {
+      mermaidReady = false;
+      mermaidActiveTheme = null;
+    }
+    return mermaidReady;
+  }
+
+  function chatMessagesRoot() {
+    return $('chat-messages') || document;
+  }
+
+  async function refreshMermaidDiagramsForTheme() {
+    if (typeof mermaid === 'undefined') return;
+    const root = chatMessagesRoot();
+    const done = root.querySelectorAll('.chat-mermaid-block.chat-mermaid-done');
+    if (!done.length) {
+      mermaidReady = false;
+      mermaidActiveTheme = null;
+      initMermaid(true);
+      return;
+    }
+    if (!initMermaid(true)) return;
+    done.forEach(block => {
+      block.classList.remove('chat-mermaid-done', 'chat-mermaid-error', 'chat-mermaid-too-large');
+      const diagramEl = block.querySelector('.chat-mermaid-diagram');
+      const fallback = block.querySelector('.chat-mermaid-fallback');
+      if (diagramEl) {
+        diagramEl.innerHTML = '';
+        diagramEl.setAttribute('aria-busy', 'true');
+      }
+      if (fallback) fallback.hidden = true;
+      block.setAttribute('data-mermaid-pending', '1');
+    });
+    await renderMermaidInRoot(root);
+  }
+
+  /** Strip active content from Mermaid-generated SVG before inline display. */
+  function sanitizeMermaidSvg(svg) {
+    if (typeof mermaidUtils.sanitizeMermaidSvg === 'function') {
+      return mermaidUtils.sanitizeMermaidSvg(svg);
+    }
+    return svg || '';
+  }
+
+  function isMeaningfulMermaidSvg(svg) {
+    if (typeof mermaidUtils.isMeaningfulMermaidSvg === 'function') {
+      return mermaidUtils.isMeaningfulMermaidSvg(svg);
+    }
+    return !!svg && svg.length > 80;
+  }
+
+  function showMermaidFallback(block, diagramEl, fallback, message) {
+    block.classList.add('chat-mermaid-error');
+    if (fallback) fallback.hidden = false;
+    if (diagramEl) {
+      if (message) {
+        diagramEl.innerHTML = `<p class="chat-mermaid-load-hint muted-text">${escapeHtml(message)}</p>`;
+      } else {
+        diagramEl.innerHTML = '';
+      }
+      diagramEl.removeAttribute('aria-busy');
+    }
+    block.removeAttribute('data-mermaid-pending');
+  }
+
+  async function renderMermaidInRoot(root) {
+    if (typeof mermaid === 'undefined') {
+      root.querySelectorAll('.chat-mermaid-block[data-mermaid-pending="1"]').forEach(block => {
+        showMermaidFallback(
+          block,
+          block.querySelector('.chat-mermaid-diagram'),
+          block.querySelector('.chat-mermaid-fallback'),
+          'Mermaid failed to load. Hard-refresh or check /static/vendor/mermaid.min.js.',
+        );
+      });
+      return;
+    }
+    if (!initMermaid()) {
+      root.querySelectorAll('.chat-mermaid-block[data-mermaid-pending="1"]').forEach(block => {
+        showMermaidFallback(
+          block,
+          block.querySelector('.chat-mermaid-diagram'),
+          block.querySelector('.chat-mermaid-fallback'),
+          null,
+        );
+      });
+      return;
+    }
+    const blocks = [...root.querySelectorAll('.chat-mermaid-block[data-mermaid-pending="1"]')];
+    let rendered = 0;
+    for (const block of blocks) {
+      const srcEl = block.querySelector('.chat-mermaid-src');
+      const diagramEl = block.querySelector('.chat-mermaid-diagram');
+      const fallback = block.querySelector('.chat-mermaid-fallback');
+      if (!srcEl || !diagramEl) {
+        block.removeAttribute('data-mermaid-pending');
+        continue;
+      }
+      const source = prepareMermaidSource(srcEl.textContent || '').trim();
+      if (!source) {
+        block.removeAttribute('data-mermaid-pending');
+        continue;
+      }
+      if (rendered >= MAX_MERMAID_PER_MESSAGE || source.length > MAX_MERMAID_CHARS) {
+        block.classList.add('chat-mermaid-too-large');
+        if (fallback) fallback.hidden = false;
+        diagramEl.innerHTML = '';
+        diagramEl.removeAttribute('aria-busy');
+        block.removeAttribute('data-mermaid-pending');
+        continue;
+      }
+      rendered += 1;
+      const id = `chat-mmd-${++mermaidIdSeq}`;
+      try {
+        const out = await mermaid.render(id, source);
+        const clean = sanitizeMermaidSvg(out.svg);
+        if (!clean || !isMeaningfulMermaidSvg(clean)) throw new Error('empty_svg');
+        diagramEl.innerHTML = clean;
+        if (typeof out.bindFunctions === 'function') {
+          try {
+            out.bindFunctions(diagramEl.querySelector('svg'));
+          } catch {
+            /* non-interactive diagrams */
+          }
+        }
+        if (fallback) fallback.hidden = true;
+        block.classList.add('chat-mermaid-done');
+      } catch (err) {
+        showMermaidFallback(block, diagramEl, fallback, null);
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[chat-mermaid]', err?.message || err, source.slice(0, 120));
+        }
+      }
+      diagramEl.removeAttribute('aria-busy');
+      block.removeAttribute('data-mermaid-pending');
+    }
+    wireMermaidZoomButtons(root);
+  }
+
+  function wireMermaidDiagrams(root) {
+    wireMermaidZoomButtons(root);
+    if (!root?.querySelector?.('.chat-mermaid-block[data-mermaid-pending="1"]')) return;
+    void renderMermaidInRoot(root);
   }
 
   /** Cheap live preview while tokens stream (full markdown runs once on completion). */
@@ -297,7 +698,10 @@
       if (btn.dataset.wired) return;
       btn.dataset.wired = '1';
       btn.addEventListener('click', async () => {
-        const code = btn.closest('.chat-code-block')?.querySelector('code');
+        const block = btn.closest('.chat-code-block, .chat-mermaid-block');
+        const code =
+          block?.querySelector('code') ??
+          block?.querySelector('.chat-mermaid-src');
         const ok = await copyText(code?.textContent ?? '');
         flash(btn, ok ? 'Copied' : 'Failed');
       });
@@ -422,7 +826,10 @@
           messages: Array.isArray(t.messages) ? t.messages : [],
         }))
         : [];
-      state.threads.forEach(sanitizeThreadMessages);
+      state.threads.forEach(t => {
+        rehydrateThreadAttachments(t);
+        sanitizeThreadMessages(t);
+      });
       const activeIds = new Set(activeGens.map(g => g.threadId));
       finalizeInterruptedMessages(state.threads, activeIds);
       for (const gen of activeGens) {
@@ -546,6 +953,7 @@
     };
     if (idx >= 0) state.threads[idx] = merged;
     else state.threads.push(merged);
+    rehydrateThreadAttachments(merged);
     sanitizeThreadMessages(merged);
 
     if (entry) {
@@ -591,6 +999,7 @@
       const idx = state.threads.findIndex(t => t.id === id);
       if (idx >= 0) state.threads[idx] = thread;
       else state.threads.push(thread);
+      rehydrateThreadAttachments(thread);
 
       if (entry) {
         entry.updatedAt = thread.updatedAt;
@@ -1102,13 +1511,27 @@
     if (!attachments?.length) return null;
     return el('div', { class: 'chat-msg-attachments' },
       ...attachments.map(a => {
-        if ((a.mimeType || '').startsWith('image/') && a.url) {
-          return el('div', { class: 'chat-msg-attachment' },
-            el('img', { src: a.url, alt: a.name || 'attachment', loading: 'lazy' }),
+        const url = resolveAttachmentUrl(a);
+        const name = a.name || 'file';
+        if (isImageAttachment(a) && url) {
+          return el('button', {
+            type: 'button',
+            class: 'chat-msg-attachment chat-msg-attachment-image',
+            title: `Preview ${name}`,
+            onclick: () => openImageLightbox(url, name),
+          },
+            el('img', { src: url, alt: name, loading: 'lazy' }),
           );
         }
-        return el('div', { class: 'chat-msg-attachment chat-msg-attachment-file' },
-          `📎 ${a.name || 'file'}`,
+        const actionLabel = isPdfAttachment(a) ? 'Preview PDF' : 'Download';
+        return el('button', {
+          type: 'button',
+          class: 'chat-msg-attachment chat-msg-attachment-file',
+          title: `${actionLabel}: ${name}`,
+          onclick: () => openAttachment(a),
+        },
+          el('span', { class: 'chat-msg-attachment-icon' }, isPdfAttachment(a) ? '📄' : '📎'),
+          el('span', { class: 'chat-msg-attachment-name' }, name),
         );
       }),
     );
@@ -1167,7 +1590,10 @@
     );
     if (actions.childNodes.length && !editing) body.appendChild(actions);
 
-    if (!isUser) wireCopyButtons(bubble);
+    if (!isUser) {
+      wireCopyButtons(bubble);
+      wireMermaidDiagrams(bubble);
+    }
     return el('article', {
       class: `chat-msg ${isUser ? 'user' : 'assistant'}${m.streaming ? ' streaming' : ''}`,
       'data-idx': String(i),
@@ -1359,8 +1785,9 @@
     const parts = [];
     if (m.content?.trim()) parts.push({ type: 'text', text: m.content });
     for (const a of attachments) {
-      if ((a.mimeType || '').startsWith('image/') && a.url) {
-        parts.push({ type: 'image_url', image_url: { url: a.url } });
+      const imgUrl = resolveAttachmentUrl(a);
+      if ((a.mimeType || '').startsWith('image/') && imgUrl) {
+        parts.push({ type: 'image_url', image_url: { url: imgUrl } });
       }
     }
     const payload = {
@@ -1776,6 +2203,10 @@
   }
 
   function removePendingAttachment(idx) {
+    const item = state.pendingAttachments[idx];
+    if (item?.previewUrl?.startsWith('blob:')) {
+      try { URL.revokeObjectURL(item.previewUrl); } catch { /* ignore */ }
+    }
     state.pendingAttachments.splice(idx, 1);
     renderPendingAttachments();
   }
@@ -1804,7 +2235,7 @@
           }),
         )
         : null;
-      return el('div', { class: 'chat-attachment-chip' + (a.uploading ? ' is-uploading' : '') },
+      const chip = el('div', { class: 'chat-attachment-chip' + (a.uploading ? ' is-uploading' : '') },
         preview,
         el('div', { class: 'chat-attachment-meta' },
           el('span', { class: 'chat-attachment-name', title: a.name }, a.name),
@@ -1814,9 +2245,18 @@
           type: 'button',
           class: 'chat-attachment-remove',
           title: 'Remove',
-          onclick: () => removePendingAttachment(i),
+          onclick: (e) => {
+            e.stopPropagation();
+            removePendingAttachment(i);
+          },
         }, '×'),
       );
+      if (!a.uploading && (a.path || resolveAttachmentUrl(a))) {
+        chip.classList.add('is-clickable');
+        chip.title = isImageAttachment(a) ? `Preview ${a.name}` : `Open ${a.name}`;
+        chip.addEventListener('click', () => openAttachment(a));
+      }
+      return chip;
     }));
   }
 
@@ -1853,10 +2293,22 @@
   function submitEdit(idx, text) {
     const thread = activeThread();
     const clean = String(text ?? '').trim();
-    if (!thread || !clean || isBusy(thread)) return;
+    const original = thread?.messages[idx];
+    const preserved = original?.attachments;
+    if (!thread || (!clean && !preserved?.length) || isBusy(thread)) return;
     thread.messages = thread.messages.slice(0, idx);
     state.editingIdx = null;
-    thread.messages.push({ role: 'user', content: clean, ts: Date.now() });
+    const msg = { role: 'user', content: clean, ts: Date.now() };
+    if (preserved?.length) {
+      msg.attachments = preserved.map(a => ({
+        name: a.name,
+        mimeType: a.mimeType,
+        path: a.path,
+        url: a.path ? toWorkspaceFileUrl(a.path) : a.url,
+        size: a.size,
+      }));
+    }
+    thread.messages.push(msg);
     void startAssistant(thread);
   }
 
@@ -1931,11 +2383,15 @@
   }
 
   function applyTheme(theme) {
+    const prev = document.documentElement.getAttribute('data-theme');
     document.documentElement.dataset.theme = theme;
     const hl = $('hljs-theme-note');
     if (hl) hl.dataset.theme = theme;
     const btn = $('chat-theme');
     if (btn) btn.textContent = theme === 'light' ? '🌙' : '☀️';
+    if (prev && prev !== theme) {
+      void refreshMermaidDiagramsForTheme();
+    }
   }
 
   function initTheme() {

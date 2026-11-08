@@ -1051,12 +1051,135 @@ html:has(body.chat-page) {
   background: var(--panel-2);
 }
 
-.chat-code-block {
+.chat-code-block,
+.chat-mermaid-block {
   margin: 12px 0;
   border: 1px solid var(--border-soft);
   border-radius: 10px;
   overflow: hidden;
   background: var(--code-bg);
+}
+
+.chat-mermaid-diagram-wrap {
+  position: relative;
+}
+
+.chat-mermaid-diagram {
+  padding: 12px 16px;
+  overflow-x: auto;
+  text-align: center;
+  background: var(--bg);
+}
+
+.chat-mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.chat-mermaid-zoom {
+  display: none;
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  opacity: 0.92;
+}
+
+.chat-mermaid-zoom:hover {
+  opacity: 1;
+  border-color: var(--accent, #3b82f6);
+  background: var(--panel-2);
+}
+
+.chat-mermaid-block.chat-mermaid-done .chat-mermaid-zoom {
+  display: block;
+}
+
+.chat-mermaid-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: min(4vw, 24px);
+}
+
+.chat-mermaid-lightbox-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(92vw, 1400px);
+  height: min(88vh, 920px);
+  max-width: 92vw;
+  max-height: 88vh;
+}
+
+.chat-mermaid-lightbox-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+  background: var(--bg);
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+.chat-mermaid-lightbox-diagram {
+  margin: 0 auto;
+}
+
+.chat-mermaid-lightbox-close {
+  position: absolute;
+  top: -10px;
+  right: -10px;
+  z-index: 3;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 22px;
+  cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+.chat-mermaid-fallback {
+  border-top: 1px solid var(--border-soft);
+}
+
+.chat-mermaid-fallback pre {
+  margin: 0;
+  padding: 12px;
+  overflow-x: auto;
+  font-size: 12px;
+  background: transparent;
+}
+
+.chat-mermaid-block.chat-mermaid-error .chat-mermaid-diagram:empty,
+.chat-mermaid-block.chat-mermaid-too-large .chat-mermaid-diagram:empty {
+  display: none;
+}
+
+.chat-mermaid-load-hint {
+  margin: 0;
+  padding: 12px 16px;
+  font-size: 13px;
+  text-align: center;
 }
 
 .chat-code-head {
@@ -1231,6 +1354,13 @@ html:has(body.chat-page) {
   border: 1px solid var(--border-soft);
 }
 
+.chat-msg-attachment-image {
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  display: block;
+}
+
 .chat-msg-attachment img {
   display: block;
   max-width: 200px;
@@ -1243,6 +1373,73 @@ html:has(body.chat-page) {
   padding: 8px 10px;
   font-size: 12px;
   background: var(--panel-2);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  width: auto;
+  max-width: 240px;
+}
+
+.chat-msg-attachment-file:hover {
+  border-color: var(--accent, #3b82f6);
+}
+
+.chat-msg-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-attachment-chip.is-clickable {
+  cursor: pointer;
+}
+
+.chat-attachment-chip.is-clickable:hover {
+  border-color: var(--accent, #3b82f6);
+}
+
+.chat-image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.chat-image-lightbox-panel {
+  position: relative;
+  max-width: min(96vw, 1200px);
+  max-height: 92vh;
+}
+
+.chat-image-lightbox-img {
+  display: block;
+  max-width: min(96vw, 1200px);
+  max-height: 92vh;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.chat-image-lightbox-close {
+  position: absolute;
+  top: -12px;
+  right: -12px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 22px;
+  cursor: pointer;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
 }
 
 .chat-composer {
