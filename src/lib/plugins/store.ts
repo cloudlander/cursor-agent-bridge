@@ -66,6 +66,8 @@ export type Registry = {
   version: 1;
   marketplaces: MarketplaceDef[];
   plugins: InstalledPlugin[];
+  /** User-uninstalled plugin ids; CLI cache sync must not reinstall them. */
+  cliSyncBlocked?: string[];
 };
 
 export const OFFICIAL_MARKETPLACE: MarketplaceDef = {
@@ -92,6 +94,21 @@ export function assertSafeName(kind: string, value: unknown): string {
     throw new ApiError(400, `invalid ${kind}: ${String(value)}`);
   }
   return value;
+}
+
+/** Parse `marketplaceId/name` installed-plugin ids (supports raw or encoded slash). */
+export function parseInstalledPluginId(raw: string): string {
+  const id = decodeURIComponent(raw).trim();
+  const slash = id.indexOf("/");
+  if (slash <= 0 || slash >= id.length - 1) {
+    throw new ApiError(400, "invalid plugin id");
+  }
+  assertSafeName("marketplace id", id.slice(0, slash));
+  assertSafeName("plugin name", id.slice(slash + 1));
+  if (id.indexOf("/", slash + 1) >= 0) {
+    throw new ApiError(400, "invalid plugin id");
+  }
+  return id;
 }
 
 export function emptyConfig(): PluginConfig {
@@ -140,6 +157,9 @@ export function readRegistry(config: BridgeConfig): Registry {
       version: 1,
       marketplaces: Array.isArray(raw.marketplaces) ? raw.marketplaces : [],
       plugins: Array.isArray(raw.plugins) ? raw.plugins : [],
+      cliSyncBlocked: Array.isArray(raw.cliSyncBlocked)
+        ? raw.cliSyncBlocked.filter((x): x is string => typeof x === "string")
+        : [],
     };
   } catch {
     /* fresh registry */

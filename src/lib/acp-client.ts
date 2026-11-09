@@ -13,6 +13,11 @@ import {
   type AcpPermissionParams,
 } from "./acp-connection.js";
 import {
+  parseAcpPromptResultUsage,
+  parseAcpUsageUpdate,
+  type ContextWindowUsage,
+} from "./acp-context-usage.js";
+import {
   ACP_CLIENT_CAPABILITIES,
   acpFailureText,
   configureAcpSessionModel,
@@ -204,6 +209,7 @@ function handleAcpNotification(
     stdin: NodeJS.WritableStream | null | undefined;
     onAgentTextChunk?: (text: string) => void;
     onAgentThoughtChunk?: (text: string) => void;
+    onContextWindowUsage?: (usage: ContextWindowUsage) => void;
   },
 ): boolean {
   if (msg.method === "session/update") {
@@ -211,6 +217,12 @@ function handleAcpNotification(
       sessionUpdate?: string;
       content?: { text?: string } | Array<{ content?: { text?: string }; text?: string }>;
     } | undefined;
+    const usageHit = parseAcpUsageUpdate(
+      update as Record<string, unknown> | undefined,
+    );
+    if (usageHit) {
+      opts.onContextWindowUsage?.(usageHit);
+    }
     const content = update?.content;
     const text = extractAcpUpdateText(content);
     const sessionUpdate = update?.sessionUpdate;
@@ -221,6 +233,7 @@ function handleAcpNotification(
     } else if (
       sessionUpdate &&
       sessionUpdate !== "agent_thought_chunk" &&
+      sessionUpdate !== "usage_update" &&
       sessionUpdate !== "available_commands_update" &&
       sessionUpdate !== "tool_call" &&
       sessionUpdate !== "tool_call_update"
@@ -596,6 +609,7 @@ export function runAcpStream(
   opts: AcpRunOptions,
   onChunk: (text: string) => void,
   onThoughtChunk?: (text: string) => void,
+  onContextWindowUsage?: (usage: ContextWindowUsage) => void,
 ): Promise<AcpStreamResult> {
   const promptBlocks = normalizeAcpPrompt(prompt);
   const requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -683,6 +697,7 @@ export function runAcpStream(
           stdin: child.stdin,
           onAgentTextChunk: onChunk,
           onAgentThoughtChunk: onThoughtChunk,
+          onContextWindowUsage,
         });
       } catch {
         /* ignore notification handler errors */
@@ -751,10 +766,21 @@ export function runAcpStream(
         );
 
         debugAcp("ACP step: session/prompt");
-        await sendRequest(child.stdin, nextId, "session/prompt", {
-          sessionId,
-          prompt: promptBlocks,
-        }, pending, requestTimeoutMs);
+        const promptResult = (await sendRequest(
+          child.stdin,
+          nextId,
+          "session/prompt",
+          {
+            sessionId,
+            prompt: promptBlocks,
+          },
+          pending,
+          requestTimeoutMs,
+        )) as Record<string, unknown> | undefined;
+        const promptUsage = parseAcpPromptResultUsage(promptResult, opts.model);
+        if (promptUsage) {
+          onContextWindowUsage?.(promptUsage);
+        }
         finish(0);
       } catch (err) {
         stderr = acpFailureText(err)

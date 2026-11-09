@@ -196,7 +196,7 @@ function mountFromReferer(
   try {
     const pathname = new URL(referer).pathname;
     const split = splitPublicPath(pathname, appSegment);
-    if (split.kind === "found" && split.mount) return split.mount;
+    if (split.kind === "found") return split.mount;
     const bootstrap = mountFromBootstrapPathname(pathname);
     if (bootstrap && bootstrap !== `/${appSegment}`) return bootstrap;
   } catch {

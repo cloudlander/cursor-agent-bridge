@@ -92,6 +92,14 @@ describe("resolveEffectiveMount", () => {
   it("returns empty when no path or header", () => {
     expect(resolveEffectiveMount("", {}, seg)).toBe("");
   });
+
+  it("does not treat referer chat URL as bootstrap mount", () => {
+    expect(
+      resolveEffectiveMount("", {
+        referer: "https://agent-cai.example.com/agent-0435a2/chat",
+      }, seg),
+    ).toBe("");
+  });
 });
 
 describe("externalPathnameFromRequest", () => {

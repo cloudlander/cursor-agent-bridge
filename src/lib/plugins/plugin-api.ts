@@ -2,7 +2,7 @@ import * as http from "node:http";
 
 import type { BridgeConfig } from "../config.js";
 import { json, readBodyLimited } from "../http.js";
-import { ApiError } from "./store.js";
+import { ApiError, parseInstalledPluginId } from "./store.js";
 import { resolvePublicAppBase } from "./public-origin.js";
 import {
   addMarketplace,
@@ -11,7 +11,9 @@ import {
   installPlugin,
   listMarketplaces,
   patchPluginConfig,
-  ensurePluginsUiInitialized,
+  getPluginsUiInitStatus,
+  startPluginsUiBackgroundInit,
+  waitForPluginsUiInitialized,
   redeployAll,
   refreshMarketplace,
   removeMarketplace,
@@ -24,6 +26,30 @@ import {
   updatePlugin,
 } from "./manager.js";
 const MAX_BODY = 1024 * 1024;
+const INSTALLED_PREFIX = "/api/plugins/installed/";
+
+type InstalledRoute = { id: string; sub: "detail" } | { id: string; sub: "mcp-login" };
+
+function matchInstalledPluginRoute(pathname: string): InstalledRoute | null {
+  if (!pathname.startsWith(INSTALLED_PREFIX)) return null;
+  const rest = pathname.slice(INSTALLED_PREFIX.length);
+  if (!rest || rest.includes("?")) return null;
+  const mcpSuffix = "/mcp-login";
+  if (rest.endsWith(mcpSuffix)) {
+    const rawId = rest.slice(0, -mcpSuffix.length);
+    if (!rawId) return null;
+    try {
+      return { id: parseInstalledPluginId(rawId), sub: "mcp-login" };
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return { id: parseInstalledPluginId(rest), sub: "detail" };
+  } catch {
+    return null;
+  }
+}
 
 function checkMutationOrigin(req: http.IncomingMessage): void {
   const origin = req.headers.origin;
@@ -92,10 +118,14 @@ export async function handlePluginApi(
   const q = parseQuery(url);
 
   try {
-    await ensurePluginsUiInitialized(config);
+    startPluginsUiBackgroundInit(config);
 
     if (req.method === "GET" && pathname === "/plugins") {
       return;
+    }
+
+    if (req.method === "GET" && pathname === "/api/plugins/init-status") {
+      return json(res, 200, getPluginsUiInitStatus());
     }
 
     const needsWrite =
@@ -109,6 +139,15 @@ export async function handlePluginApi(
       if (req.method !== "DELETE" && !String(ct).includes("application/json")) {
         throw new ApiError(415, "content-type must be application/json");
       }
+    }
+
+    const mustAwaitInit =
+      needsWrite ||
+      (req.method === "POST" &&
+        (pathname === "/api/plugins/redeploy" ||
+          pathname === "/api/plugins/sync-cli-cache"));
+    if (mustAwaitInit) {
+      await waitForPluginsUiInitialized(config);
     }
 
     if (req.method === "GET" && pathname === "/api/plugins/marketplaces") {
@@ -131,12 +170,17 @@ export async function handlePluginApi(
     }
 
     if (req.method === "GET" && pathname === "/api/plugins/catalog") {
+      const page = q.page ? Number(q.page) : undefined;
+      const pageSize = q.pageSize ? Number(q.pageSize) : undefined;
       const catalog = await searchCatalog(config, {
         q: q.q,
         marketplaceId: q.marketplace,
         installed: q.installed === "true" ? true : q.installed === "false" ? false : undefined,
+        page: Number.isFinite(page) ? page : undefined,
+        pageSize: Number.isFinite(pageSize) ? pageSize : undefined,
+        category: q.category,
       });
-      return json(res, 200, { plugins: catalog });
+      return json(res, 200, catalog);
     }
 
     if (req.method === "GET" && pathname === "/api/plugins/installed") {
@@ -169,9 +213,21 @@ export async function handlePluginApi(
       });
     }
 
-    const detailMatch = pathname.match(/^\/api\/plugins\/installed\/([^/]+)$/);
-    if (detailMatch) {
-      const id = decodeURIComponent(detailMatch[1]);
+    const installedRoute = matchInstalledPluginRoute(pathname);
+    if (installedRoute?.sub === "mcp-login" && req.method === "POST") {
+      const body = (await readJsonBody(req)) as { server?: string; configDir?: string };
+      const result = await startMcpLogin(
+        config,
+        installedRoute.id,
+        String(body.server ?? ""),
+        body.configDir,
+        resolvePublicAppBase(req, config),
+      );
+      return json(res, 200, result);
+    }
+
+    if (installedRoute?.sub === "detail") {
+      const id = installedRoute.id;
       if (req.method === "GET") {
         return json(res, 200, getPluginDetail(config, id));
       }
@@ -214,19 +270,6 @@ export async function handlePluginApi(
         String(body.marketplaceId ?? ""),
         String(body.name ?? ""),
         body.server,
-        body.configDir,
-        resolvePublicAppBase(req, config),
-      );
-      return json(res, 200, result);
-    }
-
-    const loginMatch = pathname.match(/^\/api\/plugins\/installed\/([^/]+)\/mcp-login$/);
-    if (req.method === "POST" && loginMatch) {
-      const body = (await readJsonBody(req)) as { server?: string; configDir?: string };
-      const result = await startMcpLogin(
-        config,
-        decodeURIComponent(loginMatch[1]),
-        String(body.server ?? ""),
         body.configDir,
         resolvePublicAppBase(req, config),
       );

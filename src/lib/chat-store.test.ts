@@ -7,6 +7,7 @@ import type { BridgeConfig } from "./config.js";
 import {
   listChatSessions,
   parseAgentTranscript,
+  summarizeAgentTranscript,
   readChatStore,
   mergeWebThreadPair,
   saveWebThreads,
@@ -88,6 +89,9 @@ describe("parseAgentTranscript", () => {
       { role: "user", content: "hello world" },
       { role: "assistant", content: "Hi" },
     ]);
+    const summary = summarizeAgentTranscript(raw);
+    expect(summary.messageCount).toBe(2);
+    expect(summary.firstUser).toBe("hello world");
   });
 });
 

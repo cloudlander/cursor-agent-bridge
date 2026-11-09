@@ -15,6 +15,11 @@ import {
 
 const GIT_TIMEOUT_MS = 120_000;
 const CATALOG_TTL_MS = 10 * 60_000;
+const PARSE_CATALOG_YIELD_EVERY = 48;
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 export type CatalogEntry = {
   marketplaceId: string;
@@ -118,8 +123,9 @@ export async function syncMarketplace(
       throw err;
     }
   }
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  await fs.promises.rm(dir, { recursive: true, force: true });
+  await yieldToEventLoop();
+  await fs.promises.mkdir(path.dirname(dir), { recursive: true });
   await git(["clone", "--depth", "1", "--filter=blob:none", "--sparse", "--", validateGitUrl(m.url), dir]);
   await git(
     ["sparse-checkout", "set", ".cursor-plugin", ".claude-plugin", ".agents/plugins"],
@@ -221,13 +227,95 @@ export function parseCatalog(marketplaceId: string, dir: string): CatalogEntry[]
   return out;
 }
 
+/** Same as {@link parseCatalog} but yields during large manifests. */
+async function readJsonFileAsync(file: string): Promise<Record<string, unknown> | null> {
+  try {
+    const raw = await fs.promises.readFile(file, "utf8");
+    await yieldToEventLoop();
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === "object" && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function parseCatalogAsync(
+  marketplaceId: string,
+  dir: string,
+): Promise<CatalogEntry[]> {
+  const file = findManifestFile(dir, "marketplace.json");
+  if (!file) throw new ApiError(422, "no .cursor-plugin/marketplace.json (or .claude-plugin) in repository");
+  const data = await readJsonFileAsync(file);
+  const plugins = data?.plugins;
+  if (!Array.isArray(plugins)) throw new ApiError(422, "marketplace.json has no plugins array");
+  const meta = (data?.metadata ?? {}) as Record<string, unknown>;
+  const pluginRoot = str(meta.pluginRoot)?.replace(/^\.\//, "");
+
+  const out: CatalogEntry[] = [];
+  let n = 0;
+  for (const p of plugins) {
+    if (!p || typeof p !== "object") continue;
+    const o = p as Record<string, unknown>;
+    const name = str(o.name);
+    const source = parseSource(o.source, pluginRoot);
+    if (!name || !source || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)) continue;
+    const author = o.author && typeof o.author === "object" ? str((o.author as Record<string, unknown>).name) : str(o.author);
+    out.push({
+      marketplaceId,
+      name,
+      description: str(o.description) ?? "",
+      version: str(o.version),
+      category: str(o.category),
+      keywords: Array.isArray(o.keywords) ? o.keywords.filter((k): k is string => typeof k === "string") : [],
+      author,
+      homepage: str(o.homepage),
+      source,
+    });
+    n++;
+    if (n % PARSE_CATALOG_YIELD_EVERY === 0) {
+      await yieldToEventLoop();
+    }
+  }
+  return out;
+}
+
+/** Parse marketplace.json from an on-disk clone without git network I/O. */
+export function loadCatalogFromDisk(
+  config: BridgeConfig,
+  m: MarketplaceDef,
+): CatalogEntry[] | null {
+  const dir = path.join(pluginPaths(config).marketplacesDir, m.id);
+  if (!fs.existsSync(dir)) return null;
+  try {
+    return parseCatalog(m.id, dir);
+  } catch {
+    return null;
+  }
+}
+
 export async function loadCatalog(
   config: BridgeConfig,
   m: MarketplaceDef,
   force = false,
 ): Promise<CatalogEntry[]> {
   const dir = await syncMarketplace(config, m, force);
-  return parseCatalog(m.id, dir);
+  return parseCatalogAsync(m.id, dir);
+}
+
+export async function loadCatalogFromDiskAsync(
+  config: BridgeConfig,
+  m: MarketplaceDef,
+): Promise<CatalogEntry[] | null> {
+  await yieldToEventLoop();
+  const dir = path.join(pluginPaths(config).marketplacesDir, m.id);
+  if (!fs.existsSync(dir)) return null;
+  try {
+    return await parseCatalogAsync(m.id, dir);
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

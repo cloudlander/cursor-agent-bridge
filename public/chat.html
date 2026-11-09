@@ -8,13 +8,28 @@
 </head>
 <body class="chat-page">
   <div id="upstream-sync-banner" class="upstream-sync-banner hidden" hidden aria-live="polite"></div>
+  <div id="chat-network-banner" class="chat-network-banner upstream-sync-banner hidden" hidden aria-live="polite" data-kind="error">
+    <div class="upstream-sync-banner-text" id="chat-network-banner-text">
+      Connection lost. Your chats will sync again when the network is back.
+    </div>
+  </div>
+  <div id="chat-page-load" class="page-load-overlay page-load-overlay--chat" aria-live="polite" aria-busy="true">
+    <div class="page-load-card">
+      <p class="page-load-title">Loading chat…</p>
+      <div class="page-load-bar" role="progressbar" aria-label="Loading">
+        <span class="page-load-bar-indeterminate"></span>
+      </div>
+    </div>
+  </div>
   <div class="chat-shell" id="chat-shell">
     <div class="chat-backdrop" id="chat-backdrop"></div>
     <aside class="chat-sidebar" id="chat-sidebar">
+      <div class="chat-sidebar-resize" id="chat-sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
       <div class="chat-sidebar-brand">
-        <span class="chat-brand-dot" aria-hidden="true"></span>
+        <span class="chat-brand-dot" id="chat-brand-dot" aria-hidden="true" title="Checking bridge…"></span>
         <span class="chat-brand-name">Agent</span>
         <a href="/" class="chat-back-icon" title="Dashboard">⌂</a>
+        <button type="button" class="chat-sidebar-collapse btn small" id="chat-sidebar-collapse" title="Collapse sidebar (⌘\)" aria-label="Collapse sidebar">‹</button>
       </div>
       <div class="chat-sidebar-head">
         <button type="button" class="btn small primary chat-new-btn" id="chat-new" title="New chat (Ctrl/Cmd+Shift+O)">
@@ -54,6 +69,12 @@
         <button type="button" class="chat-scroll-bottom hidden" id="chat-scroll-bottom" title="Scroll to bottom">↓</button>
       </div>
       <div class="chat-composer-wrap">
+        <div class="chat-context-usage hidden" id="chat-context-usage" aria-live="polite">
+          <div class="chat-context-usage-track" aria-hidden="true">
+            <div class="chat-context-usage-fill" id="chat-context-usage-fill"></div>
+          </div>
+          <span class="chat-context-usage-label mono" id="chat-context-usage-label"></span>
+        </div>
         <div class="chat-attachments" id="chat-attachments" hidden></div>
         <div class="chat-composer" id="chat-composer">
           <input type="file" id="chat-file-input" class="chat-file-input" multiple accept="image/*,.pdf,.txt,.md,.json,.csv,.yaml,.yml,.ts,.tsx,.js,.jsx,.py,.sh,.html,.css,.xml,.sql,.toml,.ini,.log" hidden />

@@ -125,11 +125,18 @@ function cacheSource(dir: string): PluginSourceDescriptor {
   return { kind: "cache", dir };
 }
 
-/** Plugins already downloaded by Cursor CLI but absent from git marketplace.json. */
-export function discoverCliCacheCatalog(config: BridgeConfig): CatalogEntry[] {
-  const seen = new Set<string>();
-  const out: CatalogEntry[] = [];
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
+const DISCOVER_YIELD_EVERY = 4;
+
+function scanCliCacheCatalogSync(
+  config: BridgeConfig,
+  seen: Set<string>,
+  out: CatalogEntry[],
+  readMeta: boolean,
+): void {
   for (const cacheRoot of cliCacheRoots(config)) {
     let marketplaces: fs.Dirent[];
     try {
@@ -164,6 +171,17 @@ export function discoverCliCacheCatalog(config: BridgeConfig): CatalogEntry[] {
         if (seen.has(key)) continue;
         const hashDir = newestHashDir(path.join(mpDir, pl.name));
         if (!hashDir) continue;
+        if (!readMeta) {
+          seen.add(key);
+          out.push({
+            marketplaceId,
+            name,
+            description: "",
+            keywords: [],
+            source: cacheSource(hashDir),
+          });
+          continue;
+        }
         const meta = readPluginMeta(hashDir);
         if (!meta) continue;
         seen.add(key);
@@ -181,6 +199,121 @@ export function discoverCliCacheCatalog(config: BridgeConfig): CatalogEntry[] {
       }
     }
   }
+}
+
+async function scanCliCacheCatalogInto(
+  config: BridgeConfig,
+  seen: Set<string>,
+  out: CatalogEntry[],
+  yieldEvery: number,
+  readMeta: boolean,
+): Promise<void> {
+  let scanned = 0;
+  for (const cacheRoot of cliCacheRoots(config)) {
+    let marketplaces: fs.Dirent[];
+    try {
+      marketplaces = fs.readdirSync(cacheRoot, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const mp of marketplaces) {
+      if (!mp.isDirectory()) continue;
+      let marketplaceId: string;
+      try {
+        marketplaceId = assertSafeName("marketplace id", mp.name);
+      } catch {
+        continue;
+      }
+      const mpDir = path.join(cacheRoot, mp.name);
+      let plugins: fs.Dirent[];
+      try {
+        plugins = fs.readdirSync(mpDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const pl of plugins) {
+        if (!pl.isDirectory()) continue;
+        let name: string;
+        try {
+          name = assertSafeName("plugin name", pl.name);
+        } catch {
+          continue;
+        }
+        const key = `${marketplaceId}/${name}`;
+        if (seen.has(key)) continue;
+        const hashDir = newestHashDir(path.join(mpDir, pl.name));
+        if (!hashDir) continue;
+        if (!readMeta) {
+          seen.add(key);
+          out.push({
+            marketplaceId,
+            name,
+            description: "",
+            keywords: [],
+            source: cacheSource(hashDir),
+          });
+          scanned += 1;
+          if (yieldEvery > 0 && scanned % yieldEvery === 0) {
+            await yieldToEventLoop();
+          }
+          continue;
+        }
+        const meta = readPluginMeta(hashDir);
+        if (!meta) continue;
+        seen.add(key);
+        out.push({
+          marketplaceId,
+          name: meta.name === name ? meta.name : name,
+          description: meta.description,
+          version: meta.version,
+          category: meta.category,
+          keywords: meta.keywords,
+          author: meta.author,
+          homepage: meta.homepage,
+          source: cacheSource(hashDir),
+        });
+        scanned += 1;
+        if (yieldEvery > 0 && scanned % yieldEvery === 0) {
+          await yieldToEventLoop();
+        }
+      }
+    }
+  }
+}
+
+/** Plugin cache dirs only (no manifest reads) — fast bootstrap for the catalog index. */
+export function discoverCliCacheLocations(config: BridgeConfig): CatalogEntry[] {
+  const seen = new Set<string>();
+  const out: CatalogEntry[] = [];
+  scanCliCacheCatalogSync(config, seen, out, false);
+  return out;
+}
+
+/** Same as {@link discoverCliCacheLocations} but yields so HTTP handlers stay responsive. */
+export async function discoverCliCacheLocationsAsync(
+  config: BridgeConfig,
+): Promise<CatalogEntry[]> {
+  const seen = new Set<string>();
+  const out: CatalogEntry[] = [];
+  await scanCliCacheCatalogInto(config, seen, out, DISCOVER_YIELD_EVERY, false);
+  return out;
+}
+
+/** Plugins already downloaded by Cursor CLI but absent from git marketplace.json. */
+export function discoverCliCacheCatalog(config: BridgeConfig): CatalogEntry[] {
+  const seen = new Set<string>();
+  const out: CatalogEntry[] = [];
+  scanCliCacheCatalogSync(config, seen, out, true);
+  return out;
+}
+
+/** Same as {@link discoverCliCacheCatalog} but yields so /healthz and HTTP stay responsive. */
+export async function discoverCliCacheCatalogAsync(
+  config: BridgeConfig,
+): Promise<CatalogEntry[]> {
+  const seen = new Set<string>();
+  const out: CatalogEntry[] = [];
+  await scanCliCacheCatalogInto(config, seen, out, DISCOVER_YIELD_EVERY, true);
   return out;
 }
 
@@ -197,12 +330,10 @@ export function resolveCliCacheDir(
   return null;
 }
 
-/** True when Cursor CLI already exposes this plugin's MCP servers in mcp.json. */
-export function isCliMcpDeployed(
-  config: BridgeConfig,
-  pluginName: string,
-): boolean {
-  const prefix = `plugin-${pluginName}-`;
+/** All MCP server keys from Cursor config dirs (single disk pass per call site). */
+export function collectCliMcpServerKeys(config: BridgeConfig): string[] {
+  const keys: string[] = [];
+  const seen = new Set<string>();
   for (const dir of [defaultCursorConfigDir(), ...config.configDirs.map((d) => path.resolve(d.trim()))]) {
     const file = path.join(dir, "mcp.json");
     try {
@@ -212,14 +343,28 @@ export function isCliMcpDeployed(
       const map = raw.mcpServers ?? raw;
       if (map && typeof map === "object") {
         for (const k of Object.keys(map)) {
-          if (k.startsWith(prefix)) return true;
+          if (!seen.has(k)) {
+            seen.add(k);
+            keys.push(k);
+          }
         }
       }
     } catch {
       /* no mcp.json */
     }
   }
-  return false;
+  return keys;
+}
+
+/** True when Cursor CLI already exposes this plugin's MCP servers in mcp.json. */
+export function isCliMcpDeployed(
+  config: BridgeConfig,
+  pluginName: string,
+  mcpKeys?: string[],
+): boolean {
+  const prefix = `plugin-${pluginName}-`;
+  const keys = mcpKeys ?? collectCliMcpServerKeys(config);
+  return keys.some((k) => k.startsWith(prefix));
 }
 
 /** Best-effort: read MCP variable names from a cached plugin tree. */

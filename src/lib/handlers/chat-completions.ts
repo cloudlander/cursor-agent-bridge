@@ -73,6 +73,7 @@ import {
   type ToolSessionRegistry,
 } from "../tool-session-registry.js";
 import {
+  appendWebGenerationContextUsage,
   appendWebGenerationDelta,
   detachWebChatClient,
   finishWebGeneration,
@@ -84,6 +85,7 @@ import {
   messagesHaveMultimodalContent,
 } from "../chat-attachments.js";
 import type { AcpPromptBlock } from "../acp-client.js";
+import { estimateContextWindowUsageFromMessages } from "../acp-context-usage.js";
 
 function maybeRecordProxyChatSession(
   config: BridgeConfig,
@@ -738,8 +740,9 @@ export async function handleChatCompletions(
         : undefined;
 
     let agentSignal: AbortSignal;
+    let webSyncMessages: WebThreadSyncMessage[] = [];
     if (webThreadId) {
-      const syncMessages: WebThreadSyncMessage[] = cleanMessages
+      webSyncMessages = cleanMessages
         .filter((m: { role?: string }) => m?.role === "user" || m?.role === "assistant")
         .map((m: any) => ({
           role: String(m.role),
@@ -749,7 +752,7 @@ export async function handleChatCompletions(
       await syncWebThreadFromChatRequest(config, webThreadId, {
         model: displayModel,
         mode,
-        messages: syncMessages,
+        messages: webSyncMessages,
       }).catch(() => undefined);
       const reg = startWebGeneration(config, webThreadId);
       if (reg.existed) {
@@ -796,6 +799,7 @@ export async function handleChatCompletions(
       rawAccumulatedChars: accumulated.length,
     });
     let accumulated = "";
+    let contextUsageReported = false;
 
     if (config.useAcp || Array.isArray(promptForAgent)) {
       const pushAssistantText = createGuardedAssistantTextEmitter((text) => {
@@ -814,6 +818,15 @@ export async function handleChatCompletions(
         agentSignal,
         modelCatalogName,
         writeReasoningDelta,
+        (usage) => {
+          contextUsageReported = true;
+          if (webThreadId) appendWebGenerationContextUsage(webThreadId, usage);
+          if (!res.writableEnded && !res.destroyed) {
+            res.write(
+              `data: ${JSON.stringify({ object: "bridge.context_usage", usage })}\n\n`,
+            );
+          }
+        },
       )
         .then(({ code, stderr: stderrOut }) => {
           stopKeepalive();
@@ -854,6 +867,29 @@ export async function handleChatCompletions(
           logAccountStats(config.verbose, getAccountStats());
           const normalizedAccumulated =
             normalizeAssistantReplyText(accumulated);
+          if (webThreadId && !contextUsageReported) {
+            const history = webSyncMessages.map((m) => ({
+              content: typeof m.content === "string" ? m.content : "",
+            }));
+            if (normalizedAccumulated) {
+              history.push({ content: normalizedAccumulated });
+            }
+            const estimated = estimateContextWindowUsageFromMessages(
+              history,
+              displayModel ?? cursorModel,
+            );
+            if (estimated) {
+              appendWebGenerationContextUsage(webThreadId, estimated);
+              if (!res.writableEnded && !res.destroyed) {
+                res.write(
+                  `data: ${JSON.stringify({
+                    object: "bridge.context_usage",
+                    usage: estimated,
+                  })}\n\n`,
+                );
+              }
+            }
+          }
           finishWeb({ ok: true });
           logTrafficResponse(
             config.verbose,

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -24,7 +24,7 @@
 
   <main class="container">
     <p class="muted-text" style="margin: 0 0 14px; font-size: 13px;">
-      Browse, import, and configure plugins here — no <code>CURSOR_BRIDGE_API_KEY</code> or dashboard API key. The catalog merges the git <code>cursor/plugins</code> index with the same <strong>cursor.com marketplace</strong> listings as Cursor IDE Customize (e.g. search <strong>browserbase</strong>). The first visit imports CLI-cached plugins and refreshes the registry (may take a moment).
+      Browse, import, and configure plugins here — no <code>CURSOR_BRIDGE_API_KEY</code> or dashboard API key. The catalog merges the git <code>cursor/plugins</code> index with the same <strong>cursor.com marketplace</strong> listings as Cursor IDE Customize (e.g. search <strong>browserbase</strong>). Marketplace git sync runs in the background when the bridge starts; the catalog below refreshes automatically when sync finishes.
     </p>
     <div class="grid cols-2" style="margin-bottom: 16px;">
       <section class="card">
@@ -36,10 +36,22 @@
         </div>
         <div class="card-body">
           <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
-            <input id="search-input" placeholder="Search plugins…" style="flex: 1; min-width: 160px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
+            <input id="search-input" placeholder="Search name, description…" style="flex: 1; min-width: 160px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
+            <select id="category-select" title="Filter by category" style="padding: 8px; min-width: 120px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+              <option value="">All categories</option>
+            </select>
+            <label class="muted-text" for="catalog-page-size" style="font-size: 12px; align-self: center;">Per page</label>
+            <select id="catalog-page-size" title="Plugins per page" style="padding: 8px; min-width: 4.5rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+              <option value="5" selected>5</option>
+              <option value="10">10</option>
+              <option value="24">24</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
             <select id="marketplace-select" style="padding: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);"></select>
           </div>
           <div id="catalog-list" class="empty">Loading catalog…</div>
+          <nav id="catalog-pagination" class="catalog-pagination hidden" aria-label="Catalog pages"></nav>
         </div>
       </section>
 

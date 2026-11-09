@@ -18,6 +18,10 @@
   const ACTIVE_KEY = 'cursor-bridge-chat-active';
   const THEME_KEY = 'cursor-bridge-chat-theme';
   const SIDEBAR_KEY = 'cursor-bridge-chat-sidebar';
+  const SIDEBAR_WIDTH_KEY = 'cursor-bridge-chat-sidebar-width';
+  const SIDEBAR_WIDTH_MIN = 200;
+  const SIDEBAR_WIDTH_MAX = 520;
+  const SIDEBAR_WIDTH_DEFAULT = 280;
   const MIGRATED_KEY = 'cursor-bridge-chat-migrated';
 
   const SOURCE_LABELS = {
@@ -59,9 +63,14 @@
     loadingSessionId: null,
     /** Pending uploads before send: { name, mimeType, path, url, previewUrl? } */
     pendingAttachments: [],
+    /** Selected index in the pending-attachments preview carousel. */
+    pendingPreviewIndex: 0,
     /** Background poll handle for cross-client session sync. */
     sessionSyncTimer: null,
     sessionSyncBusy: false,
+    networkDown: false,
+    networkFailStreak: 0,
+    statusPollTimer: null,
     /** threadId -> { updatedAt, messageCount } last seen from server/local. */
     sessionSnapshots: new Map(),
     searchDebounce: null,
@@ -290,38 +299,125 @@
     });
   }
 
-  function openImageLightbox(src, alt) {
+  function attachmentPreviewSrc(att) {
+    if (!att) return '';
+    return att.previewUrl || resolveAttachmentUrl(att);
+  }
+
+  function openAttachmentGallery(attachments, startIndex = 0) {
+    const list = (attachments || []).filter(Boolean);
+    if (!list.length) return;
+    let index = Math.max(0, Math.min(startIndex, list.length - 1));
     const existing = document.getElementById('chat-image-lightbox');
     if (existing) existing.remove();
     const backdrop = el('div', {
       id: 'chat-image-lightbox',
       class: 'chat-image-lightbox',
       role: 'dialog',
-      'aria-label': alt || 'Image preview',
+      'aria-label': 'Attachment preview',
     });
-    const close = () => backdrop.remove();
+    const close = () => {
+      document.removeEventListener('keydown', onKey);
+      backdrop.remove();
+    };
+    const onKey = e => {
+      if (e.key === 'Escape') close();
+      if (list.length < 2) return;
+      if (e.key === 'ArrowLeft') go(-1);
+      if (e.key === 'ArrowRight') go(1);
+    };
+    document.addEventListener('keydown', onKey);
     backdrop.addEventListener('click', e => {
       if (e.target === backdrop) close();
     });
+
+    const viewport = el('div', { class: 'chat-image-lightbox-viewport' });
+    const counter = el('span', { class: 'chat-image-lightbox-counter mono' });
+    const caption = el('span', { class: 'chat-image-lightbox-caption' });
+
+    const renderSlide = () => {
+      const att = list[index];
+      const name = att.name || 'attachment';
+      const url = attachmentPreviewSrc(att);
+      viewport.replaceChildren();
+      caption.textContent = name;
+      counter.textContent = list.length > 1 ? `${index + 1} / ${list.length}` : '';
+      if (isImageAttachment(att) && url) {
+        viewport.appendChild(el('img', {
+          src: url,
+          alt: name,
+          class: 'chat-image-lightbox-img',
+        }));
+      } else {
+        viewport.appendChild(el('div', { class: 'chat-image-lightbox-file' },
+          el('span', { class: 'chat-image-lightbox-file-icon' }, isPdfAttachment(att) ? '📄' : '📎'),
+          el('span', { class: 'chat-image-lightbox-file-name' }, name),
+          el('button', {
+            type: 'button',
+            class: 'btn small',
+            onclick: () => openAttachment(att, { skipGallery: true }),
+          }, isPdfAttachment(att) ? 'Open PDF' : 'Download'),
+        ));
+      }
+    };
+
+    const go = delta => {
+      index = (index + delta + list.length) % list.length;
+      renderSlide();
+    };
+
+    const navPrev = el('button', {
+      type: 'button',
+      class: 'chat-image-lightbox-nav chat-image-lightbox-nav-prev',
+      title: 'Previous attachment',
+      'aria-label': 'Previous attachment',
+      hidden: list.length < 2,
+      onclick: e => { e.stopPropagation(); go(-1); },
+    }, '‹');
+    const navNext = el('button', {
+      type: 'button',
+      class: 'chat-image-lightbox-nav chat-image-lightbox-nav-next',
+      title: 'Next attachment',
+      'aria-label': 'Next attachment',
+      hidden: list.length < 2,
+      onclick: e => { e.stopPropagation(); go(1); },
+    }, '›');
+
     const panel = el('div', { class: 'chat-image-lightbox-panel' },
       el('button', {
         type: 'button',
         class: 'chat-image-lightbox-close',
         title: 'Close',
+        'aria-label': 'Close',
         onclick: close,
       }, '×'),
-      el('img', { src, alt: alt || '', class: 'chat-image-lightbox-img' }),
+      navPrev,
+      el('div', { class: 'chat-image-lightbox-stage' },
+        viewport,
+        el('div', { class: 'chat-image-lightbox-meta' }, caption, counter),
+      ),
+      navNext,
     );
     panel.addEventListener('click', e => e.stopPropagation());
     backdrop.appendChild(panel);
     document.body.appendChild(backdrop);
+    renderSlide();
   }
 
-  function openAttachment(att) {
+  function openAttachment(att, opts = {}) {
     const url = resolveAttachmentUrl(att);
+    if (!url && !att?.previewUrl) return;
+    if (!opts.skipGallery) {
+      const pending = state.pendingAttachments;
+      const inPending = pending.indexOf(att);
+      if (inPending >= 0 && pending.length > 1) {
+        openAttachmentGallery(pending, inPending);
+        return;
+      }
+    }
     if (!url) return;
     if (isImageAttachment(att)) {
-      openImageLightbox(url, att.name || 'attachment');
+      openAttachmentGallery([att], 0);
       return;
     }
     if (isPdfAttachment(att)) {
@@ -730,6 +826,52 @@
     return state.threads.find(t => t.id === state.activeId) ?? null;
   }
 
+  function formatContextTokens(n) {
+    if (!Number.isFinite(n) || n < 0) return '—';
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
+    if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+    return String(Math.round(n));
+  }
+
+  function applyContextUsageToThread(thread, usage) {
+    if (!thread || !usage) return;
+    const used = Number(usage.used);
+    const size = Number(usage.size);
+    if (!Number.isFinite(used) || !Number.isFinite(size)) return;
+    thread.contextWindowUsage = {
+      used,
+      size,
+      cost: Number.isFinite(Number(usage.cost)) ? Number(usage.cost) : undefined,
+      updatedAt: usage.updatedAt || Date.now(),
+      source: usage.source === 'acp' ? 'acp' : usage.source === 'estimate' ? 'estimate' : thread.contextWindowUsage?.source,
+    };
+  }
+
+  function renderContextUsage() {
+    const wrap = $('chat-context-usage');
+    const fill = $('chat-context-usage-fill');
+    const label = $('chat-context-usage-label');
+    if (!wrap || !fill || !label) return;
+    const usage = activeThread()?.contextWindowUsage;
+    if (!usage || !usage.size) {
+      wrap.classList.add('hidden');
+      wrap.hidden = true;
+      return;
+    }
+    const pct = usage.size > 0 ? Math.min(100, Math.max(0, (usage.used / usage.size) * 100)) : 0;
+    fill.style.width = `${pct.toFixed(1)}%`;
+    const pctLabel = usage.size > 0 ? ` · ${pct.toFixed(1)}%` : '';
+    const approx = usage.source === 'estimate' ? '~' : '';
+    label.textContent = `Context ${approx}${formatContextTokens(usage.used)} / ${formatContextTokens(usage.size)}${pctLabel}`;
+    wrap.classList.remove('hidden');
+    wrap.hidden = false;
+    wrap.title =
+      usage.source === 'estimate'
+        ? 'Estimated from conversation size (Cursor CLI does not yet send ACP usage_update). Replaced automatically when the CLI reports usage.'
+        : 'Model-reported context window usage for this session';
+  }
+
   function isBusy(thread = activeThread()) {
     return !!thread && state.streams.has(thread.id);
   }
@@ -826,11 +968,12 @@
     try {
       await migrateLocalThreadsIfNeeded();
       const [threadsRes, activeGens] = await Promise.all([
-        apiFetch('/api/chat/threads'),
+        apiFetch('/api/chat/threads?compact=1'),
         fetchActiveGenerations(),
       ]);
       if (!threadsRes.ok) throw new Error(String(threadsRes.status));
       const data = await threadsRes.json();
+      const compactList = data.compact === true;
       state.sessionCatalog = Array.isArray(data.sessions) ? data.sessions : [];
       state.threads = Array.isArray(data.threads)
         ? data.threads.map(t => ({
@@ -839,7 +982,7 @@
           title: t.title || null,
           model: t.model || '',
           mode: t.mode || '',
-          messages: Array.isArray(t.messages) ? t.messages : [],
+          messages: compactList || !Array.isArray(t.messages) ? [] : t.messages,
         }))
         : [];
       state.threads.forEach(t => {
@@ -882,6 +1025,7 @@
       if (gen.error) msg.errorDetail = gen.error;
       if (!msg.content?.trim()) msg.content = gen.error || 'Generation failed';
     }
+    if (gen.contextWindowUsage) applyContextUsageToThread(thread, gen.contextWindowUsage);
   }
 
   function markThreadDirty(id) {
@@ -926,11 +1070,12 @@
 
   async function refreshSessionCatalog() {
     try {
-      const r = await apiFetch('/api/chat/threads');
+      const r = await apiFetch('/api/chat/threads?compact=1');
       if (!r.ok) return;
       const data = await r.json();
       state.sessionCatalog = Array.isArray(data.sessions) ? data.sessions : [];
       if (data.activeId) state.activeId = data.activeId;
+      mergeServerWebThreads(data.threads || [], data.compact === true);
       renderThreadList();
     } catch {
       /* ignore */
@@ -944,7 +1089,23 @@
     const local = idx >= 0 ? state.threads[idx] : null;
 
     if (compact) {
-      if (!local) return false;
+      if (!local) {
+        const stub = {
+          id: serverThread.id,
+          source: 'web',
+          title: serverThread.title ?? entry?.title ?? null,
+          pinned: serverThread.pinned ?? entry?.pinned ?? false,
+          createdAt: serverThread.createdAt ?? entry?.createdAt ?? Date.now(),
+          updatedAt: serverThread.updatedAt ?? entry?.updatedAt ?? Date.now(),
+          model: serverThread.model ?? entry?.model ?? '',
+          mode: serverThread.mode ?? entry?.mode ?? '',
+          messages: [],
+          readOnly: false,
+        };
+        state.threads.push(stub);
+        if (entry && serverThread.updatedAt) entry.updatedAt = serverThread.updatedAt;
+        return true;
+      }
       if ((local.updatedAt ?? 0) > (serverThread.updatedAt ?? 0)) return false;
       local.title = serverThread.title ?? local.title;
       local.pinned = serverThread.pinned ?? local.pinned;
@@ -1010,6 +1171,7 @@
         mode: entry?.mode ?? session.mode ?? '',
         messages,
         readOnly: entry?.readOnly ?? session.readOnly ?? true,
+        contextWindowUsage: session.contextWindowUsage,
       };
 
       const idx = state.threads.findIndex(t => t.id === id);
@@ -1071,13 +1233,17 @@
   async function pollSessionUpdates() {
     if (state.sessionSyncBusy || document.hidden) return;
     state.sessionSyncBusy = true;
+    let ok = false;
     try {
       const prevCatalog = state.sessionCatalog;
       const [threadsRes, activeGens] = await Promise.all([
         apiFetch('/api/chat/threads?compact=1'),
         fetchActiveGenerations(),
       ]);
-      if (!threadsRes.ok) return;
+      if (!threadsRes.ok) {
+        noteNetworkFailure();
+        return;
+      }
       const data = await threadsRes.json();
       const compactList = data.compact === true;
 
@@ -1089,10 +1255,12 @@
       if (catalogChanged || threadsChanged) renderThreadList();
       await syncActiveSession(data, compactList);
       await reconnectActiveGenerations(activeGens);
+      ok = true;
     } catch {
-      /* ignore transient poll errors */
+      noteNetworkFailure();
     } finally {
       state.sessionSyncBusy = false;
+      if (ok) noteNetworkRecovery();
     }
   }
 
@@ -1525,8 +1693,15 @@
 
   function buildMessageAttachments(attachments) {
     if (!attachments?.length) return null;
+  const openFromMessage = (idx) => {
+    if (attachments.length > 1) {
+      openAttachmentGallery(attachments, idx);
+    } else {
+      openAttachment(attachments[0]);
+    }
+  };
     return el('div', { class: 'chat-msg-attachments' },
-      ...attachments.map(a => {
+      ...attachments.map((a, attIdx) => {
         const url = resolveAttachmentUrl(a);
         const name = a.name || 'file';
         if (isImageAttachment(a) && url) {
@@ -1534,7 +1709,7 @@
             type: 'button',
             class: 'chat-msg-attachment chat-msg-attachment-image',
             title: `Preview ${name}`,
-            onclick: () => openImageLightbox(url, name),
+            onclick: () => openFromMessage(attIdx),
           },
             el('img', { src: url, alt: name, loading: 'lazy' }),
           );
@@ -1544,7 +1719,7 @@
           type: 'button',
           class: 'chat-msg-attachment chat-msg-attachment-file',
           title: `${actionLabel}: ${name}`,
-          onclick: () => openAttachment(a),
+          onclick: () => openFromMessage(attIdx),
         },
           el('span', { class: 'chat-msg-attachment-icon' }, isPdfAttachment(a) ? '📄' : '📎'),
           el('span', { class: 'chat-msg-attachment-name' }, name),
@@ -1690,6 +1865,7 @@
     if (modeSel) modeSel.value = thread?.mode || state.config?.mode || 'agent';
     renderModelOptions();
     renderComposerState();
+    renderContextUsage();
   }
 
   function renderComposerState() {
@@ -1735,6 +1911,118 @@
   }
 
   // ───────────────────────── networking ─────────────────────────
+
+  const STATUS_POLL_MS = 30_000;
+  const NETWORK_FAIL_THRESHOLD = 2;
+
+  function isTransientNetworkError(e) {
+    if (!e || e.name === 'AbortError') return false;
+    if (e instanceof TypeError) return true;
+    const m = String(e.message || e).toLowerCase();
+    return (
+      m.includes('network')
+      || m.includes('failed to fetch')
+      || m.includes('load failed')
+      || m.includes('connection')
+      || m.includes('internet')
+    );
+  }
+
+  function setChatPageLoading(on) {
+    const overlay = $('chat-page-load');
+    if (!overlay) return;
+    overlay.classList.toggle('hidden', !on);
+    overlay.hidden = !on;
+    overlay.setAttribute('aria-busy', on ? 'true' : 'false');
+  }
+
+  function setNetworkBanner(down, message) {
+    state.networkDown = down;
+    const bar = $('chat-network-banner');
+    const text = $('chat-network-banner-text');
+    if (!bar) return;
+    if (!down) {
+      bar.classList.add('hidden');
+      bar.hidden = true;
+      return;
+    }
+    if (message && text) text.textContent = message;
+    bar.classList.remove('hidden');
+    bar.hidden = false;
+  }
+
+  function noteNetworkFailure() {
+    state.networkFailStreak += 1;
+    if (state.networkFailStreak >= NETWORK_FAIL_THRESHOLD || !navigator.onLine) {
+      setNetworkBanner(
+        true,
+        navigator.onLine
+          ? 'Cannot reach the proxy. Retrying…'
+          : 'Connection lost. Your chats will sync again when the network is back.',
+      );
+    }
+    const dot = $('chat-brand-dot');
+    if (dot && state.networkFailStreak >= NETWORK_FAIL_THRESHOLD) dot.classList.add('down');
+  }
+
+  function noteNetworkRecovery() {
+    const wasDown = state.networkDown;
+    state.networkFailStreak = 0;
+    if (wasDown) {
+      setNetworkBanner(false);
+      toast('Back online — syncing…');
+      void refreshAgentStatus();
+      void pollSessionUpdates();
+    }
+  }
+
+  async function refreshAgentStatus() {
+    const dot = $('chat-brand-dot');
+    if (!dot) return;
+    try {
+      const r = await apiFetch('/api/status');
+      if (!r.ok) throw new Error(String(r.status));
+      const s = await r.json();
+      dot.classList.toggle('down', !s.running);
+      dot.title = s.running
+        ? `Bridge running · v${s.version || ''}`
+        : 'Bridge not running';
+      state.networkFailStreak = 0;
+      if (state.networkDown) noteNetworkRecovery();
+    } catch {
+      dot.classList.add('down');
+      dot.title = 'Cannot reach bridge';
+      noteNetworkFailure();
+    }
+  }
+
+  function startAgentStatusPolling() {
+    if (state.statusPollTimer) return;
+    void refreshAgentStatus();
+    state.statusPollTimer = setInterval(() => void refreshAgentStatus(), STATUS_POLL_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) void refreshAgentStatus();
+    });
+    window.addEventListener('online', () => {
+      state.networkFailStreak = 0;
+      noteNetworkRecovery();
+    });
+    window.addEventListener('offline', () => {
+      setNetworkBanner(
+        true,
+        'Connection lost. Your chats will sync again when the network is back.',
+      );
+      const dot = $('chat-brand-dot');
+      dot?.classList.add('down');
+    });
+  }
+
+  function markStreamInterrupted(msg) {
+    msg.interrupted = true;
+    msg.error = false;
+    delete msg.errorDetail;
+    if (!msg.content?.trim()) msg.content = '';
+  }
 
   async function loadConfig() {
     try {
@@ -1857,7 +2145,7 @@
     else renderMessages();
   }
 
-  function applyGenerationEvent(msg, event) {
+  function applyGenerationEvent(thread, msg, event) {
     if (event.type === 'snapshot') {
       msg.content = event.content || '';
       if (event.reasoning) msg.reasoning = event.reasoning;
@@ -1867,6 +2155,12 @@
         if (event.error) msg.errorDetail = event.error;
         if (!msg.content?.trim()) msg.content = event.error || 'Generation failed';
       }
+      if (event.contextWindowUsage) applyContextUsageToThread(thread, event.contextWindowUsage);
+      return;
+    }
+    if (event.type === 'context_usage') {
+      applyContextUsageToThread(thread, event.usage);
+      if (thread.id === state.activeId) renderContextUsage();
       return;
     }
     if (event.type === 'delta') {
@@ -1923,14 +2217,27 @@
           if (!data) continue;
           let event;
           try { event = JSON.parse(data); } catch { continue; }
-          applyGenerationEvent(msg, event);
+          applyGenerationEvent(thread, msg, event);
           if (event.type === 'delta' || event.type === 'snapshot') repaint(thread, event.type === 'delta');
+          if (event.type === 'context_usage' || (event.type === 'snapshot' && event.contextWindowUsage)) {
+            if (thread.id === state.activeId) renderContextUsage();
+          }
           if (event.type === 'done') break;
         }
       }
       if (!msg.content && !msg.reasoning) msg.content = '(empty reply)';
     } catch (e) {
-      if (e.name !== 'AbortError') {
+      if (e.name === 'AbortError') {
+        /* user stop */
+      } else if (isTransientNetworkError(e)) {
+        markStreamInterrupted(msg);
+        setNetworkBanner(
+          true,
+          navigator.onLine
+            ? 'Connection interrupted. Will resume when the network is back.'
+            : 'Connection lost. Your chats will sync again when the network is back.',
+        );
+      } else {
         msg.error = true;
         msg.errorDetail = String(e.message || e);
         if (!msg.content?.trim()) msg.content = msg.errorDetail;
@@ -1940,7 +2247,7 @@
       msg.ts = Date.now();
       sanitizeAssistantMessage(msg);
       state.streams.delete(thread.id);
-      touch(thread);
+      if (!msg.interrupted) touch(thread);
       renderComposerState();
       if (thread.id === state.activeId) renderMessages();
       renderThreadList();
@@ -1955,7 +2262,11 @@
       const thread = state.threads.find(t => t.id === gen.threadId);
       if (!thread || state.streams.has(thread.id)) continue;
       const last = thread.messages[thread.messages.length - 1];
-      if (last?.role === 'assistant' && !last.streaming && last.content?.trim()) continue;
+      if (last?.role === 'assistant' && !last.streaming && last.content?.trim() && !last.interrupted) continue;
+      if (last?.interrupted) {
+        delete last.interrupted;
+        last.streaming = true;
+      }
       applyGenerationSnapshot(gen);
       void runGenerationStream(thread);
     }
@@ -2012,6 +2323,11 @@
           let json;
           try { json = JSON.parse(data); } catch { continue; }
           if (json.error) throw new Error(json.error.message || 'Agent error');
+          if (json.object === 'bridge.context_usage' && json.usage) {
+            applyContextUsageToThread(thread, json.usage);
+            if (thread.id === state.activeId) renderContextUsage();
+            continue;
+          }
           const delta = json.choices?.[0]?.delta;
           if (delta?.reasoning_content) msg.reasoning = (msg.reasoning || '') + delta.reasoning_content;
           if (delta?.content) msg.content += delta.content;
@@ -2026,6 +2342,14 @@
           const idx = thread.messages.indexOf(msg);
           if (idx >= 0) thread.messages.splice(idx, 1);
         }
+      } else if (isTransientNetworkError(e)) {
+        markStreamInterrupted(msg);
+        setNetworkBanner(
+          true,
+          navigator.onLine
+            ? 'Connection interrupted. Will resume when the network is back.'
+            : 'Connection lost. Your chats will sync again when the network is back.',
+        );
       } else {
         msg.error = true;
         msg.errorDetail = String(e.message || e);
@@ -2036,7 +2360,7 @@
       msg.ts = Date.now();
       sanitizeAssistantMessage(msg);
       state.streams.delete(thread.id);
-      touch(thread);
+      if (!msg.interrupted) touch(thread);
       renderComposerState();
       if (thread.id === state.activeId) renderMessages();
       renderThreadList();
@@ -2191,6 +2515,7 @@
         uploadProgress: 0,
       };
       state.pendingAttachments.push(placeholder);
+      state.pendingPreviewIndex = state.pendingAttachments.length - 1;
       return { file, placeholder, previewUrl };
     });
     renderPendingAttachments();
@@ -2227,7 +2552,50 @@
       try { URL.revokeObjectURL(item.previewUrl); } catch { /* ignore */ }
     }
     state.pendingAttachments.splice(idx, 1);
+    if (!state.pendingAttachments.length) {
+      state.pendingPreviewIndex = 0;
+    } else if (state.pendingPreviewIndex >= state.pendingAttachments.length) {
+      state.pendingPreviewIndex = state.pendingAttachments.length - 1;
+    } else if (idx < state.pendingPreviewIndex) {
+      state.pendingPreviewIndex -= 1;
+    }
     renderPendingAttachments();
+  }
+
+  function shiftPendingPreview(delta) {
+    const n = state.pendingAttachments.length;
+    if (n < 2) return;
+    state.pendingPreviewIndex = (state.pendingPreviewIndex + delta + n) % n;
+    renderPendingAttachments();
+  }
+
+  function buildPendingPreviewBody(att) {
+    if (att.uploading) {
+      return el('div', { class: 'chat-attachments-preview-uploading' },
+        el('span', { class: 'chat-attachment-spinner', 'aria-hidden': 'true' }, '…'),
+        el('span', {}, 'Uploading…'),
+        typeof att.uploadProgress === 'number'
+          ? el('div', { class: 'chat-attachment-progress', role: 'progressbar' },
+            el('div', {
+              class: 'chat-attachment-progress-fill',
+              style: { width: `${Math.round(Math.min(1, att.uploadProgress) * 100)}%` },
+            }),
+          )
+          : null,
+      );
+    }
+    const src = attachmentPreviewSrc(att);
+    if (isImageAttachment(att) && src) {
+      return el('img', {
+        class: 'chat-attachments-preview-img',
+        src,
+        alt: att.name || '',
+      });
+    }
+    return el('div', { class: 'chat-attachments-preview-file' },
+      el('span', { class: 'chat-attachments-preview-file-icon' }, isPdfAttachment(att) ? '📄' : '📎'),
+      el('span', { class: 'chat-attachments-preview-file-name', title: att.name }, att.name || 'file'),
+    );
   }
 
   function renderPendingAttachments() {
@@ -2239,8 +2607,54 @@
       wrap.replaceChildren();
       return;
     }
+    const multi = items.length > 1;
+    if (state.pendingPreviewIndex >= items.length) {
+      state.pendingPreviewIndex = items.length - 1;
+    }
+    if (state.pendingPreviewIndex < 0) state.pendingPreviewIndex = 0;
+    const active = items[state.pendingPreviewIndex];
     wrap.hidden = false;
-    wrap.replaceChildren(...items.map((a, i) => {
+
+    const previewStage = el('div', { class: 'chat-attachments-preview-stage' },
+      buildPendingPreviewBody(active),
+    );
+    if (!active.uploading && (active.path || resolveAttachmentUrl(active))) {
+      previewStage.classList.add('is-clickable');
+      previewStage.title = 'Open full preview';
+      previewStage.addEventListener('click', () => openAttachmentGallery(items, state.pendingPreviewIndex));
+    }
+
+    const carousel = el('div', { class: 'chat-attachments-carousel' },
+      el('button', {
+        type: 'button',
+        class: 'chat-attachments-nav chat-attachments-nav-prev',
+        title: 'Previous attachment',
+        'aria-label': 'Previous attachment',
+        disabled: !multi,
+        onclick: () => shiftPendingPreview(-1),
+      }, '‹'),
+      el('div', { class: 'chat-attachments-preview' },
+        previewStage,
+        el('div', { class: 'chat-attachments-preview-label', title: active.name },
+          el('span', { class: 'chat-attachments-preview-name' }, active.name || 'file'),
+          multi
+            ? el('span', { class: 'chat-attachments-preview-counter mono' },
+              `${state.pendingPreviewIndex + 1} / ${items.length}`,
+            )
+            : null,
+        ),
+      ),
+      el('button', {
+        type: 'button',
+        class: 'chat-attachments-nav chat-attachments-nav-next',
+        title: 'Next attachment',
+        'aria-label': 'Next attachment',
+        disabled: !multi,
+        onclick: () => shiftPendingPreview(1),
+      }, '›'),
+    );
+
+    const chips = el('div', { class: 'chat-attachments-chips' }, ...items.map((a, i) => {
       const preview = a.uploading
         ? el('span', { class: 'chat-attachment-icon chat-attachment-spinner', title: 'Uploading' }, '…')
         : a.previewUrl
@@ -2254,7 +2668,11 @@
           }),
         )
         : null;
-      const chip = el('div', { class: 'chat-attachment-chip' + (a.uploading ? ' is-uploading' : '') },
+      const chip = el('div', {
+        class: 'chat-attachment-chip'
+          + (a.uploading ? ' is-uploading' : '')
+          + (i === state.pendingPreviewIndex ? ' is-active' : ''),
+      },
         preview,
         el('div', { class: 'chat-attachment-meta' },
           el('span', { class: 'chat-attachment-name', title: a.name }, a.name),
@@ -2272,11 +2690,16 @@
       );
       if (!a.uploading && (a.path || resolveAttachmentUrl(a))) {
         chip.classList.add('is-clickable');
-        chip.title = isImageAttachment(a) ? `Preview ${a.name}` : `Open ${a.name}`;
-        chip.addEventListener('click', () => openAttachment(a));
       }
+      chip.title = a.name || 'attachment';
+      chip.addEventListener('click', () => {
+        state.pendingPreviewIndex = i;
+        renderPendingAttachments();
+      });
       return chip;
     }));
+
+    wrap.replaceChildren(carousel, chips);
   }
 
   async function submitUserMessage(text, attachments) {
@@ -2305,6 +2728,7 @@
     }
     thread.messages.push(msg);
     state.pendingAttachments = [];
+    state.pendingPreviewIndex = 0;
     renderPendingAttachments();
     await startAssistant(thread);
   }
@@ -2443,6 +2867,78 @@
     try { localStorage.setItem(SIDEBAR_KEY, open ? '1' : '0'); } catch { /* ignore */ }
   }
 
+  function readSidebarWidth() {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+      const n = raw != null ? Number.parseInt(raw, 10) : SIDEBAR_WIDTH_DEFAULT;
+      if (!Number.isFinite(n)) return SIDEBAR_WIDTH_DEFAULT;
+      return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, n));
+    } catch {
+      return SIDEBAR_WIDTH_DEFAULT;
+    }
+  }
+
+  function applySidebarWidth(px) {
+    const w = Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, Math.round(px)));
+    document.documentElement.style.setProperty('--chat-sidebar-width', `${w}px`);
+    try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w)); } catch { /* ignore */ }
+    return w;
+  }
+
+  function initSidebarWidth() {
+    applySidebarWidth(readSidebarWidth());
+  }
+
+  function bindSidebarResize() {
+    const handle = $('chat-sidebar-resize');
+    const shell = $('chat-shell');
+    if (!handle || !shell) return;
+
+    const onPointerMove = e => {
+      if (!shell.classList.contains('sidebar-resizing')) return;
+      const sidebar = $('chat-sidebar');
+      const left = sidebar?.getBoundingClientRect().left ?? 0;
+      applySidebarWidth(e.clientX - left);
+    };
+
+    const endResize = () => {
+      shell.classList.remove('sidebar-resizing');
+      document.body.classList.remove('chat-sidebar-dragging');
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', endResize);
+      window.removeEventListener('pointercancel', endResize);
+    };
+
+    const startResize = e => {
+      if (isMobileChatLayout() || !sidebarOpen()) return;
+      e.preventDefault();
+      shell.classList.add('sidebar-resizing');
+      document.body.classList.add('chat-sidebar-dragging');
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', endResize);
+      window.addEventListener('pointercancel', endResize);
+    };
+
+    handle.addEventListener('pointerdown', startResize);
+
+    handle.addEventListener('keydown', e => {
+      if (isMobileChatLayout()) return;
+      let delta = 0;
+      if (e.key === 'ArrowLeft') delta = -16;
+      else if (e.key === 'ArrowRight') delta = 16;
+      else if (e.key === 'Home') applySidebarWidth(SIDEBAR_WIDTH_MIN);
+      else if (e.key === 'End') applySidebarWidth(SIDEBAR_WIDTH_MAX);
+      else return;
+      e.preventDefault();
+      applySidebarWidth(readSidebarWidth() + delta);
+    });
+
+    handle.addEventListener('dblclick', () => {
+      if (isMobileChatLayout()) return;
+      applySidebarWidth(SIDEBAR_WIDTH_DEFAULT);
+    });
+  }
+
   /** Mobile browsers: sync --chat-vh when URL bar / keyboard changes visible viewport. */
   function bindChatViewportHeight() {
     const root = document.documentElement;
@@ -2488,6 +2984,7 @@
     $('chat-clear-all')?.addEventListener('click', clearAllThreads);
     $('chat-backdrop')?.addEventListener('click', () => setSidebar(false));
     $('chat-sidebar-toggle')?.addEventListener('click', () => setSidebar(!sidebarOpen()));
+    $('chat-sidebar-collapse')?.addEventListener('click', () => setSidebar(false));
     $('chat-scroll-bottom')?.addEventListener('click', () => {
       state.stickToBottom = true;
       scrollToBottom(true);
@@ -2552,6 +3049,9 @@
         if (!sidebarOpen()) setSidebar(true);
         search?.focus();
         search?.select();
+      } else if (mod && e.key === '\\') {
+        e.preventDefault();
+        setSidebar(!sidebarOpen());
       } else if (
         e.key === '/' &&
         !mod &&
@@ -2589,28 +3089,37 @@
   }
 
   async function start() {
+    setChatPageLoading(true);
     initTheme();
     initMarked();
     bindChatViewportHeight();
+    initSidebarWidth();
     setSidebar(resolveSidebarOpen());
     bind();
+    bindSidebarResize();
     try {
       MOBILE_LAYOUT_MQ.addEventListener('change', e => {
         if (e.matches) setSidebar(false);
       });
     } catch { /* ignore */ }
-    const activeGens = await loadThreads();
-    ensureActiveThread();
-    if (state.activeId) void ensureExternalSessionLoaded(state.activeId);
-    await reconnectActiveGenerations(activeGens);
+    let activeGens = [];
+    try {
+      activeGens = await loadThreads();
+      ensureActiveThread();
+      if (state.activeId) await ensureExternalSessionLoaded(state.activeId);
+      await reconnectActiveGenerations(activeGens);
 
-    setSidebar(resolveSidebarOpen());
+      setSidebar(resolveSidebarOpen());
 
-    renderAll();
-    void loadConfig();
-    void loadModels();
-    startSessionSync();
-    void pollSessionUpdates();
+      renderAll();
+      void loadConfig();
+      void loadModels();
+      startSessionSync();
+      startAgentStatusPolling();
+      void pollSessionUpdates();
+    } finally {
+      setChatPageLoading(false);
+    }
     const input = $('chat-input');
     if (input) {
       autoResizeInput(input);

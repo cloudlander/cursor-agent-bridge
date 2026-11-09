@@ -4,7 +4,10 @@ import * as path from "node:path";
 
 import type { BridgeConfig } from "../config.js";
 import { rewriteBridgeRemoteMcpUrl } from "./bridge-mcp-url.js";
-import { approveMcpKeysAfterDeploy } from "./mcp-enable.js";
+import {
+  approveMcpKeysAfterDeploy,
+  approveMcpKeysAfterDeployAsync,
+} from "./mcp-enable.js";
 import {
   analyzePlugin,
   collectVariables,
@@ -317,6 +320,10 @@ export function deployPluginToTarget(
   return { skills, commands, agents, mcpServers, warnings };
 }
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 export function deployInstalledPlugin(
   plugin: InstalledPlugin,
   config: BridgeConfig,
@@ -347,6 +354,41 @@ export function deployInstalledPlugin(
     merged.warnings.push(...part.warnings);
   }
   approveMcpKeysAfterDeploy(config, merged.mcpServers);
+  return merged;
+}
+
+export async function deployInstalledPluginAsync(
+  plugin: InstalledPlugin,
+  config: BridgeConfig,
+): Promise<DeployedItems> {
+  if (!plugin.enabled) {
+    undeployPlugin(plugin, config);
+    return { skills: [], commands: [], agents: [], mcpServers: [], warnings: [] };
+  }
+  const pluginRoot = path.join(pluginPaths(config).installedDir, plugin.id.replace(/\//g, "__"));
+  if (!fs.existsSync(pluginRoot)) {
+    throw new ApiError(404, `installed files missing for ${plugin.id}`);
+  }
+  await yieldToEventLoop();
+  const contents = analyzePlugin(pluginRoot);
+  const merged: DeployedItems = {
+    skills: [],
+    commands: [],
+    agents: [],
+    mcpServers: [],
+    warnings: [],
+  };
+  for (const dir of resolveDeployTargets(config)) {
+    await yieldToEventLoop();
+    fs.mkdirSync(dir, { recursive: true });
+    const part = deployPluginToTarget(plugin, pluginRoot, contents, dir);
+    merged.skills = [...new Set([...merged.skills, ...part.skills])];
+    merged.commands = [...new Set([...merged.commands, ...part.commands])];
+    merged.agents = [...new Set([...merged.agents, ...part.agents])];
+    merged.mcpServers = [...new Set([...merged.mcpServers, ...part.mcpServers])];
+    merged.warnings.push(...part.warnings);
+  }
+  await approveMcpKeysAfterDeployAsync(config, merged.mcpServers);
   return merged;
 }
 
