@@ -346,9 +346,6 @@ log_bridge_ready_urls() {
   log "  listen: http://${CURSOR_BRIDGE_HOST}:${CURSOR_BRIDGE_PORT}/"
   log "  dashboard: http://${CURSOR_BRIDGE_HOST}:${CURSOR_BRIDGE_PORT}/"
   log "  health: http://${CURSOR_BRIDGE_HOST}:${CURSOR_BRIDGE_PORT}/healthz"
-  if [[ -n "${CDSW_DOMAIN:-}" ]]; then
-    log "  subdomain URL: https://model-gateway.${CDSW_DOMAIN}/"
-  fi
 }
 
 wait_cli_healthz() {
