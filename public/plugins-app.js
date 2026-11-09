@@ -33,6 +33,40 @@ function esc(s) {
 
 let currentConfigPluginId = null;
 let currentConfigPayload = null;
+let firstPageLoad = true;
+let catalogPage = 1;
+let catalogPageSize = 5;
+const CATALOG_PAGE_SIZE_OPTIONS = [5, 10, 24, 50, 100];
+const UNCATALOGED_CATEGORY = "__uncategorized__";
+
+const MUTATION_BTN_IDS = [
+  "refresh-catalog-btn",
+  "sync-cli-btn",
+  "redeploy-btn",
+  "add-mp-btn",
+];
+
+function setMutationButtonsDisabled(disabled) {
+  for (const id of MUTATION_BTN_IDS) {
+    const b = $(id);
+    if (b) b.disabled = disabled;
+  }
+}
+
+const INIT_POLL_MS = 400;
+const INIT_WAIT_MS = 45 * 60 * 1000;
+
+async function waitForRegistryInit() {
+  const deadline = Date.now() + INIT_WAIT_MS;
+  while (Date.now() < deadline) {
+    const st = await api("/api/plugins/init-status");
+    if (st.phase === "ready") return;
+    if (st.phase === "error") {
+      throw new Error(st.error || "Plugin registry initialization failed");
+    }
+  }
+  throw new Error("Plugin registry initialization timed out");
+}
 
 async function loadStatus() {
   try {
@@ -71,24 +105,100 @@ async function loadMarketplaces() {
   }
 }
 
-async function loadCatalog() {
-  const q = $("search-input").value.trim();
-  const marketplace = $("marketplace-select").value;
-  const params = new URLSearchParams();
-  if (q) params.set("q", q);
-  if (marketplace) params.set("marketplace", marketplace);
-  const { plugins } = await api(`/api/plugins/catalog?${params}`);
-  const el = $("catalog-list");
-  if (!plugins.length) {
-    el.innerHTML = '<div class="empty">No plugins match.</div>';
-    return;
+function stripGitRepoSuffix(segment) {
+  return String(segment).replace(/\.git$/i, "").replace(/\/$/, "");
+}
+
+/** Normalize clone/remotes to an https repo root when possible. */
+function gitHttpsRepoRoot(url) {
+  if (!url || typeof url !== "string") return null;
+  const u = url.trim();
+  const scp = u.match(/^git@github\.com:(.+)$/i);
+  if (scp) return `https://github.com/${stripGitRepoSuffix(scp[1])}`;
+  const ssh = u.match(/^ssh:\/\/git@github\.com\/(.+)$/i);
+  if (ssh) return `https://github.com/${stripGitRepoSuffix(ssh[1])}`;
+  const httpsGh = u.match(/^https?:\/\/github\.com\/([^/]+)\/([^/?#]+)/i);
+  if (httpsGh) {
+    return `https://github.com/${httpsGh[1]}/${stripGitRepoSuffix(httpsGh[2])}`;
   }
-  el.innerHTML = plugins
-    .map(
-      (p) => `
-    <article style="border: 1px solid var(--border-soft); border-radius: 8px; padding: 12px; margin-bottom: 10px;">
+  if (/^https?:\/\//i.test(u)) return stripGitRepoSuffix(u);
+  return null;
+}
+
+function gitTreePathSegments(subpath) {
+  const raw = String(subpath || "")
+    .trim()
+    .replace(/^\.\//, "")
+    .replace(/\/$/, "");
+  if (!raw) return "";
+  return raw
+    .split("/")
+    .filter(Boolean)
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+}
+
+/** Web browse URL (matches link target); includes ref/subpath when present. */
+function gitBrowseHref(url, ref, subpath) {
+  const root = gitHttpsRepoRoot(url);
+  const r = ref?.trim();
+  const treePath = gitTreePathSegments(subpath);
+  if (root && /^https:\/\/github\.com\//i.test(root)) {
+    if (r && treePath) return `${root}/tree/${encodeURIComponent(r)}/${treePath}`;
+    if (r) return `${root}/tree/${encodeURIComponent(r)}`;
+    if (treePath) return `${root}/tree/HEAD/${treePath}`;
+    return root;
+  }
+  if (root) return root;
+  if (url && /^https?:\/\//i.test(url.trim())) return url.trim();
+  return null;
+}
+
+function gitBrowseLabel(href) {
+  if (!href) return "";
+  try {
+    const u = new URL(href);
+    if (/github\.com$/i.test(u.hostname)) {
+      const path = u.pathname.replace(/^\/+/, "");
+      return path ? `github/${path}` : "github.com";
+    }
+    return href.replace(/^https?:\/\//i, "");
+  } catch {
+    return href;
+  }
+}
+
+function formatPluginSource(p) {
+  const s = p.source;
+  if (!s || !s.kind) return null;
+  if (s.kind === "git") {
+    const href = gitBrowseHref(s.url, s.ref, s.path);
+    const label = href ? gitBrowseLabel(href) : s.url || "";
+    const title = [s.url, s.ref, s.path].filter(Boolean).join(" ");
+    return { kind: "git", label, title, href };
+  }
+  if (s.kind === "path") {
+    return { kind: "path", label: s.path || "—", title: s.path || "" };
+  }
+  if (s.kind === "cache") {
+    return { kind: "cache", label: "CLI cache", title: s.dir || "" };
+  }
+  return { kind: String(s.kind), label: "", title: "" };
+}
+
+function renderPluginCard(p) {
+  const src = formatPluginSource(p);
+  const srcLabel =
+    src?.kind === "git" && src.href
+      ? `<a href="${esc(src.href)}" target="_blank" rel="noopener noreferrer">${esc(src.label)}</a>`
+      : esc(src?.label || "");
+  const srcHtml = src
+    ? `<p class="plugin-source-line muted-text mono" title="${esc(src.title)}"><span class="badge muted">${esc(src.kind)}</span> ${srcLabel}</p>`
+    : "";
+  return `
+    <article class="catalog-plugin-card" style="border: 1px solid var(--border-soft); border-radius: 8px; padding: 12px; margin-bottom: 10px;">
       <div style="display:flex; justify-content: space-between; gap: 8px; align-items: flex-start;">
-        <div>
+        <div style="min-width: 0; flex: 1;">
           <strong>${esc(p.displayName || p.name)}</strong>
           ${
             p.displayName && p.displayName !== p.name
@@ -100,9 +210,10 @@ async function loadCatalog() {
           ${p.cloudCatalog && !p.installed ? '<span class="badge" style="margin-left:6px;">IDE marketplace</span>' : ""}
           ${p.cliCache && !p.installed ? '<span class="badge" style="margin-left:6px;">CLI cache</span>' : ""}
           ${p.cliDeployed && !p.installed ? '<span class="badge" style="margin-left:6px;">CLI MCP</span>' : ""}
+          ${srcHtml}
           <p class="muted-text" style="margin: 6px 0 0;">${esc(p.description || "—")}</p>
         </div>
-        <div>
+        <div style="flex-shrink: 0;">
           ${
             p.installed
               ? `<button class="btn small" data-config="${esc(p.marketplaceId)}/${esc(p.name)}">Configure</button>`
@@ -114,22 +225,120 @@ async function loadCatalog() {
           }
         </div>
       </div>
-    </article>`,
-    )
-    .join("");
-  el.querySelectorAll("[data-install]").forEach((btn) => {
+    </article>`;
+}
+
+function syncCategorySelect(categories, selected) {
+  const sel = $("category-select");
+  if (!sel) return;
+  const keep = selected ?? sel.value;
+  const hadUncategorized = keep === UNCATALOGED_CATEGORY;
+  sel.innerHTML = `<option value="">All categories</option>`;
+  for (const c of categories) {
+    const o = document.createElement("option");
+    o.value = c;
+    o.textContent = c;
+    sel.appendChild(o);
+  }
+  const unc = document.createElement("option");
+  unc.value = UNCATALOGED_CATEGORY;
+  unc.textContent = "Uncategorized";
+  sel.appendChild(unc);
+  if (keep && (categories.includes(keep) || hadUncategorized)) sel.value = keep;
+}
+
+function renderCatalogPagination(meta) {
+  const nav = $("catalog-pagination");
+  if (!nav) return;
+  const { total, page, pageSize } = meta;
+  if (!total) {
+    nav.classList.add("hidden");
+    nav.innerHTML = "";
+    return;
+  }
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  nav.classList.toggle("hidden", pages <= 1 && total <= pageSize);
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+  nav.innerHTML = `
+    <span class="catalog-page-summary">Page ${page} of ${pages} · showing ${from}–${to} of ${total} plugins</span>
+    <div class="catalog-page-actions">
+      <button type="button" class="btn small" id="catalog-prev" ${page <= 1 ? "disabled" : ""}>Previous</button>
+      <button type="button" class="btn small" id="catalog-next" ${page >= pages ? "disabled" : ""}>Next</button>
+    </div>`;
+  const prev = $("catalog-prev");
+  const next = $("catalog-next");
+  if (prev) {
+    prev.onclick = () => {
+      if (catalogPage > 1) {
+        catalogPage -= 1;
+        loadCatalog().catch(() => {});
+      }
+    };
+  }
+  if (next) {
+    next.onclick = () => {
+      if (catalogPage < pages) {
+        catalogPage += 1;
+        loadCatalog().catch(() => {});
+      }
+    };
+  }
+}
+
+function wireCatalogListActions(root) {
+  root.querySelectorAll("[data-install]").forEach((btn) => {
     btn.addEventListener("click", () =>
       installPlugin(btn.dataset.install, btn.dataset.name),
     );
   });
-  el.querySelectorAll("[data-config]").forEach((btn) => {
+  root.querySelectorAll("[data-config]").forEach((btn) => {
     btn.addEventListener("click", () => openConfig(btn.dataset.config));
   });
-  el.querySelectorAll("[data-oauth-mp]").forEach((btn) => {
+  root.querySelectorAll("[data-oauth-mp]").forEach((btn) => {
     btn.addEventListener("click", () =>
       catalogMcpLogin(btn.dataset.oauthMp, btn.dataset.oauthName),
     );
   });
+}
+
+async function loadCatalog() {
+  const q = $("search-input").value.trim();
+  const marketplace = $("marketplace-select").value;
+  const category = $("category-select")?.value ?? "";
+  const params = new URLSearchParams();
+  if (q) params.set("q", q);
+  if (marketplace) params.set("marketplace", marketplace);
+  if (category) params.set("category", category);
+  params.set("page", String(catalogPage));
+  params.set("pageSize", String(catalogPageSize));
+  const data = await api(`/api/plugins/catalog?${params}`);
+  const plugins = data.plugins || [];
+  const total = data.total ?? plugins.length;
+  const page = data.page ?? catalogPage;
+  const pageSize = data.pageSize ?? catalogPageSize;
+  catalogPage = page;
+  syncCategorySelect(data.categories || [], category);
+
+  const el = $("catalog-list");
+  if (!plugins.length) {
+    el.innerHTML = '<div class="empty">No plugins match your filters.</div>';
+    renderCatalogPagination({ total, page, pageSize });
+    return;
+  }
+  let html = "";
+  let lastCat = null;
+  for (const p of plugins) {
+    const cat = (p.category && String(p.category).trim()) || "Uncategorized";
+    if (cat !== lastCat) {
+      html += `<h3 class="catalog-category">${esc(cat)}</h3>`;
+      lastCat = cat;
+    }
+    html += renderPluginCard(p);
+  }
+  el.innerHTML = html;
+  wireCatalogListActions(el);
+  renderCatalogPagination({ total, page, pageSize });
 }
 
 async function loadInstalled() {
@@ -384,9 +593,36 @@ async function removeMp(id) {
   await refreshAll();
 }
 
+let registryInitWatch = null;
+
+function startRegistryInitWatch() {
+  if (registryInitWatch) return;
+  setMutationButtonsDisabled(true);
+  registryInitWatch = (async () => {
+    try {
+      await waitForRegistryInit();
+      firstPageLoad = false;
+      setMutationButtonsDisabled(false);
+      await Promise.all([loadCatalog(), loadInstalled()]);
+    } catch (e) {
+      setMutationButtonsDisabled(false);
+      const el = $("catalog-list");
+      if (el) {
+        el.insertAdjacentHTML(
+          "afterbegin",
+          `<div class="empty" role="alert">${esc(e.message)}</div>`,
+        );
+      }
+    } finally {
+      registryInitWatch = null;
+    }
+  })();
+}
+
 async function refreshAll() {
   await loadMarketplaces();
   await Promise.all([loadCatalog(), loadInstalled()]);
+  if (firstPageLoad) startRegistryInitWatch();
 }
 
 $("refresh-catalog-btn").onclick = async () => {
@@ -408,8 +644,10 @@ $("refresh-catalog-btn").onclick = async () => {
 $("sync-cli-btn").onclick = async () => {
   try {
     const r = await api("/api/plugins/sync-cli-cache", { method: "POST", body: "{}" });
+    const blockedN = (r.blocked || []).length;
     alert(
-      `Imported: ${(r.imported || []).join(", ") || "none"}\nSkipped (already installed): ${(r.skipped || []).length}`,
+      `Imported: ${(r.imported || []).join(", ") || "none"}\nSkipped (already installed): ${(r.skipped || []).length}` +
+        (blockedN ? `\nSkipped (you uninstalled): ${blockedN}` : ""),
     );
     await refreshAll();
   } catch (e) {
@@ -418,9 +656,32 @@ $("sync-cli-btn").onclick = async () => {
 };
 $("search-input").addEventListener("input", () => {
   clearTimeout(window._searchT);
+  catalogPage = 1;
   window._searchT = setTimeout(() => loadCatalog().catch(() => {}), 300);
 });
-$("marketplace-select").onchange = () => loadCatalog().catch((e) => alert(e.message));
+$("marketplace-select").onchange = () => {
+  catalogPage = 1;
+  loadCatalog().catch((e) => alert(e.message));
+};
+const categorySelect = $("category-select");
+if (categorySelect) {
+  categorySelect.onchange = () => {
+    catalogPage = 1;
+    loadCatalog().catch((e) => alert(e.message));
+  };
+}
+const pageSizeSelect = $("catalog-page-size");
+if (pageSizeSelect) {
+  pageSizeSelect.value = String(catalogPageSize);
+  pageSizeSelect.onchange = () => {
+    const n = Number(pageSizeSelect.value);
+    if (CATALOG_PAGE_SIZE_OPTIONS.includes(n)) {
+      catalogPageSize = n;
+      catalogPage = 1;
+      loadCatalog().catch((e) => alert(e.message));
+    }
+  };
+}
 $("redeploy-btn").onclick = async () => {
   try {
     await api("/api/plugins/redeploy", { method: "POST", body: "{}" });

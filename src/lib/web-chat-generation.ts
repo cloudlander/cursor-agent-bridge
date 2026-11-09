@@ -1,9 +1,11 @@
 import type * as http from "node:http";
 
 import type { BridgeConfig } from "./config.js";
+import type { ContextWindowUsage } from "./acp-context-usage.js";
 import {
   finalizeWebThreadAssistant,
   updateWebThreadAssistantProgress,
+  updateWebThreadContextUsage,
 } from "./chat-store.js";
 import { writeSseHeaders } from "./http.js";
 
@@ -15,6 +17,7 @@ export type GenerationSnapshot = {
   reasoning: string;
   status: GenerationStatus;
   error?: string;
+  contextWindowUsage?: ContextWindowUsage;
   startedAt: number;
   updatedAt: number;
 };
@@ -22,8 +25,16 @@ export type GenerationSnapshot = {
 type StreamListener = (event: GenerationStreamEvent) => void;
 
 export type GenerationStreamEvent =
-  | { type: "snapshot"; content: string; reasoning: string; status: GenerationStatus; error?: string }
+  | {
+      type: "snapshot";
+      content: string;
+      reasoning: string;
+      status: GenerationStatus;
+      error?: string;
+      contextWindowUsage?: ContextWindowUsage;
+    }
   | { type: "delta"; content?: string; reasoning?: string }
+  | { type: "context_usage"; usage: ContextWindowUsage }
   | { type: "done"; error?: string };
 
 type ActiveGeneration = {
@@ -32,9 +43,11 @@ type ActiveGeneration = {
   reasoning: string;
   status: GenerationStatus;
   error?: string;
+  contextWindowUsage?: ContextWindowUsage;
   startedAt: number;
   updatedAt: number;
   abortController: AbortController;
+  usagePersistTimer: ReturnType<typeof setTimeout> | null;
   listeners: Set<StreamListener>;
   persistTimer: ReturnType<typeof setTimeout> | null;
   config: BridgeConfig;
@@ -49,6 +62,7 @@ function snapshotOf(gen: ActiveGeneration): GenerationSnapshot {
     reasoning: gen.reasoning,
     status: gen.status,
     error: gen.error,
+    contextWindowUsage: gen.contextWindowUsage,
     startedAt: gen.startedAt,
     updatedAt: gen.updatedAt,
   };
@@ -129,6 +143,8 @@ export function startWebGeneration(
     abortController,
     listeners: new Set(),
     persistTimer: null,
+    usagePersistTimer: null,
+    contextWindowUsage: existing?.contextWindowUsage,
     config,
   };
   active.set(threadId, gen);
@@ -137,8 +153,32 @@ export function startWebGeneration(
     content: gen.content,
     reasoning: gen.reasoning,
     status: gen.status,
+    contextWindowUsage: gen.contextWindowUsage,
   });
   return { signal: abortController.signal, existed: false };
+}
+
+function scheduleUsagePersist(gen: ActiveGeneration): void {
+  if (gen.usagePersistTimer) return;
+  gen.usagePersistTimer = setTimeout(() => {
+    gen.usagePersistTimer = null;
+    if (!gen.contextWindowUsage) return;
+    void updateWebThreadContextUsage(gen.config, gen.threadId, gen.contextWindowUsage).catch(
+      () => undefined,
+    );
+  }, 600);
+}
+
+export function appendWebGenerationContextUsage(
+  threadId: string,
+  usage: ContextWindowUsage,
+): void {
+  const gen = active.get(threadId);
+  if (!gen) return;
+  gen.contextWindowUsage = usage;
+  gen.updatedAt = Date.now();
+  notify(gen, { type: "context_usage", usage });
+  scheduleUsagePersist(gen);
 }
 
 export function appendWebGenerationDelta(
@@ -220,6 +260,7 @@ export function writeGenerationSse(
     reasoning: gen.reasoning,
     status: gen.status,
     error: gen.error,
+    contextWindowUsage: gen.contextWindowUsage,
   });
 
   if (gen.status !== "running") {

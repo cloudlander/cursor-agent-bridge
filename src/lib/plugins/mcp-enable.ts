@@ -72,6 +72,10 @@ export function isMcpNotApprovedMessage(text: string): boolean {
   return /has not been approved/i.test(text);
 }
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 export function approveMcpKeysAfterDeploy(
   config: BridgeConfig,
   mcpKeys: string[],
@@ -85,5 +89,23 @@ export function approveMcpKeysAfterDeploy(
         `[cursor-api-proxy] MCP enable ${key} after deploy: ${output.trim().slice(0, 500)}`,
       );
     }
+  }
+}
+
+export async function approveMcpKeysAfterDeployAsync(
+  config: BridgeConfig,
+  mcpKeys: string[],
+): Promise<void> {
+  if (!config.approveMcps || !mcpKeys.length) return;
+  const dir = resolveMcpConfigDir(config);
+  for (const key of mcpKeys) {
+    await yieldToEventLoop();
+    const { ok, output } = await runMcpEnable(config, key, dir);
+    if (!ok && output.trim()) {
+      console.warn(
+        `[cursor-api-proxy] MCP enable ${key} after deploy: ${output.trim().slice(0, 500)}`,
+      );
+    }
+    await yieldToEventLoop();
   }
 }

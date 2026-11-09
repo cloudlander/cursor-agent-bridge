@@ -68,6 +68,35 @@ describe("public path routing", () => {
     }
   });
 
+  it("injects stable public base when Referer is chat under app segment", async () => {
+    const config = loadBridgeConfig({
+      env: {
+        CURSOR_BRIDGE_APP_SEGMENT: "agent-0435a2",
+        CURSOR_BRIDGE_SESSIONS_LOG: "/tmp/bridge-dashboard-referer-test.log",
+      },
+      cwd: process.cwd(),
+    });
+    const listener = createRequestListener(
+      { version: "test", config },
+      { toolSessions: new ToolSessionRegistry() },
+    );
+    const { server, port } = await listen(listener);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/agent-0435a2/`, {
+        headers: {
+          referer: `http://127.0.0.1:${port}/agent-0435a2/chat`,
+        },
+      });
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain('__BRIDGE_MOUNT__=""');
+      expect(html).toContain('__BRIDGE_PUBLIC_BASE__="/agent-0435a2"');
+      expect(html).not.toContain("/agent-0435a2/chat/agent-0435a2");
+    } finally {
+      server.close();
+    }
+  });
+
   it("injects mount on dashboard HTML for full public path", async () => {
     const config = loadBridgeConfig({
       env: {

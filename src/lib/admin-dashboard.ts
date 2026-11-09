@@ -11,7 +11,6 @@ import {
   type CursorAccountDashboardSnapshot,
 } from "./cursor-account-snapshot.js";
 import { chatApiMatches, handleChatApi } from "./chat-api.js";
-import { ensurePluginsUiInitialized } from "./plugins/manager.js";
 import { handlePluginApi, pluginApiMatches } from "./plugins/plugin-api.js";
 import {
   handleMcpOAuthCallback,
@@ -145,6 +144,11 @@ function storagePaths(config: BridgeConfig) {
 }
 
 /** Cloudera AI Application worker (app.sh + CDSW env), not macOS ~/.local/bin launcher. */
+/** Shell fragment used for CAI in-process restart (keepalive respawns after SIGTERM). */
+export function caiRestartKillCommand(pid: number): string {
+  return `sleep 0.5 && kill -TERM ${pid} 2>/dev/null || true`;
+}
+
 export function isCaiDeployment(): boolean {
   const root = packageRoot();
   if (!fs.existsSync(path.join(root, "app.sh"))) return false;
@@ -291,6 +295,9 @@ function runControl(
 
   let shellCmd: string;
   if (action === "restart" && isCaiDeployment()) {
+    // app.sh stop requires /healthz; exit directly so app.py keepalive restarts the CLI.
+    shellCmd = caiRestartKillCommand(process.pid);
+  } else if (action === "stop" && isCaiDeployment()) {
     const appSh = path.join(packageRoot(), "app.sh");
     if (!fs.existsSync(appSh)) {
       return cb(new Error(`CAI app.sh not found at ${appSh}`));
@@ -395,15 +402,7 @@ export function handleAdminDashboard(
     return serveBridgeHtml(req, res, path.join(publicDir, "chat.html"));
   }
   if (req.method === "GET" && pathname === "/plugins") {
-    void ensurePluginsUiInitialized(config)
-      .then(() =>
-        serveBridgeHtml(req, res, path.join(publicDir, "plugins.html")),
-      )
-      .catch((err: unknown) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        json(res, 503, { error: msg });
-      });
-    return;
+    return serveBridgeHtml(req, res, path.join(publicDir, "plugins.html"));
   }
   if (req.method === "POST" && pathname === "/api/apps/deploy") {
     let raw = "";

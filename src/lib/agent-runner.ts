@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 
 import { runAcpStream, runAcpSync, type AcpPromptInput } from "./acp-client.js";
+import type { ContextWindowUsage } from "./acp-context-usage.js";
 import { AcpToolSession } from "./acp-tool-session.js";
 import type { BridgeConfig } from "./config.js";
 import type { CursorExecutionMode } from "./execution-mode.js";
@@ -171,6 +172,7 @@ export function runAgentStream(
   signal?: AbortSignal,
   modelDisplayName?: string,
   onThoughtChunk?: StreamLineHandler,
+  onContextWindowUsage?: (usage: ContextWindowUsage) => void,
 ): Promise<{ code: number; stderr: string }> {
   if (shouldUseAcp(config, stdinPrompt)) {
     const invocation = acpInvocation(
@@ -200,6 +202,7 @@ export function runAgentStream(
       },
       onLine,
       onThoughtChunk,
+      onContextWindowUsage,
     ).then((result) => {
       cacheTokenForAccount(configDir);
       if (tempDir) {

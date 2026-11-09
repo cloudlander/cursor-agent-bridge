@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import * as fs from "node:fs";
-import { isCaiDeployment } from "./admin-dashboard.js";
+import { caiRestartKillCommand, isCaiDeployment } from "./admin-dashboard.js";
 
 describe("isCaiDeployment", () => {
   afterEach(() => {
@@ -11,6 +11,10 @@ describe("isCaiDeployment", () => {
     vi.stubEnv("CDSW_API_KEY", "test-key");
     vi.stubEnv("CDSW_APP_PORT", "");
     expect(isCaiDeployment()).toBe(fs.existsSync("app.sh"));
+  });
+
+  it("caiRestartKillCommand targets the bridge pid", () => {
+    expect(caiRestartKillCommand(42)).toContain("kill -TERM 42");
   });
 
   it("is false without CDSW env", () => {

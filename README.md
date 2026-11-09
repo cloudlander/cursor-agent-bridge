@@ -123,7 +123,7 @@ Deploy static web apps (HTML/CSS/JS) under **`/apps/{name}/`** or the short alia
 
 **Tips:**
 
-- On **first** open of the Plugins page (or any `/api/plugins/*` call), the proxy **auto-imports** CLI `plugins/cache/` entries and redeploys the registry (disable auto-import with `CURSOR_BRIDGE_PLUGINS_AUTO_SYNC_CLI=0`). Agent runs via `/v1` do not wait on this.
+- After listen, the proxy **immediately** builds a light catalog index (marketplace paths on disk + CLI cache plugin dirs), then runs **background** enrich (**one marketplace git fetch at a time**, **1–5s** between fetches, then CLI cache scan), CLI `plugins/cache/` import, and registry redeploy. Plugin **writes** wait for init and start it immediately if still pending. Disable auto-import with `CURSOR_BRIDGE_PLUGINS_AUTO_SYNC_CLI=0`. Set `CURSOR_BRIDGE_PLUGINS_ENRICH_STAGGER=0` to skip inter-fetch delays (tests/CI). Agent runs via `/v1` do not wait on this.
 - For CLI-only MCP (e.g. Atlassian already in your local `mcp.json`), use **OAuth login** on the catalog row or `POST /api/plugins/mcp-login` — no Import and no bridge API key.
 - Set `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` and point `CURSOR_BRIDGE_WORKSPACE` at your vault/repo if you also want **project** `.cursor/skills` in addition to proxy-deployed plugins.
 - Use **Redeploy all** after changing account pool dirs or moving the plugin store.

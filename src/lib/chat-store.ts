@@ -1,8 +1,14 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as readline from "node:readline";
 
 import type { BridgeConfig } from "./config.js";
+import {
+  estimateContextWindowUsageFromMessages,
+  extractContextUsageFromTranscript,
+  type ContextWindowUsage,
+} from "./acp-context-usage.js";
 import { configDirsForAccountUsage } from "./cursor-account-snapshot.js";
 
 export type ChatAttachment = {
@@ -41,6 +47,8 @@ export type WebChatThread = {
   model: string;
   mode: string;
   messages: ChatMessage[];
+  /** Latest model-reported context window fill (ACP `usage_update`). */
+  contextWindowUsage?: ContextWindowUsage;
 };
 
 export type ChatSessionSummary = {
@@ -215,6 +223,59 @@ export function parseAgentTranscript(content: string): ChatMessage[] {
   return messages;
 }
 
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function summarizeAgentTranscriptFile(jsonlPath: string): Promise<{
+  messageCount: number;
+  firstUser: string;
+}> {
+  const roles: Array<ChatMessage["role"]> = [];
+  let firstUser = "";
+  let lineNum = 0;
+  const stream = fs.createReadStream(jsonlPath, { encoding: "utf8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of rl) {
+      lineNum++;
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const msg = parseTranscriptLine(trimmed);
+      if (!msg) continue;
+      if (msg.role === "user" && !firstUser) firstUser = msg.content;
+      const prev = roles[roles.length - 1];
+      if (prev === msg.role) continue;
+      roles.push(msg.role);
+      if (lineNum % 128 === 0) await yieldToEventLoop();
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+  return { messageCount: roles.length, firstUser };
+}
+
+/** Line scan without retaining message bodies (for session list/catalog). */
+export function summarizeAgentTranscript(content: string): {
+  messageCount: number;
+  firstUser: string;
+} {
+  const roles: Array<ChatMessage["role"]> = [];
+  let firstUser = "";
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const msg = parseTranscriptLine(trimmed);
+    if (!msg) continue;
+    if (msg.role === "user" && !firstUser) firstUser = msg.content;
+    const prev = roles[roles.length - 1];
+    if (prev === msg.role) continue;
+    roles.push(msg.role);
+  }
+  return { messageCount: roles.length, firstUser };
+}
+
 function inferSessionSource(
   firstUserText: string,
   apiPath?: string,
@@ -265,15 +326,25 @@ function apiSessionSummary(record: ApiSessionRecord): ChatSessionSummary {
 type DiscoveredSession = ChatSessionSummary & {
   messages?: ChatMessage[];
   transcriptPath?: string;
+  contextWindowUsage?: ContextWindowUsage;
 };
 
 function cursorRoots(config: BridgeConfig): string[] {
   return configDirsForAccountUsage(config.configDirs);
 }
 
-function discoverAgentTranscripts(config: BridgeConfig): DiscoveredSession[] {
+type DiscoverAgentOptions = {
+  /** Omit message bodies; only title + counts for list endpoints. */
+  summariesOnly?: boolean;
+};
+
+async function discoverAgentTranscripts(
+  config: BridgeConfig,
+  options: DiscoverAgentOptions = {},
+): Promise<DiscoveredSession[]> {
   const out: DiscoveredSession[] = [];
   const seen = new Set<string>();
+  let filesScanned = 0;
 
   for (const root of cursorRoots(config)) {
     const projectsDir = path.join(root, "projects");
@@ -299,27 +370,50 @@ function discoverAgentTranscripts(config: BridgeConfig): DiscoveredSession[] {
         if (!fs.existsSync(jsonlPath)) continue;
         seen.add(sessionId);
         let stat: fs.Stats;
-        let raw: string;
         try {
           stat = fs.statSync(jsonlPath);
-          raw = fs.readFileSync(jsonlPath, "utf8");
         } catch {
           continue;
         }
-        const messages = parseAgentTranscript(raw);
-        const firstUser = messages.find((m) => m.role === "user")?.content ?? "";
-        const source = inferSessionSource(firstUser);
-        out.push({
-          id: sessionId,
-          source,
-          title: truncateTitle(firstUser || sessionId.slice(0, 8)),
-          createdAt: stat.birthtimeMs || stat.mtimeMs,
-          updatedAt: stat.mtimeMs,
-          messageCount: messages.length,
-          readOnly: true,
-          messages,
-          transcriptPath: jsonlPath,
-        });
+        filesScanned++;
+        if (filesScanned % 6 === 0) await yieldToEventLoop();
+        if (options.summariesOnly) {
+          const { messageCount, firstUser } = await summarizeAgentTranscriptFile(jsonlPath);
+          if (messageCount <= 0) continue;
+          const source = inferSessionSource(firstUser);
+          out.push({
+            id: sessionId,
+            source,
+            title: truncateTitle(firstUser || sessionId.slice(0, 8)),
+            createdAt: stat.birthtimeMs || stat.mtimeMs,
+            updatedAt: stat.mtimeMs,
+            messageCount,
+            readOnly: true,
+          });
+        } else {
+          let raw: string;
+          try {
+            raw = await fs.promises.readFile(jsonlPath, "utf8");
+          } catch {
+            continue;
+          }
+          const messages = parseAgentTranscript(raw);
+          const contextWindowUsage = extractContextUsageFromTranscript(raw) ?? undefined;
+          const firstUser = messages.find((m) => m.role === "user")?.content ?? "";
+          const source = inferSessionSource(firstUser);
+          out.push({
+            id: sessionId,
+            source,
+            title: truncateTitle(firstUser || sessionId.slice(0, 8)),
+            createdAt: stat.birthtimeMs || stat.mtimeMs,
+            updatedAt: stat.mtimeMs,
+            messageCount: messages.length,
+            readOnly: true,
+            messages,
+            transcriptPath: jsonlPath,
+            contextWindowUsage,
+          });
+        }
       }
     }
   }
@@ -412,7 +506,7 @@ export async function listChatSessions(
   const webIds = new Set(webSummaries.map((s) => s.id));
 
   const discovered = mergeDiscoveredSessions([
-    ...discoverAgentTranscripts(config),
+    ...(await discoverAgentTranscripts(config, { summariesOnly: true })),
     ...discoverAcpSessions(config),
   ]).filter((s) => !webIds.has(s.id));
 
@@ -427,8 +521,11 @@ export async function listChatSessions(
     .sort((a, b) => b.createdAt - a.createdAt);
 
   const threads: WebChatThreadListEntry[] = options.compactThreads
-    ? store.threads.map(({ messages: _messages, ...meta }) => meta)
-    : store.threads;
+    ? store.threads.map((t) => {
+        const { messages: _messages, ...meta } = enrichWebThreadContextUsage(t);
+        return meta;
+      })
+    : store.threads.map((t) => enrichWebThreadContextUsage(t));
 
   return {
     activeId: store.activeId,
@@ -438,22 +535,41 @@ export async function listChatSessions(
   };
 }
 
+export function enrichWebThreadContextUsage(thread: WebChatThread): WebChatThread {
+  if (thread.contextWindowUsage?.source === "acp") return thread;
+  const estimate = estimateContextWindowUsageFromMessages(
+    thread.messages,
+    thread.model,
+  );
+  if (!estimate) return thread;
+  return { ...thread, contextWindowUsage: estimate };
+}
+
 export async function getChatSession(
   config: BridgeConfig,
   id: string,
 ): Promise<(WebChatThread | ApiSessionRecord | DiscoveredSession) | null> {
   const store = await readChatStore(config);
   const web = store.threads.find((t) => t.id === id);
-  if (web) return web;
+  if (web) return enrichWebThreadContextUsage(web);
 
   const api = store.apiSessions.find((s) => s.id === id);
   if (api) return api;
 
   const discovered = mergeDiscoveredSessions([
-    ...discoverAgentTranscripts(config),
+    ...(await discoverAgentTranscripts(config)),
     ...discoverAcpSessions(config),
   ]);
-  return discovered.find((s) => s.id === id) ?? null;
+  const hit = discovered.find((s) => s.id === id) ?? null;
+  if (!hit?.messages?.length || hit.contextWindowUsage?.source === "acp") {
+    return hit;
+  }
+  const estimate = estimateContextWindowUsageFromMessages(
+    hit.messages,
+    hit.model,
+  );
+  if (!estimate) return hit;
+  return { ...hit, contextWindowUsage: hit.contextWindowUsage ?? estimate };
 }
 
 function findWebThread(store: ChatStoreFile, threadId: string): WebChatThread | undefined {
@@ -491,6 +607,22 @@ export async function updateWebThreadAssistantProgress(
     if (update.reasoning !== undefined) msg.reasoning = update.reasoning;
     if (update.streaming !== undefined) msg.streaming = update.streaming;
     if (update.error !== undefined) msg.error = update.error;
+    thread.updatedAt = Date.now();
+    writeStoreSync(storePath, store);
+  });
+}
+
+export async function updateWebThreadContextUsage(
+  config: BridgeConfig,
+  threadId: string,
+  usage: ContextWindowUsage,
+): Promise<void> {
+  await storeMutex.run(() => {
+    const storePath = chatStorePath(config);
+    const store = readStoreSync(storePath);
+    const thread = findWebThread(store, threadId);
+    if (!thread) return;
+    thread.contextWindowUsage = usage;
     thread.updatedAt = Date.now();
     writeStoreSync(storePath, store);
   });

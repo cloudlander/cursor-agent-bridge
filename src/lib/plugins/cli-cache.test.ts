@@ -4,7 +4,11 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { BridgeConfig } from "../config.js";
-import { discoverCliCacheCatalog, resolveCliCacheDir } from "./cli-cache.js";
+import {
+  discoverCliCacheCatalog,
+  discoverCliCacheLocations,
+  resolveCliCacheDir,
+} from "./cli-cache.js";
 
 function minimalConfig(cursorDir: string): BridgeConfig {
   return {
@@ -34,6 +38,25 @@ describe("discoverCliCacheCatalog", () => {
       expect(found).toHaveLength(1);
       expect(found[0].name).toBe("atlassian");
       expect(found[0].marketplaceId).toBe("cursor-public");
+      expect(found[0].source).toEqual({ kind: "cache", dir: pluginRoot });
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+    }
+  });
+
+  it("discoverCliCacheLocations lists dirs without reading manifests", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "cli-cache-loc-"));
+    const prevHome = process.env.HOME;
+    process.env.HOME = root;
+    const pluginRoot = path.join(root, "plugins", "cache", "cursor-public", "slack", "abc123");
+    fs.mkdirSync(pluginRoot, { recursive: true });
+
+    try {
+      const found = discoverCliCacheLocations(minimalConfig(root));
+      expect(found).toHaveLength(1);
+      expect(found[0].name).toBe("slack");
+      expect(found[0].description).toBe("");
       expect(found[0].source).toEqual({ kind: "cache", dir: pluginRoot });
     } finally {
       if (prevHome === undefined) delete process.env.HOME;

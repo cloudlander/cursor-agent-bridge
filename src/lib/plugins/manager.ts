@@ -1,23 +1,33 @@
+import { fork, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { BridgeConfig } from "../config.js";
 import { runMcpLoginSpawn, type McpLoginResult } from "./mcp-login.js";
 import { analyzePlugin } from "./manifest.js";
 import {
   deployInstalledPlugin,
+  deployInstalledPluginAsync,
   listConfigVariables,
   undeployPlugin,
 } from "./deploy.js";
 import {
+  collectCliMcpServerKeys,
   discoverCliCacheCatalog,
+  discoverCliCacheCatalogAsync,
+  discoverCliCacheLocations,
+  discoverCliCacheLocationsAsync,
   isCliMcpDeployed,
   resolveCliCacheDir,
 } from "./cli-cache.js";
 import {
   fetchPluginSource,
   loadCatalog,
+  loadCatalogFromDisk,
+  loadCatalogFromDiskAsync,
   marketplaceIdFromUrl,
   parseCatalog,
+  parseCatalogAsync,
   syncMarketplace,
   validateGitUrl,
   type CatalogEntry,
@@ -43,6 +53,24 @@ import {
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Breathing room between marketplace git fetches so HTTP handlers stay responsive. */
+function pauseBetweenCatalogEnrichJobs(): Promise<void> {
+  if (process.env.CURSOR_BRIDGE_PLUGINS_ENRICH_STAGGER === "0") {
+    return Promise.resolve();
+  }
+  const ms = 1000 + Math.floor(Math.random() * 4000);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Short pause between CPU-heavy plugin jobs (redeploy, bootstrap). */
+function pauseForHttpResponsiveness(): Promise<void> {
+  if (process.env.CURSOR_BRIDGE_PLUGINS_ENRICH_STAGGER === "0") {
+    return yieldToEventLoop();
+  }
+  const ms = 40 + Math.floor(Math.random() * 120);
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function pluginId(marketplaceId: string, name: string): string {
@@ -122,10 +150,192 @@ export type CatalogRow = CatalogEntry & {
   cliDeployed?: boolean;
 };
 
+export type CatalogSearchResult = {
+  plugins: CatalogRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  /** Distinct category labels in the current search (before category filter). */
+  categories: string[];
+};
+
+const DEFAULT_CATALOG_PAGE_SIZE = 5;
+const MAX_CATALOG_PAGE_SIZE = 100;
+export const UNCATALOGED_CATEGORY = "__uncategorized__";
+
+function catalogCategoryKey(e: CatalogRow): string {
+  return e.category?.trim() || "";
+}
+
+function compareCatalogRows(a: CatalogRow, b: CatalogRow): number {
+  const ca = catalogCategoryKey(a).toLowerCase();
+  const cb = catalogCategoryKey(b).toLowerCase();
+  if (ca !== cb) {
+    if (!ca) return 1;
+    if (!cb) return -1;
+    return ca.localeCompare(cb);
+  }
+  const na = (a.displayName || a.name).toLowerCase();
+  const nb = (b.displayName || b.name).toLowerCase();
+  if (na !== nb) return na.localeCompare(nb);
+  return a.name.localeCompare(b.name);
+}
+
+/** Sort by category, apply optional category filter, paginate. */
+export function paginateCatalogRows(
+  rows: CatalogRow[],
+  opts: { page?: number; pageSize?: number; category?: string },
+): CatalogSearchResult {
+  const categories = [
+    ...new Set(rows.map((e) => catalogCategoryKey(e)).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+
+  let filtered = rows;
+  const catFilter = opts.category?.trim();
+  if (catFilter) {
+    if (catFilter === UNCATALOGED_CATEGORY) {
+      filtered = rows.filter((e) => !catalogCategoryKey(e));
+    } else {
+      filtered = rows.filter(
+        (e) => catalogCategoryKey(e) === catFilter || !catalogCategoryKey(e),
+      );
+    }
+  }
+
+  const sorted = [...filtered].sort(compareCatalogRows);
+  const page = Number.isFinite(opts.page) && (opts.page ?? 0) > 0 ? Math.floor(opts.page!) : 1;
+  const rawSize =
+    Number.isFinite(opts.pageSize) && (opts.pageSize ?? 0) > 0
+      ? Math.floor(opts.pageSize!)
+      : DEFAULT_CATALOG_PAGE_SIZE;
+  const pageSize = Math.min(MAX_CATALOG_PAGE_SIZE, Math.max(1, rawSize));
+  const total = sorted.length;
+  const start = (page - 1) * pageSize;
+  const plugins = sorted.slice(start, start + pageSize);
+  return { plugins, total, page, pageSize, categories };
+}
+
+type PluginsCatalogIndex = {
+  cliCache: CatalogEntry[];
+  marketplaces: Map<string, CatalogEntry[]>;
+  enriched: boolean;
+};
+
+let pluginsCatalogIndex: PluginsCatalogIndex | undefined;
+
+function catalogEntriesForMarketplace(
+  config: BridgeConfig,
+  m: MarketplaceDef,
+): CatalogEntry[] {
+  if (pluginsCatalogIndex?.marketplaces.has(m.id)) {
+    return pluginsCatalogIndex.marketplaces.get(m.id) ?? [];
+  }
+  return loadCatalogFromDisk(config, m) ?? [];
+}
+
+function catalogEntriesFromCliCache(config: BridgeConfig): CatalogEntry[] {
+  if (pluginsCatalogIndex) return pluginsCatalogIndex.cliCache;
+  return discoverCliCacheCatalog(config);
+}
+
+function ensureEmptyPluginsCatalogIndex(config: BridgeConfig): void {
+  if (pluginsCatalogIndex) return;
+  const marketplaces = new Map<string, CatalogEntry[]>();
+  for (const m of readRegistry(config).marketplaces) {
+    marketplaces.set(m.id, []);
+  }
+  pluginsCatalogIndex = {
+    cliCache: [],
+    marketplaces,
+    enriched: false,
+  };
+}
+
+/** Fast in-memory index: marketplace paths on disk + CLI cache dirs (no manifest/git). */
+export function bootstrapPluginsCatalogIndex(config: BridgeConfig): void {
+  const reg = readRegistry(config);
+  const marketplaces = new Map<string, CatalogEntry[]>();
+  for (const m of reg.marketplaces) {
+    const entries = loadCatalogFromDisk(config, m);
+    if (entries?.length) marketplaces.set(m.id, entries);
+  }
+  pluginsCatalogIndex = {
+    cliCache: discoverCliCacheLocations(config),
+    marketplaces,
+    enriched: false,
+  };
+}
+
+/** Cooperative bootstrap for background init (yields so HTTP stays responsive). */
+async function bootstrapPluginsCatalogIndexAsync(config: BridgeConfig): Promise<void> {
+  const reg = readRegistry(config);
+  const marketplaces = new Map<string, CatalogEntry[]>();
+  for (const m of reg.marketplaces) {
+    const entries = await loadCatalogFromDiskAsync(config, m);
+    marketplaces.set(m.id, entries ?? []);
+  }
+  const cliCache = await discoverCliCacheLocationsAsync(config);
+  pluginsCatalogIndex = {
+    cliCache,
+    marketplaces,
+    enriched: false,
+  };
+}
+
+async function enrichOneMarketplaceCatalog(
+  config: BridgeConfig,
+  m: MarketplaceDef,
+): Promise<void> {
+  await yieldToEventLoop();
+  const disk = (await loadCatalogFromDiskAsync(config, m)) ?? [];
+  try {
+    const dir = await syncMarketplace(config, m);
+    await yieldToEventLoop();
+    const synced = await parseCatalogAsync(m.id, dir);
+    const entries = synced.length ? synced : disk;
+    if (pluginsCatalogIndex) pluginsCatalogIndex.marketplaces.set(m.id, entries);
+  } catch {
+    if (disk.length && pluginsCatalogIndex) {
+      pluginsCatalogIndex.marketplaces.set(m.id, disk);
+    }
+  }
+}
+
+async function enrichCliCacheIndex(config: BridgeConfig): Promise<void> {
+  await yieldToEventLoop();
+  const cliCache = await discoverCliCacheCatalogAsync(config);
+  if (pluginsCatalogIndex) pluginsCatalogIndex.cliCache = cliCache;
+}
+
+/**
+ * Enrich catalog: one marketplace git fetch at a time, 1–5s pause between fetches,
+ * then CLI cache scan. Resolves when all work has updated the in-memory index.
+ */
+async function startPluginsCatalogEnrich(config: BridgeConfig): Promise<void> {
+  const reg = readRegistry(config);
+  let firstMarketplace = true;
+  for (const m of reg.marketplaces) {
+    if (!firstMarketplace) {
+      await pauseBetweenCatalogEnrichJobs();
+    }
+    firstMarketplace = false;
+    await enrichOneMarketplaceCatalog(config, m);
+  }
+  await enrichCliCacheIndex(config);
+  if (pluginsCatalogIndex) pluginsCatalogIndex.enriched = true;
+}
+
 export async function searchCatalog(
   config: BridgeConfig,
-  opts: { q?: string; marketplaceId?: string; installed?: boolean },
-): Promise<CatalogRow[]> {
+  opts: {
+    q?: string;
+    marketplaceId?: string;
+    installed?: boolean;
+    page?: number;
+    pageSize?: number;
+    category?: string;
+  },
+): Promise<CatalogSearchResult> {
   const reg = readRegistry(config);
   const markets = opts.marketplaceId
     ? reg.marketplaces.filter((m) => m.id === opts.marketplaceId)
@@ -135,23 +345,21 @@ export async function searchCatalog(
 
   const byKey = new Map<string, CatalogRow>();
   for (const m of markets) {
-    let entries: CatalogEntry[];
-    try {
-      entries = await loadCatalog(config, m);
-    } catch {
-      continue;
-    }
+    const entries = catalogEntriesForMarketplace(config, m);
+    if (!entries.length) continue;
     for (const e of entries) {
       byKey.set(`${e.marketplaceId}/${e.name}`, { ...e });
     }
   }
 
-  for (const e of discoverCliCacheCatalog(config)) {
+  for (const e of catalogEntriesFromCliCache(config)) {
     if (opts.marketplaceId && e.marketplaceId !== opts.marketplaceId) continue;
     const key = `${e.marketplaceId}/${e.name}`;
     const existing = byKey.get(key);
     if (existing) {
-      existing.source = e.source;
+      if (existing.source?.kind !== "git") {
+        existing.source = e.source;
+      }
       existing.description ||= e.description;
       existing.version ||= e.version;
       existing.cliCache = true;
@@ -173,6 +381,9 @@ export async function searchCatalog(
     const key = `${e.marketplaceId}/${e.name}`;
     const existing = byKey.get(key);
     if (existing) {
+      if (e.source?.kind === "git") {
+        existing.source = e.source;
+      }
       existing.displayName ||= e.displayName;
       existing.description ||= e.description;
       existing.category ||= e.category;
@@ -183,6 +394,7 @@ export async function searchCatalog(
     }
   }
 
+  const mcpKeys = collectCliMcpServerKeys(config);
   const all: CatalogRow[] = [];
   for (const e of byKey.values()) {
     const key = `${e.marketplaceId}/${e.name}`;
@@ -196,34 +408,46 @@ export async function searchCatalog(
       ...e,
       installed: Boolean(inst),
       enabled: inst?.enabled,
-      cliDeployed: isCliMcpDeployed(config, e.name),
+      cliDeployed: isCliMcpDeployed(config, e.name, mcpKeys),
     });
   }
-  all.sort((a, b) => a.name.localeCompare(b.name));
-  return all;
+  return paginateCatalogRows(all, {
+    page: opts.page,
+    pageSize: opts.pageSize,
+    category: opts.category,
+  });
 }
 
 /** Install every plugin present in Cursor CLI cache (skips ones already on the proxy). */
 export async function syncCliCachePlugins(config: BridgeConfig): Promise<{
   imported: string[];
   skipped: string[];
+  blocked: string[];
 }> {
+  await yieldToEventLoop();
   const reg = readRegistry(config);
   const installed = new Set(reg.plugins.map((p) => p.id));
+  const blocked = new Set(reg.cliSyncBlocked ?? []);
   const imported: string[] = [];
   const skipped: string[] = [];
-  for (const entry of discoverCliCacheCatalog(config)) {
+  const blockedSkipped: string[] = [];
+  const entries = await discoverCliCacheCatalogAsync(config);
+  for (const entry of entries) {
     await yieldToEventLoop();
     const id = pluginId(entry.marketplaceId, entry.name);
+    if (blocked.has(id)) {
+      blockedSkipped.push(id);
+      continue;
+    }
     if (installed.has(id)) {
       skipped.push(id);
       continue;
     }
-    await installPlugin(config, entry.marketplaceId, entry.name);
+    await installPlugin(config, entry.marketplaceId, entry.name, { skipDeploy: true });
     imported.push(id);
     installed.add(id);
   }
-  return { imported, skipped };
+  return { imported, skipped, blocked: blockedSkipped };
 }
 
 async function resolveCatalogEntry(
@@ -251,10 +475,16 @@ async function resolveCatalogEntry(
   return { marketplace: m, entry };
 }
 
+export type InstallPluginOptions = {
+  /** Batch CLI sync — redeploy once after import loop. */
+  skipDeploy?: boolean;
+};
+
 export async function installPlugin(
   config: BridgeConfig,
   marketplaceId: string,
   name: string,
+  opts: InstallPluginOptions = {},
 ): Promise<InstalledPlugin> {
   assertSafeName("plugin name", name);
   const id = pluginId(marketplaceId, name);
@@ -262,6 +492,9 @@ export async function installPlugin(
     const reg = readRegistry(config);
     if (reg.plugins.some((p) => p.id === id)) {
       throw new ApiError(409, "plugin already installed");
+    }
+    if (reg.cliSyncBlocked?.length) {
+      reg.cliSyncBlocked = reg.cliSyncBlocked.filter((x) => x !== id);
     }
     const { marketplace, entry } = await resolveCatalogEntry(config, marketplaceId, name);
     const fetched = await fetchPluginSource(config, marketplace, entry.source);
@@ -284,7 +517,17 @@ export async function installPlugin(
         enabled: true,
         config: emptyConfig(),
       };
-      plugin.deployed = deployInstalledPlugin(plugin, config);
+      if (!opts.skipDeploy) {
+        plugin.deployed = deployInstalledPlugin(plugin, config);
+      } else {
+        plugin.deployed = {
+          skills: [],
+          commands: [],
+          agents: [],
+          mcpServers: [],
+          warnings: [],
+        };
+      }
       reg.plugins.push(plugin);
       writeRegistry(config, reg);
       return plugin;
@@ -332,6 +575,8 @@ export async function uninstallPlugin(config: BridgeConfig, id: string): Promise
     undeployPlugin(plugin, config);
     fs.rmSync(installDir(config, id), { recursive: true, force: true });
     reg.plugins = reg.plugins.filter((p) => p.id !== id);
+    if (!reg.cliSyncBlocked) reg.cliSyncBlocked = [];
+    if (!reg.cliSyncBlocked.includes(id)) reg.cliSyncBlocked.push(id);
     writeRegistry(config, reg);
   });
 }
@@ -372,10 +617,17 @@ export async function patchPluginConfig(
 
 export async function redeployAll(config: BridgeConfig): Promise<{ count: number }> {
   return withRegistryLock(async () => {
+    await yieldToEventLoop();
     const reg = readRegistry(config);
     let n = 0;
+    let first = true;
     for (const plugin of reg.plugins) {
-      plugin.deployed = deployInstalledPlugin(plugin, config);
+      if (!first) {
+        await pauseForHttpResponsiveness();
+      }
+      first = false;
+      await yieldToEventLoop();
+      plugin.deployed = await deployInstalledPluginAsync(plugin, config);
       n++;
       await yieldToEventLoop();
     }
@@ -461,32 +713,241 @@ export async function maybeAutoSyncCliCache(config: BridgeConfig): Promise<void>
   await syncCliCachePlugins(config);
 }
 
-let pluginsUiInitPromise: Promise<void> | undefined;
+export type PluginsUiInitPhase = "idle" | "running" | "ready" | "error";
 
-/**
- * One-time CLI cache import + redeploy for the Plugins UI. Does not run at bridge
- * listen time; agent `/v1` traffic does not depend on this.
- */
-export async function ensurePluginsUiInitialized(
+export type PluginsUiInitStatus = {
+  phase: PluginsUiInitPhase;
+  startedAt: string | null;
+  finishedAt: string | null;
+  error: string | null;
+};
+
+let pluginsUiInitPromise: Promise<void> | undefined;
+let pluginsUiInitWorkStarted = false;
+let pluginsInitChild: ChildProcess | undefined;
+let pluginsUiInitStatus: PluginsUiInitStatus = {
+  phase: "idle",
+  startedAt: null,
+  finishedAt: null,
+  error: null,
+};
+
+export function getPluginsUiInitStatus(): PluginsUiInitStatus {
+  return { ...pluginsUiInitStatus };
+}
+
+/** Run full registry init inside a forked child (same code path as in-process). */
+export function executePluginsUiInitChild(config: BridgeConfig): Promise<void> {
+  return runPluginsUiInitWork(config);
+}
+
+function bridgePackageRoot(): string {
+  const fromEnv = process.env.CURSOR_API_PROXY_ROOT?.trim();
+  if (fromEnv) return path.resolve(fromEnv);
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+}
+
+function pluginsInitChildEntry(): string {
+  return path.join(bridgePackageRoot(), "dist/lib/plugins/init-child.js");
+}
+
+export async function refreshPluginsCatalogIndexFromDisk(
   config: BridgeConfig,
 ): Promise<void> {
-  if (process.env.VITEST === "true") return;
-  if (!pluginsUiInitPromise) {
-    pluginsUiInitPromise = (async () => {
-      console.log(
-        "[plugins] Initializing registry (first Plugins page or API access)…",
-      );
+  await bootstrapPluginsCatalogIndexAsync(config);
+}
+
+function runPluginsUiInitWork(config: BridgeConfig): Promise<void> {
+  return (async () => {
+    await yieldToEventLoop();
+    await yieldToEventLoop();
+    pluginsUiInitStatus = {
+      phase: "running",
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      error: null,
+    };
+    console.log("[plugins] Background registry init (catalog git enrich, CLI sync, redeploy)…");
+    try {
+      await bootstrapPluginsCatalogIndexAsync(config);
+      await startPluginsCatalogEnrich(config).catch(() => {
+        /* partial index; disk bootstrap remains */
+      });
+      if (typeof process.send === "function") {
+        process.send({ type: "catalog" });
+      }
+      await pauseForHttpResponsiveness();
+      await yieldToEventLoop();
       try {
         await maybeAutoSyncCliCache(config);
       } catch {
         /* empty cache or first run */
       }
+      await pauseForHttpResponsiveness();
+      await yieldToEventLoop();
       try {
         await redeployAll(config);
       } catch {
         /* first-run or empty registry */
       }
-    })();
+      pluginsUiInitStatus = {
+        ...pluginsUiInitStatus,
+        phase: "ready",
+        finishedAt: new Date().toISOString(),
+        error: null,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      pluginsUiInitStatus = {
+        ...pluginsUiInitStatus,
+        phase: "error",
+        finishedAt: new Date().toISOString(),
+        error: msg,
+      };
+      throw err;
+    }
+  })();
+}
+
+function beginPluginsUiInitWorkInProcess(config: BridgeConfig): void {
+  ensureEmptyPluginsCatalogIndex(config);
+  pluginsUiInitPromise = new Promise<void>((resolve, reject) => {
+    setImmediate(() => {
+      setImmediate(() => {
+        void runPluginsUiInitWork(config).then(resolve, reject);
+      });
+    });
+  }).catch(() => {
+    /* status.phase === "error" */
+  });
+}
+
+function beginPluginsUiInitWorkInChild(config: BridgeConfig): void {
+  ensureEmptyPluginsCatalogIndex(config);
+  pluginsUiInitStatus = {
+    phase: "running",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    error: null,
+  };
+  const entry = pluginsInitChildEntry();
+  pluginsInitChild = fork(entry, [], {
+    env: { ...process.env },
+    stdio: ["ignore", "inherit", "inherit", "ipc"],
+  });
+  pluginsUiInitPromise = new Promise<void>((resolve, reject) => {
+    const child = pluginsInitChild;
+    if (!child) {
+      reject(new Error("plugins init child missing"));
+      return;
+    }
+    child.on("message", (msg: unknown) => {
+      if (
+        msg &&
+        typeof msg === "object" &&
+        (msg as { type?: string }).type === "catalog"
+      ) {
+        void refreshPluginsCatalogIndexFromDisk(config).catch(() => {
+          /* partial catalog */
+        });
+      }
+    });
+    child.on("exit", (code, signal) => {
+      pluginsInitChild = undefined;
+      void (async () => {
+        try {
+          await refreshPluginsCatalogIndexFromDisk(config);
+          if (code === 0) {
+            pluginsUiInitStatus = {
+              ...pluginsUiInitStatus,
+              phase: "ready",
+              finishedAt: new Date().toISOString(),
+              error: null,
+            };
+            resolve();
+          } else {
+            const msg = `plugins init child exited (code=${code ?? "null"}, signal=${signal ?? "null"})`;
+            pluginsUiInitStatus = {
+              ...pluginsUiInitStatus,
+              phase: "error",
+              finishedAt: new Date().toISOString(),
+              error: msg,
+            };
+            reject(new Error(msg));
+          }
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      })();
+    });
+    child.on("error", (err) => {
+      pluginsInitChild = undefined;
+      pluginsUiInitStatus = {
+        ...pluginsUiInitStatus,
+        phase: "error",
+        finishedAt: new Date().toISOString(),
+        error: err.message,
+      };
+      reject(err);
+    });
+  }).catch(() => {
+    /* status.phase === "error" */
+  });
+}
+
+function beginPluginsUiInitWork(config: BridgeConfig): void {
+  if (process.env.VITEST === "true") return;
+  if (pluginsUiInitWorkStarted) return;
+  pluginsUiInitWorkStarted = true;
+  const inProcess =
+    process.env.CURSOR_BRIDGE_PLUGINS_INIT_IN_PROCESS === "1" ||
+    process.env.CURSOR_BRIDGE_PLUGINS_INIT_IN_PROCESS?.toLowerCase() === "true";
+  if (inProcess) {
+    beginPluginsUiInitWorkInProcess(config);
+  } else {
+    beginPluginsUiInitWorkInChild(config);
   }
-  await pluginsUiInitPromise;
+}
+
+/**
+ * Kick off one-time CLI cache import + redeploy without blocking the caller.
+ * Safe to call from server listen and from plugin HTTP handlers.
+ */
+export function startPluginsUiBackgroundInit(config: BridgeConfig): void {
+  if (process.env.VITEST === "true") return;
+  if (pluginsUiInitWorkStarted) return;
+  beginPluginsUiInitWork(config);
+}
+
+/** Wait until background registry init finishes (mutations and explicit sync). */
+export async function waitForPluginsUiInitialized(
+  config: BridgeConfig,
+): Promise<void> {
+  if (process.env.VITEST === "true") return;
+  beginPluginsUiInitWork(config);
+  if (pluginsUiInitPromise) await pluginsUiInitPromise;
+}
+
+/**
+ * @deprecated Prefer {@link startPluginsUiBackgroundInit} + {@link waitForPluginsUiInitialized}.
+ */
+export async function ensurePluginsUiInitialized(
+  config: BridgeConfig,
+): Promise<void> {
+  await waitForPluginsUiInitialized(config);
+}
+
+/** Resets in-process init scheduling (unit tests only). */
+export function resetPluginsUiInitForTests(): void {
+  pluginsInitChild?.kill("SIGTERM");
+  pluginsInitChild = undefined;
+  pluginsUiInitPromise = undefined;
+  pluginsUiInitWorkStarted = false;
+  pluginsCatalogIndex = undefined;
+  pluginsUiInitStatus = {
+    phase: "idle",
+    startedAt: null,
+    finishedAt: null,
+    error: null,
+  };
 }

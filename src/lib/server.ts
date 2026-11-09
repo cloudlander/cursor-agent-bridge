@@ -15,6 +15,7 @@ import { killAllChildProcesses } from "./process.js";
 import { ToolSessionRegistry } from "./tool-session-registry.js";
 import { appsDirOf, registerBridgeAppSegment } from "./dynamic-apps.js";
 import { startUpstreamSyncScheduler } from "./upstream-sync.js";
+import { startPluginsUiBackgroundInit } from "./plugins/manager.js";
 
 function acpLauncherLabel(acpArgs: string[]): string {
   const first = acpArgs[0];
@@ -290,11 +291,14 @@ async function startSingleServer(opts: BridgeServerOptions): Promise<BridgeHttpS
       console.log(
         `cursor-api-proxy listening on ${scheme}://${config.host}:${config.port}`,
       );
-      logListenBanner(opts);
-      if (process.env.VITEST !== "true") {
-        startUpstreamSyncScheduler(config);
-      }
       resolve();
+      setImmediate(() => {
+        logListenBanner(opts);
+        if (process.env.VITEST !== "true") {
+          startUpstreamSyncScheduler(config);
+          startPluginsUiBackgroundInit(config);
+        }
+      });
     };
     const onError = (err: NodeJS.ErrnoException) => {
       server.off("listening", onListen);
