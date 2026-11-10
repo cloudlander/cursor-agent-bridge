@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Agent chat — Cursor Agent Bridge</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/vendor/xterm.css" />
 </head>
 <body class="chat-page">
   <div id="upstream-sync-banner" class="upstream-sync-banner hidden" hidden aria-live="polite"></div>
@@ -21,7 +22,7 @@
       </div>
     </div>
   </div>
-  <div class="chat-shell" id="chat-shell">
+  <div class="chat-shell right-panel-collapsed" id="chat-shell">
     <div class="chat-backdrop" id="chat-backdrop"></div>
     <aside class="chat-sidebar" id="chat-sidebar">
       <div class="chat-sidebar-resize" id="chat-sidebar-resize" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" tabindex="0"></div>
@@ -50,10 +51,11 @@
       </div>
     </aside>
     <div class="chat-main">
-      <header class="chat-toolbar">
+      <header class="chat-toolbar" id="chat-toolbar">
         <button type="button" class="chat-sidebar-toggle btn small" id="chat-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
         <h1 class="chat-toolbar-title" id="chat-title">New chat</h1>
         <div class="chat-toolbar-actions">
+          <button type="button" class="btn small chat-right-panel-toggle" id="chat-right-panel-toggle" title="Terminal panel" aria-label="Toggle terminal panel" aria-pressed="false">Terminal</button>
           <select id="chat-account" class="chat-mode-select chat-account-select" title="Cursor account" aria-label="Cursor account"></select>
           <select id="chat-model" class="chat-mode-select chat-model-select" title="Model" aria-label="Model"></select>
           <select id="chat-mode" class="chat-mode-select" title="Mode" aria-label="Mode">
@@ -102,6 +104,20 @@
         <p class="chat-hint muted-text">Internal session on this proxy — no API key. Attach images or files for multimodal models. <kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>↑</kbd> edit last</p>
       </div>
     </div>
+    <aside class="chat-right-panel" id="chat-right-panel" aria-label="Side panel">
+      <div class="chat-right-panel-resize" id="chat-right-panel-resize" role="separator" aria-orientation="vertical" aria-label="Resize panel" tabindex="0"></div>
+      <header class="chat-right-panel-head">
+        <div class="chat-panel-tabs" role="tablist" aria-label="Panel tabs">
+          <button type="button" class="chat-panel-tab active" id="chat-right-tab-terminal" role="tab" aria-selected="true" data-panel-tab="terminal" title="SSH terminal">Terminal</button>
+        </div>
+        <span class="mono muted-text chat-terminal-status" id="chat-terminal-status">…</span>
+        <button type="button" class="btn small" id="chat-terminal-reconnect" title="Reconnect">Reconnect</button>
+        <button type="button" class="chat-right-panel-collapse btn small" id="chat-right-panel-collapse" title="Collapse panel" aria-label="Collapse panel">›</button>
+      </header>
+      <div class="chat-right-panel-body" id="chat-right-panel-body">
+        <div class="chat-terminal-host" id="chat-terminal-host" aria-label="Terminal" role="tabpanel"></div>
+      </div>
+    </aside>
   </div>
 
   <script src="/static/vendor/highlight.min.js"></script>
@@ -109,6 +125,9 @@
   <script src="/static/vendor/mermaid.min.js"></script>
   <script src="/static/mermaid-chat-utils.js"></script>
   <script src="/static/upstream-sync-banner.js"></script>
+  <script src="/static/vendor/xterm.js"></script>
+  <script src="/static/vendor/xterm-addon-fit.js"></script>
+  <script src="/static/chat-terminal.js"></script>
   <script src="/static/chat-app.js"></script>
 </body>
 </html>
