@@ -9,6 +9,10 @@ import {
 } from "./auth-token-keepalive.js";
 import { resolveAppSegment } from "./app-segment.js";
 import { loadEnvConfig, resolveAgentCommand, type EnvOptions } from "./env.js";
+import {
+  loadTerminalSshConfig,
+  type TerminalSshConfig,
+} from "./terminal-ssh-config.js";
 
 function readBridgePackageVersion(): string {
   try {
@@ -90,6 +94,8 @@ export type BridgeConfig = {
   authKeepalive?: AuthKeepaliveOptions;
   /** URL path segment for this bridge instance (public URLs: {mount}/{appSegment}/…). */
   appSegment: string;
+  /** Web chat terminal → SSH bridge (see CURSOR_BRIDGE_TERMINAL_*). */
+  terminalSsh?: TerminalSshConfig;
 };
 
 export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
@@ -153,5 +159,6 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     contextExtra: env.contextExtra,
     authKeepalive: loadAuthKeepaliveOptions(envSource),
     appSegment: resolveAppSegment(env.sessionsLogPath, envSource),
+    terminalSsh: loadTerminalSshConfig(envSource),
   };
 }

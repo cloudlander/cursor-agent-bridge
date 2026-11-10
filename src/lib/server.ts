@@ -16,6 +16,7 @@ import { ToolSessionRegistry } from "./tool-session-registry.js";
 import { appsDirOf, registerBridgeAppSegment } from "./dynamic-apps.js";
 import { startUpstreamSyncScheduler } from "./upstream-sync.js";
 import { startPluginsUiBackgroundInit } from "./plugins/manager.js";
+import { attachTerminalWebSocket } from "./terminal-ws.js";
 
 function acpLauncherLabel(acpArgs: string[]): string {
   const first = acpArgs[0];
@@ -265,6 +266,7 @@ async function startSingleServer(opts: BridgeServerOptions): Promise<BridgeHttpS
     server = http.createServer(requestListener);
   }
   serverCleanup.set(server, { toolSessions, requests });
+  attachTerminalWebSocket(server, config);
 
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {

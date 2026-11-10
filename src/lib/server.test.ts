@@ -90,6 +90,12 @@ function createTestConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
       mode: "refresh",
     },
     appSegment: "cursor-agent",
+    terminalSsh: {
+      enabled: false,
+      host: "127.0.0.1",
+      port: 2222,
+      username: "test",
+    },
     ...overrides,
   };
 }

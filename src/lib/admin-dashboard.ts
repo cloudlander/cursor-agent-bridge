@@ -47,6 +47,10 @@ import {
   weakEtagFromStat,
 } from "./public-static-cache.js";
 import { resolvePublicEndpointUrls } from "./plugins/public-origin.js";
+import {
+  handleTerminalApi,
+  terminalApiMatches,
+} from "./terminal-api.js";
 
 const ACCOUNT_USAGE_CACHE_MS = 45_000;
 let accountUsageCache:
@@ -388,6 +392,7 @@ export function adminDashboardMatches(
   if (req.method === "POST" && pathname === "/api/apps/deploy") return true;
   if (upstreamSyncApiMatches(req)) return true;
   if (chatApiMatches(req)) return true;
+  if (terminalApiMatches(req)) return true;
   return false;
 }
 
@@ -465,6 +470,10 @@ export function handleAdminDashboard(
   }
   if (chatApiMatches(req)) {
     void handleChatApi(req, res, config);
+    return;
+  }
+  if (terminalApiMatches(req)) {
+    handleTerminalApi(res, config);
     return;
   }
   if (upstreamSyncApiMatches(req)) {

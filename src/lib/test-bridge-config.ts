@@ -34,6 +34,12 @@ export function testBridgeConfig(
     contextPreamble: true,
     bridgePackageVersion: "0.0.0-test",
     appSegment: "cursor-agent",
+    terminalSsh: {
+      enabled: false,
+      host: "127.0.0.1",
+      port: 2222,
+      username: "test",
+    },
     ...overrides,
   };
 }

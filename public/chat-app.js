@@ -2159,6 +2159,7 @@
       state.accounts = [];
     }
     renderAccountOptions();
+    renderComposerState();
     const dir = activeAccountConfigDir();
     if (dir) await loadModels(dir);
   }
@@ -3260,6 +3261,7 @@
 
       setSidebar(resolveSidebarOpen());
 
+      await refreshAccounts();
       renderAll();
       void loadConfig();
       startAccountUsagePolling();
