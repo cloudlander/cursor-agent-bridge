@@ -96,6 +96,11 @@ export type BridgeConfig = {
   appSegment: string;
   /** Web chat terminal → SSH bridge (see CURSOR_BRIDGE_TERMINAL_*). */
   terminalSsh?: TerminalSshConfig;
+  /**
+   * CAI CDSW application `bypass_authentication` (default true). When false, edge
+   * inbound `/v1` accepts requests without a bridge/CDSW API key.
+   */
+  cdswBypassAuthentication: boolean;
 };
 
 export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
@@ -160,5 +165,6 @@ export function loadBridgeConfig(opts: EnvOptions = {}): BridgeConfig {
     authKeepalive: loadAuthKeepaliveOptions(envSource),
     appSegment: resolveAppSegment(env.sessionsLogPath, envSource),
     terminalSsh: loadTerminalSshConfig(envSource),
+    cdswBypassAuthentication: env.cdswBypassAuthentication,
   };
 }

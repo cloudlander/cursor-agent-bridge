@@ -313,7 +313,7 @@ npx cursor-api-proxy   # in another terminal
 claude
 ```
 
-Auth accepts either `x-api-key` (Anthropic / Claude Code) or `Authorization: Bearer` (OpenAI-style clients). When `CURSOR_BRIDGE_API_KEY` is set, use the same value for `ANTHROPIC_API_KEY`. Failed auth on `/v1/messages` returns Anthropic-shaped `authentication_error` JSON.
+Auth accepts either `x-api-key` (Anthropic / Claude Code) or `Authorization: Bearer` (OpenAI-style clients). When `CURSOR_BRIDGE_API_KEY` is set, use the same value for `ANTHROPIC_API_KEY`. On Cloudera AI, when application `bypass_authentication` is false (`CURSOR_BRIDGE_CDSW_BYPASS_AUTHENTICATION=false`, set automatically by `app.sh`), inbound `/v1` and `/health` skip API-key checks (the CAI edge already authenticated the caller). If both `Remote-user` and `Remote-user-perm` are present and perm is `Unauthorized`, the request is rejected regardless of bypass mode. Failed auth on `/v1/messages` returns Anthropic-shaped `authentication_error` JSON.
 
 Tool loops use the same ACP passthrough as Chat Completions (ACP is default). Set header `X-Cursor-Invoke-From: claude-cli` if you want the bridge preamble to label the client.
 
@@ -347,6 +347,7 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 | `CURSOR_BRIDGE_APP_SEGMENT` | `cursor-agent` (CAI may persist `agent-*`) | Public URL segment: `{mount}/{segment}/chat`, `…/v1/…`. See [docs/PUBLIC-PATH.md](./docs/PUBLIC-PATH.md). |
 | `CURSOR_BRIDGE_API_KEY` | — | If set, require `Authorization: Bearer <key>` (or `x-api-key`) on **`/v1/*`** and **`/health`** only |
 | `CURSOR_BRIDGE_DISABLE_CDSW_INBOUND_KEY` | — | When `1`, do not auto-use `CDSW_API_KEY` for `/v1` auth in CAI applications |
+| `CURSOR_BRIDGE_CDSW_BYPASS_AUTHENTICATION` | `true` | Mirrors CDSW `/application` `bypass_authentication`. `app.sh` sets this on CAI startup; when `false`, `/v1` skips API-key auth |
 | `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` | — | Cursor access token passed to spawned CLI/ACP children (automation, headless). Same value can be used for both names. |
 | `CURSOR_BRIDGE_WORKSPACE` | process cwd | Base workspace directory for Cursor CLI. With `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false`, header `X-Cursor-Workspace` must point to an existing directory under this path (after resolving real paths). |
 | `CURSOR_BRIDGE_MODE` | — | Server default for Cursor CLI `--mode`: `agent`, `ask`, or `plan`. If unset, default is `ask`. Env wins over CLI `--mode` when both are set. Per request, JSON body `mode` or header `X-Cursor-Mode` overrides (precedence: body → header → DSH auto-mode → this env → `--mode` → `ask`). Invalid value → startup error. With `agent` (or `plan`) and real workspace, the CLI may read/write files under `CURSOR_BRIDGE_WORKSPACE` / cwd. See `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE`. |

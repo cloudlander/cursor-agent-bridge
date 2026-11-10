@@ -3118,6 +3118,7 @@
     const apply = () => {
       const h = window.visualViewport?.height ?? window.innerHeight;
       if (h > 0) root.style.setProperty('--chat-vh', `${Math.round(h)}px`);
+      window.ChatTerminal?.fit?.();
     };
     apply();
     window.visualViewport?.addEventListener('resize', apply);

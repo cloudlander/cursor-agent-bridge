@@ -47,6 +47,7 @@ const baseConfig: BridgeConfig = {
   winCmdlineMax: 30_000,
   contextPreamble: true,
     appSegment: "cursor-agent",
+    cdswBypassAuthentication: true,
   bridgePackageVersion: "test",
 };
 

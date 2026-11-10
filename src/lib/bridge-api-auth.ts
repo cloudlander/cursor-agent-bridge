@@ -11,6 +11,41 @@ export function pathRequiresBridgeApiKey(pathname: string): boolean {
   return pathname.startsWith("/v1/");
 }
 
+function trimmedHeader(
+  req: http.IncomingMessage,
+  name: string,
+): string | undefined {
+  const h = req.headers[name];
+  if (!h) return undefined;
+  const val = Array.isArray(h) ? h[0] : h;
+  const trimmed = val.trim();
+  return trimmed || undefined;
+}
+
+/**
+ * CDSW / edge proxy may attach `Remote-user` and `Remote-user-perm` (Node lowercases to
+ * `remote-user`, `remote-user-perm`). When both are present and perm is `Unauthorized`,
+ * inbound `/v1` and `/health` are rejected (even when CAI bypass auth is enabled).
+ */
+export function remoteUserPermIsUnauthorized(
+  req: http.IncomingMessage,
+): boolean {
+  const user = trimmedHeader(req, "remote-user");
+  const perm = trimmedHeader(req, "remote-user-perm");
+  if (!user || !perm) return false;
+  return perm.toLowerCase() === "unauthorized";
+}
+
+/**
+ * When `cdswBypassAuthentication` is false the CAI application requires interactive
+ * auth; requests that reach the bridge are treated as already authorized (no API key).
+ */
+export function passesCaiApplicationInboundAuth(
+  cdswBypassAuthentication: boolean,
+): boolean {
+  return !cdswBypassAuthentication;
+}
+
 export function bridgeApiKeyMatches(
   req: http.IncomingMessage,
   expected: string,
@@ -43,6 +78,13 @@ export function enforceBridgeApiKeyIfRequired(
 ): boolean {
   const key = config.requiredKey;
   if (!key || !pathRequiresBridgeApiKey(pathname)) return true;
+  if (remoteUserPermIsUnauthorized(req)) {
+    rejectBridgeApiKey(req, res);
+    return false;
+  }
+  if (passesCaiApplicationInboundAuth(config.cdswBypassAuthentication)) {
+    return true;
+  }
   if (bridgeApiKeyMatches(req, key)) return true;
   rejectBridgeApiKey(req, res);
   return false;

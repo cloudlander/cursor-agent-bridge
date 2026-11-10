@@ -49,6 +49,22 @@
     );
   }
 
+  let fitRaf = 0;
+
+  function fitTerminal() {
+    if (!term || !panelOpen()) return;
+    fitAddon?.fit();
+    sendResize();
+  }
+
+  function scheduleFit() {
+    if (fitRaf) cancelAnimationFrame(fitRaf);
+    fitRaf = requestAnimationFrame(() => {
+      fitRaf = 0;
+      fitTerminal();
+    });
+  }
+
   function disconnect() {
     if (socket) {
       try {
@@ -82,8 +98,7 @@
 
     socket.addEventListener('open', () => {
       setStatus('Connected', 'ok');
-      fitAddon?.fit();
-      sendResize();
+      scheduleFit();
       term.focus();
     });
 
@@ -131,25 +146,24 @@
     term.onData(data => {
       if (socket?.readyState === WebSocket.OPEN) socket.send(data);
     });
-    const ro = new ResizeObserver(() => {
-      if (!panelOpen()) return;
-      fitAddon?.fit();
-      sendResize();
-    });
-    ro.observe(host);
-    window.addEventListener('resize', () => {
-      if (!shouldConnect()) return;
-      fitAddon?.fit();
-      sendResize();
-    });
+    requestAnimationFrame(() => requestAnimationFrame(() => scheduleFit()));
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => scheduleFit());
+      ro.observe(host);
+      const panelBody = $('chat-right-panel-body');
+      if (panelBody && panelBody !== host) ro.observe(panelBody);
+    }
+    window.addEventListener('resize', () => scheduleFit());
+    window.visualViewport?.addEventListener('resize', () => scheduleFit());
+    window.visualViewport?.addEventListener('scroll', () => scheduleFit());
   }
 
   function refreshConnection() {
     if (shouldConnect()) {
       ensureTerm();
       requestAnimationFrame(() => {
-        fitAddon?.fit();
-        sendResize();
+        scheduleFit();
         if (!socket || socket.readyState !== WebSocket.OPEN) connect();
         else term?.focus();
       });
@@ -214,10 +228,7 @@
     } catch {
       /* ignore */
     }
-    if (panelOpen()) {
-      fitAddon?.fit();
-      sendResize();
-    }
+    if (panelOpen()) scheduleFit();
   }
 
   function initPanelWidth() {
@@ -281,18 +292,12 @@
     if (!shell || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => {
       applyPanelWidth(readPanelWidth());
-      if (panelOpen()) {
-        fitAddon?.fit();
-        sendResize();
-      }
+      if (panelOpen()) scheduleFit();
     });
     ro.observe(shell);
     window.addEventListener('resize', () => {
       applyPanelWidth(readPanelWidth());
-      if (panelOpen()) {
-        fitAddon?.fit();
-        sendResize();
-      }
+      if (panelOpen()) scheduleFit();
     });
   }
 
@@ -375,6 +380,7 @@
     init,
     setPanelOpen,
     togglePanel,
+    fit: scheduleFit,
     get panelOpen() {
       return panelOpen();
     },

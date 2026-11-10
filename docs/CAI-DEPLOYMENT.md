@@ -48,6 +48,8 @@ Optional **`app.sh` modes** (second argument or first subcommand):
 
 Use **`CDSW_API_KEY`** as the bearer token for `/v1` from other CAI workloads unless `CURSOR_BRIDGE_API_KEY` is explicitly set.
 
+At startup, `app.sh` calls `GET ${CDSW_ENGINE_URL}/application` (with `CDSW_API_KEY`) and exports **`CURSOR_BRIDGE_CDSW_BYPASS_AUTHENTICATION`** from JSON `bypass_authentication` (defaults to `true` if the call fails). When that value is **`false`**, the CAI application requires interactive auth and inbound `/v1` and `/health` skip API-key checks (traffic already passed CAI). `Remote-user-perm: Unauthorized` (with `Remote-user` set) is still rejected immediately. When bypass is **`true`**, only the usual CDSW/bridge API key satisfies inbound auth.
+
 ## User-deployed web apps (dynamic routes)
 
 Static HTML/CSS/JS apps are served **without restarting** the bridge after deploy:
@@ -86,7 +88,7 @@ Set `CURSOR_BRIDGE_UPSTREAM_SYNC=true` on the application only when this deploym
 
 | Symptom | Likely cause | Action |
 |---------|--------------|--------|
-| 401 on `/v1` | Wrong or missing `CDSW_API_KEY` / bridge key | Match application env; check `bridge-api-auth.ts` flags |
+| 401 on `/v1` | Wrong or missing `CDSW_API_KEY` / bridge key, or `Remote-user-perm: Unauthorized` when CAI auth is on | Match application env; read `CURSOR_BRIDGE_CDSW_BYPASS_AUTHENTICATION` in startup log; check `bridge-api-auth.ts` |
 | Agent exits mid-stream | `CURSOR_BRIDGE_TIMEOUT_MS` too low | Raise in application env (CAI default 900000) |
 | `agent: not found` | Bootstrap not run | Run `bootstrap-cai-application.sh`; verify `.cai/home/.local/bin/agent` |
 | `npm not found` during build | Session lacks npm; agent bundle has only `node` | Re-run bootstrap; check `.cai/home/.local/bin/npm` |

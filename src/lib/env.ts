@@ -67,6 +67,11 @@ export type LoadedEnv = {
    * From `CURSOR_BRIDGE_CONTEXT_EXTRA`; stripped of NUL, max 400 UTF-16 units.
    */
   contextExtra?: string;
+  /**
+   * From CDSW `/application` `bypass_authentication` (set by `app.sh` on CAI).
+   * When false, inbound `/v1` skips API-key check (CAI edge already authenticated the caller).
+   */
+  cdswBypassAuthentication: boolean;
 };
 
 export type AgentCommand = {
@@ -491,6 +496,11 @@ export function loadEnvConfig(opts: EnvOptions = {}): LoadedEnv {
     winCmdlineMax,
     contextPreamble,
     contextExtra,
+    cdswBypassAuthentication: envBool(
+      env,
+      ["CURSOR_BRIDGE_CDSW_BYPASS_AUTHENTICATION"],
+      true,
+    ),
   };
 }
 

@@ -49,6 +49,7 @@ function testConfig(base: string, cursorRoot: string): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: false,
     appSegment: "cursor-agent",
+    cdswBypassAuthentication: true,
     bridgePackageVersion: "test",
   };
 }

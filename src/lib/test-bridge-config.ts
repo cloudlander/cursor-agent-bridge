@@ -34,6 +34,7 @@ export function testBridgeConfig(
     contextPreamble: true,
     bridgePackageVersion: "0.0.0-test",
     appSegment: "cursor-agent",
+    cdswBypassAuthentication: true,
     terminalSsh: {
       enabled: false,
       host: "127.0.0.1",

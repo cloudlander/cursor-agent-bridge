@@ -252,6 +252,35 @@ bootstrap_needed() {
     -newer "${ROOT}/dist/cli.js" -print -quit 2>/dev/null | grep -q .
 }
 
+detect_cdsw_application_bypass_authentication() {
+  local bypass="true"
+  if [[ -n "${CDSW_ENGINE_URL:-}" && -n "${CDSW_API_KEY:-}" ]] && command -v curl >/dev/null 2>&1; then
+    local json=""
+    json="$(curl -fsS -m10 -u "${CDSW_API_KEY}:" "${CDSW_ENGINE_URL}/application" 2>/dev/null || true)"
+    if [[ -n "${json}" ]] && command -v python3 >/dev/null 2>&1; then
+      bypass="$(
+        printf '%s' "${json}" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+    v=d.get("bypass_authentication", True)
+    print("true" if v else "false")
+except Exception:
+    print("true")' 2>/dev/null || echo "true"
+      )"
+    elif [[ -n "${json}" ]]; then
+      log "WARNING: python3 unavailable; cannot parse CDSW /application bypass_authentication (defaulting to bypass=true)."
+    else
+      log "WARNING: Could not fetch ${CDSW_ENGINE_URL}/application for bypass_authentication (defaulting to bypass=true)."
+    fi
+  fi
+  export CURSOR_BRIDGE_CDSW_BYPASS_AUTHENTICATION="${bypass}"
+  if [[ "${bypass}" == "false" ]]; then
+    log "  CAI application auth: required (bypass_authentication=false; /v1 skips API-key check)"
+  else
+    log "  CAI application auth: bypass_authentication=true (inbound /v1 uses CDSW_API_KEY or bridge key)"
+  fi
+}
+
 ensure_cursor_cli_auth() {
   if [[ -n "${CURSOR_API_KEY:-}" || -n "${CURSOR_AUTH_TOKEN:-}" ]]; then
     return 0
@@ -299,6 +328,8 @@ prepare_worker_env() {
 
   resolve_bridge_listen_port
   export CURSOR_BRIDGE_PORT="${RESOLVED_BRIDGE_PORT}"
+
+  detect_cdsw_application_bypass_authentication
   export CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE="${CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE:-false}"
   export CURSOR_BRIDGE_MODE="${CURSOR_BRIDGE_MODE:-agent}"
   export CURSOR_BRIDGE_FORCE="${CURSOR_BRIDGE_FORCE:-true}"

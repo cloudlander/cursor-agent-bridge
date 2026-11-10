@@ -33,6 +33,7 @@ function cfg(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
     winCmdlineMax: 30_000,
     contextPreamble: true,
     appSegment: "cursor-agent",
+    cdswBypassAuthentication: true,
     bridgePackageVersion: "0.0.0-test",
     ...overrides,
   };
