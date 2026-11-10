@@ -299,9 +299,13 @@ describe("startBridgeServer", () => {
   });
 
   it("POST /api/agent/chat bypasses requiredKey and reaches the agent", async () => {
+    const accountDir = "/tmp/cursor-proxy-test-account";
     servers = await startBridgeServer({
       version: "1.0.0",
-      config: createTestConfig({ requiredKey: "secret123" }),
+      config: createTestConfig({
+        requiredKey: "secret123",
+        configDirs: [accountDir],
+      }),
     });
 
     const { status, body } = await fetchServer(servers[0], "/api/agent/chat", {
@@ -311,6 +315,7 @@ describe("startBridgeServer", () => {
         model: "default",
         stream: false,
         messages: [{ role: "user", content: "hi" }],
+        accountConfigDir: accountDir,
       }),
     });
     expect(status).toBe(200);

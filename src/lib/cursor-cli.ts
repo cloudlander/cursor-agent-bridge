@@ -34,17 +34,23 @@ export function parseCursorCliModels(output: string): CursorCliModel[] {
 export async function listCursorCliModels(args: {
   agentBin: string;
   timeoutMs: number;
+  /** When set, lists models visible to this Cursor configuration directory. */
+  configDir?: string;
 }): Promise<CursorCliModel[]> {
   // Parent shells (Cursor agent, CI) often set FORCE_COLOR=1; that paints
   // `--list-models` with ANSI and used to yield an empty OpenAI model list.
+  const envOverrides: Record<string, string> = {
+    NO_COLOR: "1",
+    FORCE_COLOR: "0",
+    TERM: "dumb",
+  };
+  if (args.configDir) {
+    envOverrides.CURSOR_CONFIG_DIR = args.configDir;
+  }
   const list = await run(args.agentBin, ["--list-models"], {
     cwd: tmpdir(),
     timeoutMs: args.timeoutMs,
-    envOverrides: {
-      NO_COLOR: "1",
-      FORCE_COLOR: "0",
-      TERM: "dumb",
-    },
+    envOverrides,
   });
 
   if (list.code !== 0) {

@@ -46,6 +46,8 @@ export type WebChatThread = {
   updatedAt: number;
   model: string;
   mode: string;
+  /** Selected Cursor config directory for multi-account pools (web chat toolbar). */
+  accountConfigDir?: string;
   messages: ChatMessage[];
   /** Latest model-reported context window fill (ACP `usage_update`). */
   contextWindowUsage?: ContextWindowUsage;

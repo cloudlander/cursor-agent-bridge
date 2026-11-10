@@ -3,8 +3,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { ACCOUNTS_DIR } from "../cli/constants.js";
 import type { BridgeConfig } from "./config.js";
+import {
+  accountNameAvailabilityError,
+  registerAccountInBridge,
+  resolveAccountsDir,
+  sanitizeAccountName,
+} from "./account-registry.js";
 import { readCursorCliAuth } from "./cursor-account-snapshot.js";
 import { resolveAgentCommand } from "./env.js";
 import {
@@ -192,6 +197,7 @@ export function cancelAgentLoginSession(sessionId?: string): boolean {
 }
 
 function finishSession(
+  config: BridgeConfig,
   session: AgentLoginSession,
   status: AgentLoginSessionStatus,
   error?: string,
@@ -204,6 +210,13 @@ function finishSession(
     session.email = auth.email;
     const token = readKeychainToken();
     if (token) writeCachedToken(session.configDir, token);
+    const registered = registerAccountInBridge(config, session.configDir);
+    if (!registered.ok) {
+      session.status = "failed";
+      session.error = registered.error;
+      cleanupFailedSessionDir(session);
+      activeSession = null;
+    }
     return;
   }
   if (status === "failed" || status === "cancelled") {
@@ -231,13 +244,19 @@ export function startAgentLoginSession(
     return Promise.resolve({ ok: true, session: existing });
   }
 
-  const name = (accountName?.trim() || `account-${Date.now().toString().slice(-4)}`)
-    .replace(/[^\w.-]+/g, "-")
-    .slice(0, 64);
-  const configDir = path.join(ACCOUNTS_DIR, name);
+  const nameError = accountNameAvailabilityError(accountName);
+  if (nameError) {
+    return Promise.resolve({ ok: false, error: nameError });
+  }
+
+  const name =
+    sanitizeAccountName(accountName ?? "") ??
+    `account-${Date.now().toString().slice(-4)}`;
+  const accountsDir = resolveAccountsDir();
+  const configDir = path.join(accountsDir, name);
   const dirWasNew = !fs.existsSync(configDir);
 
-  fs.mkdirSync(ACCOUNTS_DIR, { recursive: true });
+  fs.mkdirSync(accountsDir, { recursive: true });
   fs.mkdirSync(configDir, { recursive: true });
 
   const sessionId = randomUUID();
@@ -249,7 +268,7 @@ export function startAgentLoginSession(
     const urlTimer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      finishSession(session, "failed", "Timed out waiting for Cursor login URL");
+      finishSession(config, session, "failed", "Timed out waiting for Cursor login URL");
       resolve({
         ok: false,
         error: "Timed out waiting for Cursor login URL",
@@ -303,17 +322,17 @@ export function startAgentLoginSession(
       clearTimeout(urlTimer);
       if (!settled) {
         settled = true;
-        finishSession(session, "failed", err.message);
+        finishSession(config, session, "failed", err.message);
         resolve({ ok: false, error: err.message, session: toPublic(session) });
         return;
       }
-      finishSession(session, "failed", err.message);
+      finishSession(config, session, "failed", err.message);
     });
 
     child.on("exit", (code) => {
       clearTimeout(urlTimer);
       if (code === 0) {
-        finishSession(session, "success");
+        finishSession(config, session, "success");
         if (!settled) {
           settled = true;
           resolve({ ok: true, session: toPublic(session) });
@@ -321,7 +340,7 @@ export function startAgentLoginSession(
         return;
       }
       const msg = `Cursor agent login failed (exit ${code ?? "unknown"})`;
-      finishSession(session, "failed", msg);
+      finishSession(config, session, "failed", msg);
       if (!settled) {
         settled = true;
         resolve({ ok: false, error: msg, session: toPublic(session) });

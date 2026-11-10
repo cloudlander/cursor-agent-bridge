@@ -20,6 +20,7 @@ import {
   handleWorkspaceFile,
   workspaceFileMatches,
 } from "./workspace-file.js";
+import { removeManagedAccount } from "./account-registry.js";
 import {
   cancelAgentLoginSession,
   getAgentLoginSession,
@@ -40,6 +41,11 @@ import {
 import { getBridgePublicContext } from "./bridge-request-context.js";
 import { prepareBridgeHtml } from "./bridge-html.js";
 import { publicPath } from "./http-public-path.js";
+import {
+  cacheControlForPublicStaticRel,
+  ifNoneMatchSatisfied,
+  weakEtagFromStat,
+} from "./public-static-cache.js";
 import { resolvePublicEndpointUrls } from "./plugins/public-origin.js";
 
 const ACCOUNT_USAGE_CACHE_MS = 45_000;
@@ -93,16 +99,29 @@ function safeJoin(root: string, rel: string): string | null {
   return target;
 }
 
-function serveFile(res: http.ServerResponse, filePath: string): void {
+function serveFile(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  filePath: string,
+  staticRel = "",
+): void {
   fs.stat(filePath, (err, stat) => {
     if (err || !stat.isFile()) return notFound(res);
     const ext = path.extname(filePath).toLowerCase();
     const mime = MIME[ext] ?? "application/octet-stream";
-    res.writeHead(200, {
+    const etag = weakEtagFromStat(stat);
+    const headers: http.OutgoingHttpHeaders = {
       "content-type": mime,
       "content-length": stat.size,
-      "cache-control": "no-cache",
-    });
+      "cache-control": cacheControlForPublicStaticRel(staticRel),
+      etag,
+    };
+    if (ifNoneMatchSatisfied(req.headers["if-none-match"], etag)) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+    res.writeHead(200, headers);
     fs.createReadStream(filePath).pipe(res);
   });
 }
@@ -113,7 +132,7 @@ function serveBridgeHtml(
   filePath: string,
 ): void {
   const ctx = getBridgePublicContext(req);
-  if (!ctx) return serveFile(res, filePath);
+  if (!ctx) return serveFile(req, res, filePath);
   fs.readFile(filePath, (err, data) => {
     if (err) return notFound(res);
     const body = prepareBridgeHtml(data.toString("utf8"), ctx);
@@ -365,6 +384,7 @@ export function adminDashboardMatches(
   if (req.method === "GET" && pathname === "/api/agent-login/status") return true;
   if (req.method === "POST" && pathname === "/api/agent-login") return true;
   if (req.method === "POST" && pathname === "/api/agent-login/cancel") return true;
+  if (req.method === "DELETE" && pathname === "/api/cursor-account") return true;
   if (req.method === "POST" && pathname === "/api/apps/deploy") return true;
   if (upstreamSyncApiMatches(req)) return true;
   if (chatApiMatches(req)) return true;
@@ -455,7 +475,7 @@ export function handleAdminDashboard(
     const rel = pathname.slice("/static/".length);
     const target = safeJoin(publicDir, rel);
     if (!target) return notFound(res);
-    return serveFile(res, target);
+    return serveFile(req, res, target, rel);
   }
   if (workspaceFileMatches(req)) {
     return handleWorkspaceFile(req, res, config);
@@ -502,7 +522,8 @@ export function handleAdminDashboard(
       }
       void startAgentLoginSession(config, body.accountName).then((result) => {
         if (!result.ok) {
-          json(res, 500, {
+          const status = result.error?.includes("already") ? 409 : 500;
+          json(res, status, {
             error: result.error,
             session: result.session,
           });
@@ -568,6 +589,29 @@ export function handleAdminDashboard(
       if (err) return json(res, 500, { error: String(err) });
       json(res, 200, computeSessionStats(lines, hours));
     });
+  }
+  if (req.method === "DELETE" && pathname === "/api/cursor-account") {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      let body: { configDir?: string } = {};
+      try {
+        body = JSON.parse(raw || "{}") as { configDir?: string };
+      } catch {
+        return json(res, 400, { error: "invalid json" });
+      }
+      const configDir = String(body.configDir ?? "").trim();
+      if (!configDir) {
+        return json(res, 400, { error: "configDir is required" });
+      }
+      const result = removeManagedAccount(config, configDir);
+      if (!result.ok) {
+        return json(res, 400, { error: result.error });
+      }
+      accountUsageCache = undefined;
+      json(res, 200, { ok: true });
+    });
+    return;
   }
   if (req.method === "GET" && pathname === "/api/cursor-account") {
     const cacheKey = config.configDirs.join("\0");

@@ -1,4 +1,8 @@
 import type { BridgePublicContext } from "./bridge-request-context.js";
+import {
+  appendVendorAssetVersions,
+  bridgeAssetVersion,
+} from "./public-static-cache.js";
 
 const ROOT_EXEMPT = new Set(["/healthz", "/health"]);
 
@@ -176,6 +180,7 @@ export function prepareBridgeHtml(
   }
   html = rewriteRootAbsoluteAttr(html, "href", ctx);
   html = rewriteRootAbsoluteAttr(html, "src", ctx);
+  html = appendVendorAssetVersions(html, bridgeAssetVersion());
   const bridgePathTag = `<script src="${ctx.publicBase}/static/bridge-path.js"></script>`;
   if (!html.includes("bridge-path.js")) {
     html = html.replace(

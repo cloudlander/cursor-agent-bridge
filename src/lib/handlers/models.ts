@@ -1,5 +1,10 @@
 import * as http from "node:http";
+import * as path from "node:path";
 
+import {
+  allowedAccountConfigDirs,
+  resolveAllowedAccountConfigDir,
+} from "../account-config-dir.js";
 import {
   filterCliModelsForAcpCatalog,
   getCachedAcpAvailableModels,
@@ -14,10 +19,37 @@ import { getAnthropicModelAliases } from "../model-map.js";
 const MODEL_CACHE_TTL_MS = 5 * 60_000;
 
 export type ModelCache = { at: number; models: CursorCliModel[] };
-export type ModelCacheRef = {
+
+type ModelCacheBucket = {
   current?: ModelCache;
   inflight?: Promise<CursorCliModel[]>;
 };
+
+export type ModelCacheRef = {
+  /** Keyed by resolved config dir path; `""` is the default CLI environment. */
+  buckets: Map<string, ModelCacheBucket>;
+};
+
+export function createModelCacheRef(): ModelCacheRef {
+  return { buckets: new Map() };
+}
+
+function modelCacheKey(configDir?: string): string {
+  return configDir ? path.resolve(configDir) : "";
+}
+
+function bucketFor(
+  modelCacheRef: ModelCacheRef,
+  configDir?: string,
+): ModelCacheBucket {
+  const key = modelCacheKey(configDir);
+  let bucket = modelCacheRef.buckets.get(key);
+  if (!bucket) {
+    bucket = {};
+    modelCacheRef.buckets.set(key, bucket);
+  }
+  return bucket;
+}
 
 export type HandleModelsOpts = {
   config: BridgeConfig;
@@ -25,49 +57,71 @@ export type HandleModelsOpts = {
   acpModelCacheRef?: AcpModelCacheRef;
   /** When true, drop CLI rows that cannot be mapped to the ACP session catalog. */
   filterForAcpCatalog?: boolean;
+  /** List models for a specific account config directory (web chat). */
+  configDir?: string;
 };
 
 export async function getCachedCursorModels(
   config: BridgeConfig,
   modelCacheRef: ModelCacheRef,
+  configDir?: string,
 ): Promise<CursorCliModel[]> {
+  const bucket = bucketFor(modelCacheRef, configDir);
   const now = Date.now();
-  if (
-    !modelCacheRef.current ||
-    now - modelCacheRef.current.at > MODEL_CACHE_TTL_MS
-  ) {
-    // Deduplicate concurrent fetches — reuse a single in-flight promise
-    if (!modelCacheRef.inflight) {
-      modelCacheRef.inflight = listCursorCliModels({
+  if (!bucket.current || now - bucket.current.at > MODEL_CACHE_TTL_MS) {
+    if (!bucket.inflight) {
+      bucket.inflight = listCursorCliModels({
         agentBin: config.agentBin,
         timeoutMs: 60_000,
+        configDir: configDir ? path.resolve(configDir) : undefined,
       }).then(
         (models) => {
-          // Never cache an empty catalog — usually a parse/env glitch
-          // (e.g. colored CLI output) and would poison /v1/models for TTL.
           if (models.length > 0) {
-            modelCacheRef.current = { at: Date.now(), models };
+            bucket.current = { at: Date.now(), models };
           }
-          modelCacheRef.inflight = undefined;
+          bucket.inflight = undefined;
           return models;
         },
         (err) => {
-          modelCacheRef.inflight = undefined;
+          bucket.inflight = undefined;
           throw err;
         },
       );
     }
-    await modelCacheRef.inflight;
+    await bucket.inflight;
   }
-  return modelCacheRef.current?.models ?? [];
+  return bucket.current?.models ?? [];
+}
+
+/** Parse optional `configDir` query for GET /api/agent/models. */
+export function parseModelsConfigDirQuery(
+  config: BridgeConfig,
+  raw: string | null,
+): { configDir?: string; error?: string } {
+  if (raw == null || raw === "") return {};
+  const resolved = resolveAllowedAccountConfigDir(config, raw);
+  if (!resolved) {
+    const allowed = allowedAccountConfigDirs(config);
+    if (allowed.length === 0) {
+      return { error: "No account directories configured" };
+    }
+    return { error: "Unknown configDir" };
+  }
+  return { configDir: resolved };
 }
 
 export async function handleModels(
   res: http.ServerResponse,
   opts: HandleModelsOpts,
 ): Promise<void> {
-  const { config, modelCacheRef, acpModelCacheRef, filterForAcpCatalog } = opts;
-  let models = await getCachedCursorModels(config, modelCacheRef);
+  const {
+    config,
+    modelCacheRef,
+    acpModelCacheRef,
+    filterForAcpCatalog,
+    configDir,
+  } = opts;
+  let models = await getCachedCursorModels(config, modelCacheRef, configDir);
   if (
     filterForAcpCatalog &&
     config.useAcp &&
@@ -79,6 +133,7 @@ export async function handleModels(
         config,
         config.workspace,
         acpModelCacheRef,
+        configDir,
       );
       models = filterCliModelsForAcpCatalog(models, acpModels);
     } catch {

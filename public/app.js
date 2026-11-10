@@ -271,6 +271,15 @@
     $('config-body').replaceChildren(tbl);
   }
 
+  function isManagedBridgeAccountDir(configDir) {
+    const norm = String(configDir).replace(/\\/g, '/');
+    const marker = '/.cursor-api-proxy/accounts/';
+    const i = norm.lastIndexOf(marker);
+    if (i < 0) return false;
+    const rest = norm.slice(i + marker.length);
+    return rest.length > 0 && !rest.includes('/');
+  }
+
   function renderCursorAccount(data) {
     const summary = $('cursor-account-summary');
     const body = $('cursor-account-body');
@@ -283,10 +292,33 @@
     const fetched = data.fetchedAt ? new Date(data.fetchedAt).toLocaleString() : '';
     summary.textContent = fetched ? `updated ${fetched}` : '';
 
+    const configuredAccounts = data.accounts.filter(
+      a => a && a.configDir && a.name !== '(none)',
+    );
+    const canDeleteAny = configuredAccounts.length > 1;
+
     const blocks = data.accounts.map(acc => {
       const headBits = [acc.name];
       if (acc.email) headBits.push(acc.email);
-      const head = el('div', { style: 'font-weight: 600; margin-bottom: 6px;' }, headBits.join(' · '));
+      const canRemove =
+        canDeleteAny &&
+        acc.configDir &&
+        acc.name !== '(none)' &&
+        isManagedBridgeAccountDir(acc.configDir);
+      const removeBtn = canRemove
+        ? el('button', {
+          type: 'button',
+          class: 'btn small danger',
+          title: 'Remove this account from the bridge',
+          onclick: () => void removeCursorAccount(acc),
+        }, 'Remove')
+        : null;
+      const head = el('div', {
+        style: 'display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 6px;',
+      },
+        el('div', { style: 'font-weight: 600;' }, headBits.join(' · ')),
+        removeBtn,
+      );
 
       if (acc.error) {
         return el('div', { style: 'margin-bottom: 16px;' }, head,
@@ -562,6 +594,24 @@
     }
   }
 
+  async function removeCursorAccount(acc) {
+    const label = acc.email || acc.displayName || acc.name || 'this account';
+    const msg = `Remove ${label}? Local login data under this bridge will be deleted.`;
+    if (!(await confirmPopup(msg, true))) return;
+    try {
+      await fetchJSON('/api/cursor-account', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ configDir: acc.configDir }),
+      });
+      toast('Account removed', 'ok');
+      await refreshCursorAccount();
+      await refreshStatus();
+    } catch (e) {
+      toast(`Remove failed: ${e.message}`, 'err');
+    }
+  }
+
   async function refreshLog() {
     if (state.paused) return;
     try {
@@ -684,6 +734,7 @@
       state.agentAuthenticated = true;
       showDashboardMain();
       toast(session.email ? `Signed in as ${session.email}` : 'Cursor sign-in complete', 'ok', 5000);
+      refreshCursorAccount();
       if (!session.email) {
         toast('Restart the proxy to pick up the new account pool if requests still fail.', 'warn', 8000);
       }
@@ -714,14 +765,27 @@
     }, 2000);
   }
 
-  async function beginAgentOAuthLogin() {
+  async function beginAddCursorAccount() {
+    const suggested = `account-${Date.now().toString().slice(-4)}`;
+    const raw = window.prompt(
+      'Account folder name (letters, numbers, dots, dashes). Cancel to abort.',
+      suggested,
+    );
+    if (raw === null) return;
+    await beginAgentOAuthLogin(raw.trim() || undefined);
+  }
+
+  async function beginAgentOAuthLogin(accountName) {
     $('login-gate-error').textContent = '';
+    const addBtn = $('cursor-account-add-btn');
+    if (addBtn) addBtn.disabled = true;
     $('agent-login-btn').disabled = true;
     try {
+      const body = accountName ? { accountName } : {};
       const session = await fetchJSON('/api/agent-login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify(body),
       });
       showAgentOAuthDialog(session);
       pollAgentLoginSession(session.sessionId);
@@ -730,6 +794,8 @@
       toast(`Could not start login: ${e.message}`, 'err');
     } finally {
       $('agent-login-btn').disabled = false;
+      const addBtn = $('cursor-account-add-btn');
+      if (addBtn) addBtn.disabled = false;
     }
   }
 
@@ -785,6 +851,10 @@
       btn.addEventListener('click', () => doControl(btn.dataset.action));
     }
     $('agent-login-btn').addEventListener('click', () => beginAgentOAuthLogin());
+    const addAcctBtn = $('cursor-account-add-btn');
+    if (addAcctBtn) {
+      addAcctBtn.addEventListener('click', () => void beginAddCursorAccount());
+    }
     $('agent-oauth-close').addEventListener('click', () => {
       $('agent-oauth-dialog').close();
     });
