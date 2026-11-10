@@ -1867,8 +1867,40 @@
   function accountOptionLabel(acc) {
     const who = acc.email || acc.displayName || acc.name || 'account';
     const use = accountUsageLabel(acc);
-    const text = `${who} (${use})`;
-    return text.length > 72 ? `${text.slice(0, 69)}…` : text;
+    return `${who} (${use})`;
+  }
+
+  function selectedAccountRow() {
+    const dir = activeAccountConfigDir();
+    if (!dir) return null;
+    return accountRows().find(a => a.configDir === dir) || null;
+  }
+
+  function updateAccountVisible() {
+    const vis = $('chat-account-visible');
+    const wrap = $('chat-account-wrap');
+    const sel = $('chat-account');
+    if (!vis || !wrap) return;
+    const rows = accountRows();
+    if (!rows.length) {
+      vis.textContent = 'No Cursor account';
+      wrap.classList.add('no-account');
+      wrap.classList.remove('single-account', 'multi-account');
+      if (sel) sel.classList.add('hidden');
+      return;
+    }
+    const acc = selectedAccountRow() || rows[0];
+    vis.textContent = accountOptionLabel(acc);
+    wrap.classList.remove('no-account');
+    if (rows.length <= 1) {
+      wrap.classList.add('single-account');
+      wrap.classList.remove('multi-account');
+      if (sel) sel.classList.add('hidden');
+    } else {
+      wrap.classList.add('multi-account');
+      wrap.classList.remove('single-account');
+      if (sel) sel.classList.remove('hidden');
+    }
   }
 
   function accountRows() {
@@ -1905,8 +1937,7 @@
     if (!rows.length) {
       sel.replaceChildren(el('option', { value: '' }, 'No Cursor account'));
       sel.disabled = true;
-      sel.hidden = false;
-      sel.classList.remove('hidden');
+      updateAccountVisible();
       return;
     }
     sel.replaceChildren(
@@ -1918,9 +1949,8 @@
     if (picked && rows.some(a => a.configDir === picked)) sel.value = picked;
     else if (rows[0]) sel.value = rows[0].configDir;
     sel.disabled = rows.length <= 1;
-    sel.hidden = false;
-    sel.classList.remove('hidden');
     ensureThreadAccountConfigDir();
+    updateAccountVisible();
   }
 
   function renderModelOptions() {

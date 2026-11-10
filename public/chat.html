@@ -54,9 +54,12 @@
       <header class="chat-toolbar" id="chat-toolbar">
         <button type="button" class="chat-sidebar-toggle btn small" id="chat-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
         <h1 class="chat-toolbar-title" id="chat-title">New chat</h1>
+        <div class="chat-account-wrap" id="chat-account-wrap">
+          <span class="chat-account-visible mono" id="chat-account-visible" aria-live="polite">…</span>
+          <select id="chat-account" class="chat-mode-select chat-account-select" title="Cursor account" aria-label="Cursor account"></select>
+        </div>
         <div class="chat-toolbar-actions">
           <button type="button" class="btn small chat-right-panel-toggle" id="chat-right-panel-toggle" title="Terminal panel" aria-label="Toggle terminal panel" aria-pressed="false">Terminal</button>
-          <select id="chat-account" class="chat-mode-select chat-account-select" title="Cursor account" aria-label="Cursor account"></select>
           <select id="chat-model" class="chat-mode-select chat-model-select" title="Model" aria-label="Model"></select>
           <select id="chat-mode" class="chat-mode-select" title="Mode" aria-label="Mode">
             <option value="agent">agent</option>

@@ -12,6 +12,11 @@ import type { TerminalSshConfig } from "./terminal-ssh-config.js";
 
 const TERMINAL_WS_PATH = "/api/terminal/ws";
 
+/** Idle WebSocket through CDSW/nginx often dies without traffic (unlike SSE `: keepalive`). */
+const WS_PING_INTERVAL_MS = 20_000;
+const SSH_KEEPALIVE_INTERVAL_MS = 30_000;
+const SSH_KEEPALIVE_COUNT_MAX = 3;
+
 export function terminalWsPathname(pathname: string): boolean {
   return pathname === TERMINAL_WS_PATH;
 }
@@ -68,10 +73,43 @@ function bridgeSshSession(
   const conn = new Client();
   let shell: ClientChannel | undefined;
   let closed = false;
+  let pingTimer: ReturnType<typeof setInterval> | undefined;
+  let wsAlive = true;
+
+  const clearWsPing = () => {
+    if (pingTimer !== undefined) {
+      clearInterval(pingTimer);
+      pingTimer = undefined;
+    }
+  };
+
+  const startWsPing = () => {
+    clearWsPing();
+    wsAlive = true;
+    pingTimer = setInterval(() => {
+      if (closed || ws.readyState !== WebSocket.OPEN) return;
+      if (!wsAlive) {
+        try {
+          ws.terminate();
+        } catch {
+          /* ignore */
+        }
+        teardown("keepalive timeout");
+        return;
+      }
+      wsAlive = false;
+      try {
+        ws.ping();
+      } catch {
+        teardown("keepalive ping failed");
+      }
+    }, WS_PING_INTERVAL_MS);
+  };
 
   const teardown = (reason?: string) => {
     if (closed) return;
     closed = true;
+    clearWsPing();
     try {
       shell?.end();
     } catch {
@@ -94,8 +132,12 @@ function bridgeSshSession(
     }
   };
 
+  ws.on("pong", () => {
+    wsAlive = true;
+  });
   ws.on("close", () => teardown());
   ws.on("error", () => teardown());
+  startWsPing();
 
   conn.on("ready", () => {
     conn.shell(
@@ -143,6 +185,8 @@ function bridgeSshSession(
     port: ssh.port,
     username: ssh.username,
     tryKeyboard: true,
+    keepaliveInterval: SSH_KEEPALIVE_INTERVAL_MS,
+    keepaliveCountMax: SSH_KEEPALIVE_COUNT_MAX,
   };
   if (ssh.privateKey) connectOpts.privateKey = ssh.privateKey;
   if (ssh.password) connectOpts.password = ssh.password;

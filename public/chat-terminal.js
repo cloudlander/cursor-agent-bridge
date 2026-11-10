@@ -94,9 +94,15 @@
       term.write(data);
     });
 
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', ev => {
       setStatus('Disconnected', 'warn');
       socket = null;
+      // Proxy idle timeouts often drop the socket (1006) without user action.
+      if (shouldConnect() && ev.code === 1006) {
+        window.setTimeout(() => {
+          if (shouldConnect() && (!socket || socket.readyState !== WebSocket.OPEN)) connect();
+        }, 1500);
+      }
     });
 
     socket.addEventListener('error', () => {
