@@ -42,6 +42,10 @@ import { buildBridgeContextPreamble, BRIDGE_AGENT_PROMPT_SEPARATOR } from "../br
 import { sanitizeMessages } from "../sanitize.js";
 import { normalizeAssistantReplyText } from "../assistant-text-dedupe.js";
 import {
+  allowedAccountConfigDirs,
+  resolveAllowedAccountConfigDir,
+} from "../account-config-dir.js";
+import {
   getNextAccountConfigDir,
   reportRequestStart,
   reportRequestEnd,
@@ -390,9 +394,88 @@ export async function handleChatCompletions(
     return;
   }
   const ownerKey = toolSessionOwnerKey(req, remoteAddress);
+
+  let webChatAccountConfigDir: string | undefined;
+  if (pathname === "/api/agent/chat") {
+    const webChatAccounts = allowedAccountConfigDirs(config);
+    const rawAccount = (body as { accountConfigDir?: unknown }).accountConfigDir;
+    if (webChatAccounts.length > 0) {
+      if (rawAccount === undefined || rawAccount === null || rawAccount === "") {
+        json(res, 400, {
+          error: {
+            message: "accountConfigDir is required for web chat",
+            code: "missing_account",
+            type: "invalid_request_error",
+          },
+        });
+        return;
+      }
+      if (typeof rawAccount !== "string") {
+        json(res, 400, {
+          error: {
+            message: "accountConfigDir must be a string",
+            code: "invalid_account",
+            type: "invalid_request_error",
+          },
+        });
+        return;
+      }
+      const resolved = resolveAllowedAccountConfigDir(config, rawAccount);
+      if (!resolved) {
+        json(res, 400, {
+          error: {
+            message: "Unknown account configuration directory",
+            code: "invalid_account",
+            type: "invalid_request_error",
+          },
+        });
+        return;
+      }
+      webChatAccountConfigDir = resolved;
+    } else if (
+      rawAccount !== undefined &&
+      rawAccount !== null &&
+      rawAccount !== ""
+    ) {
+      if (typeof rawAccount !== "string") {
+        json(res, 400, {
+          error: {
+            message: "accountConfigDir must be a string",
+            code: "invalid_account",
+            type: "invalid_request_error",
+          },
+        });
+        return;
+      }
+      const resolved = resolveAllowedAccountConfigDir(config, rawAccount);
+      if (!resolved) {
+        json(res, 400, {
+          error: {
+            message: "Unknown account configuration directory",
+            code: "invalid_account",
+            type: "invalid_request_error",
+          },
+        });
+        return;
+      }
+      webChatAccountConfigDir = resolved;
+    }
+  }
+
+  const selectConfigDir = (): string | undefined => {
+    if (pathname === "/api/agent/chat") {
+      return webChatAccountConfigDir ?? getNextAccountConfigDir();
+    }
+    return getNextAccountConfigDir();
+  };
+
   const requested = normalizeModelId(body.model);
   const model = resolveModel(requested, lastRequestedModelRef, config);
-  const models = await getCachedCursorModels(config, modelCacheRef);
+  const models = await getCachedCursorModels(
+    config,
+    modelCacheRef,
+    webChatAccountConfigDir,
+  );
   let decision;
   try {
     decision = resolveModelForExecution({
@@ -640,7 +723,7 @@ export async function handleChatCompletions(
     : undefined;
 
   if (structuredToolStart) {
-    const configDir = getNextAccountConfigDir();
+    const configDir = selectConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const startedAt = Date.now();
@@ -767,7 +850,7 @@ export async function handleChatCompletions(
       agentSignal = abortController.signal;
     }
 
-    const configDir = getNextAccountConfigDir();
+    const configDir = selectConfigDir();
     logAccountAssigned(configDir);
     reportRequestStart(configDir);
     const streamStart = Date.now();
@@ -1084,7 +1167,7 @@ export async function handleChatCompletions(
     return;
   }
 
-  const configDir = getNextAccountConfigDir();
+  const configDir = selectConfigDir();
   logAccountAssigned(configDir);
   reportRequestStart(configDir);
   const syncStart = Date.now();

@@ -2019,6 +2019,12 @@ body.chat-sidebar-dragging * {
 .chat-foot-btn { border: none; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; padding: 2px 6px; border-radius: 4px; }
 .chat-foot-btn:hover { color: var(--red); background: var(--panel-2); }
 .chat-backdrop { display: none; }
+.chat-account-select { max-width: 280px; font-size: 12px; }
+.chat-account-select:disabled {
+  opacity: 1;
+  cursor: default;
+  color: var(--text);
+}
 .chat-model-select { max-width: 200px; }
 .chat-toolbar-actions .btn { height: 26px; }
 
@@ -2091,6 +2097,7 @@ body.chat-sidebar-dragging * {
     z-index: 15;
     display: block;
   }
+  .chat-account-select { max-width: 120px; }
   .chat-model-select { max-width: 110px; }
   .chat-hint { display: none; }
   #chat-export { display: none; }

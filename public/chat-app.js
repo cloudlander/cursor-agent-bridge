@@ -41,9 +41,15 @@
   /** Poll interval for multi-endpoint session sync (API / CLI / ACP / other tabs). */
   const SESSION_SYNC_MS = 4000;
 
+  const ACCOUNT_USAGE_POLL_MS = 60_000;
+
   const state = {
     config: null,
     models: [],
+    /** Cursor account rows from GET /api/cursor-account */
+    accounts: [],
+    accountSnapshotAt: null,
+    accountRefreshTimer: null,
     /** Editable web threads only (persisted on server). */
     threads: [],
     /** Sidebar entries: web + api + cli + acp (from server catalog). */
@@ -1314,6 +1320,7 @@
       updatedAt: now,
       model: '',
       mode: '',
+      accountConfigDir: activeAccountConfigDir() || '',
       messages: [],
     };
     state.threads.unshift(thread);
@@ -1834,6 +1841,88 @@
     updateScrollButton();
   }
 
+  function fmtCompactTokens(n) {
+    const x = Number(n);
+    if (!Number.isFinite(x) || x <= 0) return '0';
+    if (x >= 1_000_000) return `${(x / 1_000_000).toFixed(1)}M`;
+    if (x >= 1000) return `${(x / 1000).toFixed(1)}k`;
+    return String(Math.round(x));
+  }
+
+  function accountUsageLabel(acc) {
+    if (!acc || acc.error) return acc?.error ? 'err' : '—';
+    const b = acc.billed;
+    if (b && typeof b.costUsd === 'number') return `$${b.costUsd.toFixed(2)}`;
+    const u = acc.usage;
+    if (u) {
+      const req = u.totalRequests;
+      const tok = u.totalTokens;
+      if (req > 0 && tok > 0) return `${req} req · ${fmtCompactTokens(tok)} tok`;
+      if (req > 0) return `${req} req`;
+      if (tok > 0) return `${fmtCompactTokens(tok)} tok`;
+    }
+    return '·';
+  }
+
+  function accountOptionLabel(acc) {
+    const who = acc.email || acc.displayName || acc.name || 'account';
+    const use = accountUsageLabel(acc);
+    const text = `${who} (${use})`;
+    return text.length > 72 ? `${text.slice(0, 69)}…` : text;
+  }
+
+  function accountRows() {
+    return state.accounts.filter(a => a.configDir);
+  }
+
+  function activeAccountConfigDir() {
+    const thread = activeThread();
+    if (thread?.accountConfigDir) return thread.accountConfigDir;
+    const sel = $('chat-account');
+    if (sel?.value) return sel.value;
+    const first = accountRows()[0];
+    return first?.configDir || '';
+  }
+
+  function ensureThreadAccountConfigDir(thread = activeThread()) {
+    if (!thread || thread.readOnly) return;
+    const rows = accountRows();
+    if (!rows.length) return;
+    const picked = activeAccountConfigDir();
+    const valid = picked && rows.some(a => a.configDir === picked);
+    const dir = valid ? picked : rows[0].configDir;
+    if (thread.accountConfigDir !== dir) {
+      thread.accountConfigDir = dir;
+      markThreadDirty(thread.id);
+    }
+  }
+
+  function renderAccountOptions() {
+    const sel = $('chat-account');
+    if (!sel) return;
+    const rows = accountRows();
+    const picked = activeAccountConfigDir();
+    if (!rows.length) {
+      sel.replaceChildren(el('option', { value: '' }, 'No Cursor account'));
+      sel.disabled = true;
+      sel.hidden = false;
+      sel.classList.remove('hidden');
+      return;
+    }
+    sel.replaceChildren(
+      ...rows.map(acc => el('option', {
+        value: acc.configDir,
+        title: `${acc.email || acc.name || ''} · ${accountUsageLabel(acc)}`,
+      }, accountOptionLabel(acc))),
+    );
+    if (picked && rows.some(a => a.configDir === picked)) sel.value = picked;
+    else if (rows[0]) sel.value = rows[0].configDir;
+    sel.disabled = rows.length <= 1;
+    sel.hidden = false;
+    sel.classList.remove('hidden');
+    ensureThreadAccountConfigDir();
+  }
+
   function renderModelOptions() {
     const sel = $('chat-model');
     if (!sel) return;
@@ -1863,6 +1952,7 @@
 
     const modeSel = $('chat-mode');
     if (modeSel) modeSel.value = thread?.mode || state.config?.mode || 'agent';
+    renderAccountOptions();
     renderModelOptions();
     renderComposerState();
     renderContextUsage();
@@ -1871,15 +1961,18 @@
   function renderComposerState() {
     const busy = isBusy();
     const readOnly = isReadOnlySession();
+    const noAccount = !accountRows().length;
     const send = $('chat-send');
     const stop = $('chat-stop');
-    send?.classList.toggle('hidden', busy || readOnly);
+    send?.classList.toggle('hidden', busy || readOnly || noAccount);
     stop?.classList.toggle('hidden', !busy);
     const input = $('chat-input');
     if (input) {
-      input.disabled = readOnly;
+      input.disabled = readOnly || noAccount;
       if (readOnly) {
         input.placeholder = 'Read-only session — start a new web chat to continue';
+      } else if (noAccount) {
+        input.placeholder = 'No Cursor account — sign in from the dashboard';
       } else {
         input.placeholder = busy
           ? 'Generating… (you can type your next message)'
@@ -2036,9 +2129,16 @@
     if (!activeThread()?.messages.length) renderMessages();
   }
 
-  async function loadModels() {
+  async function loadModels(configDir) {
+    const dir = configDir || activeAccountConfigDir();
+    if (!dir) {
+      state.models = [];
+      renderModelOptions();
+      return;
+    }
+    const qs = `?configDir=${encodeURIComponent(dir)}`;
     try {
-      const r = await apiFetch('/api/agent/models');
+      const r = await apiFetch(`/api/agent/models${qs}`);
       if (!r.ok) throw new Error(String(r.status));
       const data = await r.json();
       state.models = (data.data || []).filter(m => m && m.id);
@@ -2046,6 +2146,30 @@
       state.models = [];
     }
     renderModelOptions();
+  }
+
+  async function refreshAccounts() {
+    try {
+      const r = await apiFetch('/api/cursor-account');
+      if (!r.ok) throw new Error(String(r.status));
+      const data = await r.json();
+      state.accounts = Array.isArray(data.accounts) ? data.accounts : [];
+      state.accountSnapshotAt = data.fetchedAt || null;
+    } catch {
+      state.accounts = [];
+    }
+    renderAccountOptions();
+    const dir = activeAccountConfigDir();
+    if (dir) await loadModels(dir);
+  }
+
+  function startAccountUsagePolling() {
+    if (state.accountRefreshTimer) return;
+    void refreshAccounts();
+    state.accountRefreshTimer = setInterval(() => void refreshAccounts(), ACCOUNT_USAGE_POLL_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) void refreshAccounts();
+    });
   }
 
   function messageHasPayload(m) {
@@ -2111,7 +2235,7 @@
 
   function buildPayload(thread) {
     const cfg = state.config || {};
-    return {
+    const payload = {
       threadId: thread.id,
       model: thread.model || cfg.defaultModel,
       mode: thread.mode || cfg.mode || 'agent',
@@ -2120,6 +2244,9 @@
         .filter(m => !m.streaming && !m.error && messageHasPayload(m))
         .map(mapMessageForApi),
     };
+    const accountDir = thread.accountConfigDir || activeAccountConfigDir();
+    payload.accountConfigDir = accountDir || '';
+    return payload;
   }
 
   function touch(thread) {
@@ -2710,7 +2837,12 @@
       toast('This session is read-only');
       return;
     }
+    if (!activeAccountConfigDir()) {
+      toast('No Cursor account — sign in from the dashboard');
+      return;
+    }
     const thread = ensureActiveThread();
+    ensureThreadAccountConfigDir(thread);
     if (isBusy(thread)) return;
     const msg = {
       role: 'user',
@@ -2739,6 +2871,11 @@
     const original = thread?.messages[idx];
     const preserved = original?.attachments;
     if (!thread || (!clean && !preserved?.length) || isBusy(thread)) return;
+    if (!activeAccountConfigDir()) {
+      toast('No Cursor account — sign in from the dashboard');
+      return;
+    }
+    ensureThreadAccountConfigDir(thread);
     thread.messages = thread.messages.slice(0, idx);
     state.editingIdx = null;
     const msg = { role: 'user', content: clean, ts: Date.now() };
@@ -2758,6 +2895,11 @@
   function regenerateReply() {
     const thread = activeThread();
     if (!thread || isBusy(thread)) return;
+    if (!activeAccountConfigDir()) {
+      toast('No Cursor account — sign in from the dashboard');
+      return;
+    }
+    ensureThreadAccountConfigDir(thread);
     const last = thread.messages[thread.messages.length - 1];
     if (last?.role !== 'assistant') return;
     thread.messages.pop();
@@ -3026,6 +3168,13 @@
       }
     });
 
+    $('chat-account')?.addEventListener('change', e => {
+      if (isReadOnlySession() || e.target.disabled) return;
+      const t = ensureActiveThread();
+      t.accountConfigDir = e.target.value;
+      markThreadDirty(t.id);
+      void loadModels(t.accountConfigDir);
+    });
     $('chat-mode')?.addEventListener('change', e => {
       if (isReadOnlySession()) return;
       const t = ensureActiveThread();
@@ -3113,7 +3262,7 @@
 
       renderAll();
       void loadConfig();
-      void loadModels();
+      startAccountUsagePolling();
       startSessionSync();
       startAgentStatusPolling();
       void pollSessionUpdates();

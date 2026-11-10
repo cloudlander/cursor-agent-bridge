@@ -6,7 +6,12 @@ import type { AcpModelCacheRef } from "./acp-model-catalog.js";
 import type { ModelCacheRef } from "./handlers/models.js";
 import { enforceBridgeApiKeyIfRequired } from "./bridge-api-auth.js";
 import { handleHealth } from "./handlers/health.js";
-import { handleModels } from "./handlers/models.js";
+import {
+  createModelCacheRef,
+  handleModels,
+  parseModelsConfigDirQuery,
+} from "./handlers/models.js";
+import { createAcpModelCacheRef } from "./acp-model-catalog.js";
 import { handleChatCompletions } from "./handlers/chat-completions.js";
 import { handleCompletions } from "./handlers/completions.js";
 import { handleResponses } from "./handlers/responses.js";
@@ -35,8 +40,8 @@ export function createRequestListener(
   runtime: BridgeRequestRuntime,
 ) {
   const { config } = opts;
-  const modelCacheRef: ModelCacheRef = { current: undefined };
-  const acpModelCacheRef: AcpModelCacheRef = { current: undefined };
+  const modelCacheRef: ModelCacheRef = createModelCacheRef();
+  const acpModelCacheRef: AcpModelCacheRef = createAcpModelCacheRef();
   const lastRequestedModelRef: { current?: string } = {};
 
   return async (req: http.IncomingMessage, res: http.ServerResponse) => {
@@ -94,11 +99,26 @@ export function createRequestListener(
 
     try {
       if (req.method === "GET" && pathname === "/api/agent/models") {
+        const dirQuery = parseModelsConfigDirQuery(
+          config,
+          url.searchParams.get("configDir"),
+        );
+        if (dirQuery.error) {
+          json(res, 400, {
+            error: {
+              message: dirQuery.error,
+              code: "invalid_config_dir",
+              type: "invalid_request_error",
+            },
+          });
+          return;
+        }
         await handleModels(res, {
           config,
           modelCacheRef,
           acpModelCacheRef,
           filterForAcpCatalog: true,
+          configDir: dirQuery.configDir,
         });
         return;
       }

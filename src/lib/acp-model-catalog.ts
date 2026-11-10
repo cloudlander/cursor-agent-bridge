@@ -1,3 +1,5 @@
+import * as path from "node:path";
+
 import { AcpConnection, type AcpAvailableModel } from "./acp-connection.js";
 import { matchCliModelToAcpCatalog } from "./acp-model-match.js";
 import type { BridgeConfig } from "./config.js";
@@ -6,10 +8,36 @@ import type { CursorCliModel } from "./cursor-cli.js";
 const ACP_MODEL_CACHE_TTL_MS = 5 * 60_000;
 
 export type AcpModelCache = { at: number; models: AcpAvailableModel[] };
-export type AcpModelCacheRef = {
+
+type AcpModelCacheBucket = {
   current?: AcpModelCache;
   inflight?: Promise<AcpAvailableModel[]>;
 };
+
+export type AcpModelCacheRef = {
+  buckets: Map<string, AcpModelCacheBucket>;
+};
+
+export function createAcpModelCacheRef(): AcpModelCacheRef {
+  return { buckets: new Map() };
+}
+
+function acpCacheKey(configDir?: string): string {
+  return configDir ? path.resolve(configDir) : "";
+}
+
+function acpBucketFor(
+  cacheRef: AcpModelCacheRef,
+  configDir?: string,
+): AcpModelCacheBucket {
+  const key = acpCacheKey(configDir);
+  let bucket = cacheRef.buckets.get(key);
+  if (!bucket) {
+    bucket = {};
+    cacheRef.buckets.set(key, bucket);
+  }
+  return bucket;
+}
 
 function acpSpawnArgs(config: BridgeConfig, workspaceDir: string): string[] {
   const acpIndex = config.acpArgs.indexOf("acp");
@@ -27,13 +55,18 @@ function acpSpawnArgs(config: BridgeConfig, workspaceDir: string): string[] {
 export async function fetchAcpAvailableModels(
   config: BridgeConfig,
   workspaceDir: string,
+  configDir?: string,
 ): Promise<AcpAvailableModel[]> {
+  const env = { ...config.acpEnv };
+  if (configDir) {
+    env.CURSOR_CONFIG_DIR = path.resolve(configDir);
+  }
   const connection = new AcpConnection(
     config.acpCommand,
     acpSpawnArgs(config, workspaceDir),
     {
       cwd: workspaceDir,
-      env: config.acpEnv,
+      env,
       requestTimeoutMs: config.timeoutMs,
       spawnOptions: config.acpSpawnOptions,
     },
@@ -54,30 +87,33 @@ export async function getCachedAcpAvailableModels(
   config: BridgeConfig,
   workspaceDir: string,
   cacheRef: AcpModelCacheRef,
+  configDir?: string,
 ): Promise<AcpAvailableModel[]> {
+  const bucket = acpBucketFor(cacheRef, configDir);
   const now = Date.now();
-  if (
-    !cacheRef.current ||
-    now - cacheRef.current.at > ACP_MODEL_CACHE_TTL_MS
-  ) {
-    if (!cacheRef.inflight) {
-      cacheRef.inflight = fetchAcpAvailableModels(config, workspaceDir).then(
+  if (!bucket.current || now - bucket.current.at > ACP_MODEL_CACHE_TTL_MS) {
+    if (!bucket.inflight) {
+      bucket.inflight = fetchAcpAvailableModels(
+        config,
+        workspaceDir,
+        configDir,
+      ).then(
         (models) => {
           if (models.length > 0) {
-            cacheRef.current = { at: Date.now(), models };
+            bucket.current = { at: Date.now(), models };
           }
-          cacheRef.inflight = undefined;
+          bucket.inflight = undefined;
           return models;
         },
         (err) => {
-          cacheRef.inflight = undefined;
+          bucket.inflight = undefined;
           throw err;
         },
       );
     }
-    await cacheRef.inflight;
+    await bucket.inflight;
   }
-  return cacheRef.current?.models ?? [];
+  return bucket.current?.models ?? [];
 }
 
 /** Keep CLI rows that resolve to a row in the ACP session catalog. */
