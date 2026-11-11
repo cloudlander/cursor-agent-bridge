@@ -759,7 +759,12 @@
         }
       } catch (e) {
         if (String(e.message).startsWith('404')) {
-          onAgentLoginTerminal({ status: 'failed', error: 'Login session ended' });
+          onAgentLoginTerminal({
+            status: 'failed',
+            error: 'Login session ended (reload the dashboard and try again)',
+          });
+        } else {
+          onAgentLoginTerminal({ status: 'failed', error: e.message || 'Login status check failed' });
         }
       }
     }, 2000);

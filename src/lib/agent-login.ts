@@ -15,7 +15,7 @@ import { resolveAgentCommand } from "./env.js";
 import {
   readCachedToken,
   readKeychainToken,
-  writeCachedToken,
+  syncAccessTokenCacheForAuth,
 } from "./token-cache.js";
 
 /** Cursor CLI login URL (may span multiple stdout chunks). */
@@ -144,6 +144,88 @@ type AgentLoginSession = AgentLoginSessionPublic & {
 
 let activeSession: AgentLoginSession | null = null;
 
+const FINISHED_LOGIN_TTL_MS = 30 * 60 * 1000;
+const finishedLoginSessions = new Map<
+  string,
+  { session: AgentLoginSessionPublic; at: number }
+>();
+
+function rememberFinishedSession(session: AgentLoginSession): void {
+  finishedLoginSessions.set(session.sessionId, {
+    session: toPublic(session),
+    at: Date.now(),
+  });
+  const cutoff = Date.now() - FINISHED_LOGIN_TTL_MS;
+  for (const [id, entry] of finishedLoginSessions) {
+    if (entry.at < cutoff) finishedLoginSessions.delete(id);
+  }
+}
+
+function releaseActiveSession(
+  session: AgentLoginSession,
+  remember: boolean,
+): void {
+  if (activeSession?.sessionId !== session.sessionId) return;
+  if (remember) rememberFinishedSession(session);
+  activeSession = null;
+}
+
+/** After a terminal status poll, drop the in-memory active handle (history kept for TTL). */
+export function consumeAgentLoginSession(sessionId: string): void {
+  if (activeSession?.sessionId === sessionId) {
+    rememberFinishedSession(activeSession);
+    activeSession = null;
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForCliAuth(
+  configDir: string,
+  maxMs = 15_000,
+): Promise<ReturnType<typeof readCursorCliAuth>> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const auth = readCursorCliAuth(configDir);
+    if (auth.authenticated && (auth.email || auth.authId)) return auth;
+    await delay(250);
+  }
+  return readCursorCliAuth(configDir);
+}
+
+async function finalizeAgentLoginSuccess(
+  config: BridgeConfig,
+  session: AgentLoginSession,
+): Promise<void> {
+  if (activeSession?.sessionId !== session.sessionId) return;
+
+  const auth = await waitForCliAuth(session.configDir);
+  if (!auth.authenticated) {
+    finishSession(
+      config,
+      session,
+      "failed",
+      "Login finished but the account profile was not saved under this account folder",
+    );
+    return;
+  }
+
+  session.email = auth.email;
+  syncAccessTokenCacheForAuth(session.configDir, auth.authId);
+  const registered = registerAccountInBridge(config, session.configDir);
+  if (!registered.ok) {
+    session.status = "failed";
+    session.error = registered.error;
+    cleanupFailedSessionDir(session);
+    releaseActiveSession(session, true);
+    return;
+  }
+  session.status = "success";
+  session.error = undefined;
+}
+
 function defaultUrlWaitMs(): number {
   const raw = process.env.CURSOR_BRIDGE_AGENT_LOGIN_URL_WAIT_MS?.trim();
   if (!raw) return 45_000;
@@ -176,16 +258,22 @@ function toPublic(session: AgentLoginSession): AgentLoginSessionPublic {
 export function getAgentLoginSession(
   sessionId?: string,
 ): AgentLoginSessionPublic | null {
-  if (!activeSession) return null;
-  if (sessionId && activeSession.sessionId !== sessionId) return null;
-  return toPublic(activeSession);
+  if (activeSession) {
+    if (!sessionId || activeSession.sessionId === sessionId) {
+      return toPublic(activeSession);
+    }
+  }
+  if (sessionId) {
+    const entry = finishedLoginSessions.get(sessionId);
+    if (entry) return entry.session;
+  }
+  return null;
 }
 
 export function cancelAgentLoginSession(sessionId?: string): boolean {
   if (!activeSession) return false;
   if (sessionId && activeSession.sessionId !== sessionId) return false;
   const session = activeSession;
-  activeSession = null;
   session.status = "cancelled";
   try {
     session.child.kill();
@@ -193,35 +281,22 @@ export function cancelAgentLoginSession(sessionId?: string): boolean {
     /* ignore */
   }
   cleanupFailedSessionDir(session);
+  releaseActiveSession(session, true);
   return true;
 }
 
 function finishSession(
   config: BridgeConfig,
   session: AgentLoginSession,
-  status: AgentLoginSessionStatus,
+  status: Exclude<AgentLoginSessionStatus, "success" | "awaiting_user" | "starting">,
   error?: string,
 ): void {
   if (activeSession?.sessionId !== session.sessionId) return;
   session.status = status;
   session.error = error;
-  if (status === "success") {
-    const auth = readCursorCliAuth(session.configDir);
-    session.email = auth.email;
-    const token = readKeychainToken();
-    if (token) writeCachedToken(session.configDir, token);
-    const registered = registerAccountInBridge(config, session.configDir);
-    if (!registered.ok) {
-      session.status = "failed";
-      session.error = registered.error;
-      cleanupFailedSessionDir(session);
-      activeSession = null;
-    }
-    return;
-  }
   if (status === "failed" || status === "cancelled") {
     cleanupFailedSessionDir(session);
-    activeSession = null;
+    releaseActiveSession(session, true);
   }
 }
 
@@ -265,10 +340,33 @@ export function startAgentLoginSession(
   return new Promise((resolve) => {
     let settled = false;
     const waitMs = defaultUrlWaitMs();
+
+    const session: AgentLoginSession = {
+      sessionId,
+      status: "starting",
+      configDir,
+      accountName: name,
+      startedAt,
+      dirWasNew,
+      child: null as unknown as ChildProcess,
+      stdoutBuffer: "",
+    };
+    activeSession = session;
+
     const urlTimer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      finishSession(config, session, "failed", "Timed out waiting for Cursor login URL");
+      try {
+        session.child.kill("SIGTERM");
+      } catch {
+        /* ignore */
+      }
+      finishSession(
+        config,
+        session,
+        "failed",
+        "Timed out waiting for Cursor login URL",
+      );
       resolve({
         ok: false,
         error: "Timed out waiting for Cursor login URL",
@@ -278,7 +376,7 @@ export function startAgentLoginSession(
 
     const resolved = resolveAgentCommand(config.agentBin, ["login"]);
     const child = spawn(resolved.command, resolved.args, {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...resolved.env,
         CURSOR_CONFIG_DIR: configDir,
@@ -286,18 +384,10 @@ export function startAgentLoginSession(
       },
       windowsVerbatimArguments: resolved.windowsVerbatimArguments,
     });
-
-    const session: AgentLoginSession = {
-      sessionId,
-      status: "starting",
-      configDir,
-      accountName: name,
-      startedAt,
-      dirWasNew,
-      child,
-      stdoutBuffer: "",
-    };
-    activeSession = session;
+    session.child = child;
+    child.stdin?.on("error", () => {
+      /* keep stream open until login completes */
+    });
 
     const onUrl = (loginUrl: string) => {
       if (settled) return;
@@ -331,20 +421,47 @@ export function startAgentLoginSession(
 
     child.on("exit", (code) => {
       clearTimeout(urlTimer);
-      if (code === 0) {
-        finishSession(config, session, "success");
+      void (async () => {
+        if (code === 0) {
+          await finalizeAgentLoginSuccess(config, session);
+          if (!settled) {
+            settled = true;
+            const pub = toPublic(session);
+            if (session.status === "success") {
+              resolve({ ok: true, session: pub });
+            } else {
+              resolve({
+                ok: false,
+                error: session.error ?? "Login failed",
+                session: pub,
+              });
+            }
+          }
+          return;
+        }
+        const msg = `Cursor agent login failed (exit ${code ?? "unknown"})`;
+        finishSession(config, session, "failed", msg);
         if (!settled) {
           settled = true;
-          resolve({ ok: true, session: toPublic(session) });
+          resolve({ ok: false, error: msg, session: toPublic(session) });
         }
-        return;
-      }
-      const msg = `Cursor agent login failed (exit ${code ?? "unknown"})`;
-      finishSession(config, session, "failed", msg);
-      if (!settled) {
-        settled = true;
-        resolve({ ok: false, error: msg, session: toPublic(session) });
-      }
+      })();
     });
+  });
+}
+
+/** @internal Vitest-only */
+export function resetAgentLoginSessionsForTests(): void {
+  activeSession = null;
+  finishedLoginSessions.clear();
+}
+
+/** @internal Vitest-only */
+export function stashAgentLoginSessionForTests(
+  session: AgentLoginSessionPublic,
+): void {
+  finishedLoginSessions.set(session.sessionId, {
+    session,
+    at: Date.now(),
   });
 }

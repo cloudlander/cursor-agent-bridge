@@ -96,22 +96,46 @@ export function accountNameAvailabilityError(
   return `Account folder "${name}" already exists — remove it or pick another name`;
 }
 
+function defaultLegacyCursorConfigDir(): string | undefined {
+  const home = homeDir();
+  if (!home) return undefined;
+  const cursor = path.join(home, ".cursor");
+  return fs.existsSync(path.join(cursor, "cli-config.json"))
+    ? path.resolve(cursor)
+    : undefined;
+}
+
+/** Dirs that count as an already-added bridge account (excludes implicit legacy `~/.cursor`). */
 function allKnownConfigDirs(config: BridgeConfig): string[] {
   const seen = new Set<string>();
+  const list: string[] = [];
   const add = (dir: string) => {
     const norm = path.resolve(dir);
-    if (!seen.has(norm)) seen.add(norm);
+    if (seen.has(norm)) return;
+    seen.add(norm);
+    list.push(norm);
   };
   for (const d of config.configDirs) add(d);
   for (const d of discoverAuthenticatedAccountDirs()) add(d);
-  const home = homeDir();
-  if (home) {
-    const cursor = path.join(home, ".cursor");
-    if (fs.existsSync(path.join(cursor, "cli-config.json"))) {
-      add(cursor);
-    }
+  const legacy = defaultLegacyCursorConfigDir();
+  if (
+    legacy &&
+    config.configDirs.some((d) => path.resolve(d) === legacy)
+  ) {
+    add(legacy);
   }
-  return [...seen];
+  return list;
+}
+
+function describeConfigDirForDuplicate(configDir: string): string {
+  const legacy = defaultLegacyCursorConfigDir();
+  const resolved = path.resolve(configDir);
+  if (legacy && resolved === legacy) {
+    return "default ~/.cursor profile";
+  }
+  const auth = readCursorCliAuth(configDir);
+  if (auth.email) return auth.email;
+  return path.basename(configDir);
 }
 
 export function findDuplicateAuthError(
@@ -126,14 +150,14 @@ export function findDuplicateAuthError(
     if (resolved === newResolved) continue;
     const other = readCursorCliAuth(d);
     if (auth.authId && other.authId && auth.authId === other.authId) {
-      return `This Cursor account is already added (${other.email ?? path.basename(d)})`;
+      return `This Cursor account is already added (${describeConfigDirForDuplicate(d)})`;
     }
     if (
       auth.email &&
       other.email &&
       auth.email.toLowerCase() === other.email.toLowerCase()
     ) {
-      return `This Cursor account is already added (${other.email})`;
+      return `This Cursor account is already added (${describeConfigDirForDuplicate(d)})`;
     }
   }
   return undefined;

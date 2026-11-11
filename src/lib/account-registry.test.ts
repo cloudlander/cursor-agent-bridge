@@ -107,6 +107,36 @@ describe("account-registry", () => {
     expect(path.basename(dirs[0])).toBe("a");
   });
 
+  it("findDuplicateAuthError ignores legacy ~/.cursor when not in configDirs", () => {
+    const legacy = path.join(tmpHome, ".cursor");
+    writeAuth(legacy, "legacy@example.com", "legacy-sub");
+    const config = testConfig({ configDirs: [] });
+    const newDir = path.join(accountsRoot(), "new-managed");
+    writeAuth(newDir, "legacy@example.com", "legacy-sub");
+
+    expect(
+      findDuplicateAuthError(config, newDir, {
+        email: "legacy@example.com",
+        authId: "legacy-sub",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("findDuplicateAuthError matches legacy ~/.cursor when it is in configDirs", () => {
+    const legacy = path.join(tmpHome, ".cursor");
+    writeAuth(legacy, "legacy@example.com", "legacy-sub");
+    const config = testConfig({ configDirs: [legacy] });
+    const newDir = path.join(accountsRoot(), "new-managed");
+    writeAuth(newDir, "legacy@example.com", "legacy-sub");
+
+    expect(
+      findDuplicateAuthError(config, newDir, {
+        email: "legacy@example.com",
+        authId: "legacy-sub",
+      }),
+    ).toMatch(/already added/i);
+  });
+
   it("findDuplicateAuthError matches email and authId", () => {
     const existing = path.join(accountsRoot(), "primary");
     writeAuth(existing, "user@example.com", "sub-123");

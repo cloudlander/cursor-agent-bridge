@@ -6,7 +6,12 @@ import type { BridgeConfig } from "./config.js";
 import { decodeJwtPayload } from "./cursor-account-api.js";
 import { configDirsForAccountUsage } from "./cursor-account-snapshot.js";
 import { resolveAgentCommand } from "./env.js";
-import { readCachedToken, readKeychainToken, writeCachedToken } from "./token-cache.js";
+import { readCursorCliAuth } from "./cursor-account-snapshot.js";
+import {
+  readAccessTokenForAuth,
+  readKeychainToken,
+  syncAccessTokenCacheForAuth,
+} from "./token-cache.js";
 
 /** Match cursor-agent token-refresh-policy (refresh when < 5 minutes left). */
 export const DEFAULT_AUTH_REFRESH_SKEW_SEC = 300;
@@ -51,8 +56,10 @@ function authJsonPath(): string | undefined {
 
 function readAccessTokenForDir(configDir?: string): string | undefined {
   if (configDir) {
-    const cached = readCachedToken(configDir);
-    if (cached) return cached;
+    const auth = readCursorCliAuth(configDir);
+    const token = readAccessTokenForAuth(configDir, auth.authId);
+    if (token) return token;
+    return undefined;
   }
   const fromKeychain = readKeychainToken();
   if (fromKeychain) return fromKeychain;
@@ -128,8 +135,8 @@ export async function runAgentAuthRefresh(
 
 function cacheTokenAfterRefresh(configDir?: string): void {
   if (!configDir) return;
-  const token = readKeychainToken();
-  if (token) writeCachedToken(configDir, token);
+  const auth = readCursorCliAuth(configDir);
+  syncAccessTokenCacheForAuth(configDir, auth.authId);
 }
 
 export async function runAuthKeepaliveTick(

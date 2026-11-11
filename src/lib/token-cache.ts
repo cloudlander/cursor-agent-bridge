@@ -2,6 +2,8 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { tokenSub } from "./cursor-account-api.js";
+
 /** Token file written per-account after each agent run */
 export const TOKEN_FILE = ".cursor-token";
 
@@ -25,6 +27,41 @@ export function writeCachedToken(configDir: string, token: string): void {
   } catch {
     /* ignore */
   }
+}
+
+/** True when the JWT `sub` matches this account's `authId` from cli-config. */
+export function accessTokenMatchesAuthId(
+  token: string,
+  authId: string | undefined,
+): boolean {
+  if (!authId?.trim()) return true;
+  const sub = tokenSub(token);
+  return Boolean(sub && sub === authId);
+}
+
+/**
+ * Per-account access token for Cursor HTTP APIs (usage, billing).
+ * Never returns a shared keychain/auth.json token unless it matches `authId`.
+ */
+export function readAccessTokenForAuth(
+  configDir: string,
+  authId: string | undefined,
+): string | undefined {
+  const cached = readCachedToken(configDir);
+  if (cached && accessTokenMatchesAuthId(cached, authId)) return cached;
+  const keychain = readKeychainToken();
+  if (keychain && accessTokenMatchesAuthId(keychain, authId)) return keychain;
+  return undefined;
+}
+
+/** Copy keychain/auth token into the account cache only when it belongs to that account. */
+export function syncAccessTokenCacheForAuth(
+  configDir: string,
+  authId: string | undefined,
+): void {
+  const keychain = readKeychainToken();
+  if (!keychain || !accessTokenMatchesAuthId(keychain, authId)) return;
+  writeCachedToken(configDir, keychain);
 }
 
 /**

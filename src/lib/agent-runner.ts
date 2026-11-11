@@ -8,12 +8,13 @@ import type { CursorExecutionMode } from "./execution-mode.js";
 import { run, runStreaming } from "./process.js";
 import type { ClientToolDefinition } from "./tool-types.js";
 import { getChatOnlyEnvOverrides } from "./workspace.js";
-import { readKeychainToken, writeCachedToken } from "./token-cache.js";
+import { readCursorCliAuth } from "./cursor-account-snapshot.js";
+import { syncAccessTokenCacheForAuth } from "./token-cache.js";
 
 function cacheTokenForAccount(configDir?: string): void {
   if (!configDir) return;
-  const token = readKeychainToken();
-  if (token) writeCachedToken(configDir, token);
+  const auth = readCursorCliAuth(configDir);
+  syncAccessTokenCacheForAuth(configDir, auth.authId);
 }
 
 export type AgentRunResult = {

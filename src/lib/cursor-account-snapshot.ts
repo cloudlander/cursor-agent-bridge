@@ -8,12 +8,11 @@ import {
   fetchBilledUsage,
   fetchStripeProfile,
   modelLabel,
-  tokenSub,
   type BilledUsage,
   type StripeProfile,
   type UsageData,
 } from "./cursor-account-api.js";
-import { readCachedToken, readKeychainToken } from "./token-cache.js";
+import { readAccessTokenForAuth } from "./token-cache.js";
 
 export type UsagePoolSummary = {
   key: string;
@@ -88,18 +87,7 @@ export function readCursorCliAuth(configDir: string): {
 
 export function resolveTokenForConfigDir(configDir: string): string | undefined {
   const auth = readCursorCliAuth(configDir);
-  const cachedToken = readCachedToken(configDir);
-  const keychainToken = readKeychainToken();
-  if (cachedToken) return cachedToken;
-  if (
-    keychainToken &&
-    auth.authId &&
-    tokenSub(keychainToken) === auth.authId
-  ) {
-    return keychainToken;
-  }
-  if (keychainToken && !auth.authId) return keychainToken;
-  return undefined;
+  return readAccessTokenForAuth(configDir, auth.authId);
 }
 
 /** Config dirs the proxy uses, or ~/.cursor when none are configured. */

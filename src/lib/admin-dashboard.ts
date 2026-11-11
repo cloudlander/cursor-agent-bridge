@@ -23,6 +23,7 @@ import {
 import { removeManagedAccount } from "./account-registry.js";
 import {
   cancelAgentLoginSession,
+  consumeAgentLoginSession,
   getAgentLoginSession,
   resolveAgentAuthStatus,
   startAgentLoginSession,
@@ -499,8 +500,15 @@ export function handleAdminDashboard(
     if (!session) {
       return json(res, 404, { error: "no active login session" });
     }
-    if (session.status === "success") {
-      accountUsageCache = undefined;
+    if (
+      session.status === "success" ||
+      session.status === "failed" ||
+      session.status === "cancelled"
+    ) {
+      if (session.status === "success") {
+        accountUsageCache = undefined;
+      }
+      consumeAgentLoginSession(session.sessionId);
     }
     return json(res, 200, session);
   }
