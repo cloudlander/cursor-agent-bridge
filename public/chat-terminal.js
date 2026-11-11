@@ -336,8 +336,9 @@
         : 'Terminal disabled on server';
     }
     if (toolbarBtn) {
-      toolbarBtn.disabled = !enabled;
-      toolbarBtn.title = enabled ? 'Terminal panel' : 'Terminal disabled on server';
+      toolbarBtn.title = enabled
+        ? 'Tools panel (Terminal)'
+        : 'Tools panel — terminal disabled on server';
     }
   }
 
@@ -353,7 +354,6 @@
 
   function bind() {
     $('chat-right-panel-toggle')?.addEventListener('click', () => {
-      if (!enabled) return;
       togglePanel();
     });
     $('chat-right-panel-collapse')?.addEventListener('click', () => setPanelOpen(false));

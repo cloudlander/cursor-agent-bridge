@@ -80,6 +80,9 @@
     /** threadId -> { updatedAt, messageCount } last seen from server/local. */
     sessionSnapshots: new Map(),
     searchDebounce: null,
+    /** Bumped on each loadModels(); stale responses are ignored. */
+    modelsLoadSeq: 0,
+    modelsLoadProgressTimer: null,
   };
 
   const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -1876,6 +1879,10 @@
     return accountRows().find(a => a.configDir === dir) || null;
   }
 
+  const MODELS_LOAD_PROGRESS_DELAY_MS = 280;
+  const PAGE_LOAD_DEFAULT_TITLE = 'Loading chat…';
+  const ACCOUNT_SWITCH_LOAD_TITLE = 'Switching account…';
+
   function updateAccountVisible() {
     const vis = $('chat-account-visible');
     const wrap = $('chat-account-wrap');
@@ -2051,12 +2058,28 @@
     );
   }
 
-  function setChatPageLoading(on) {
+  function setChatPageLoading(on, opts = {}) {
     const overlay = $('chat-page-load');
     if (!overlay) return;
+    const titleEl = $('chat-page-load-title');
+    if (on) {
+      if (opts.title && titleEl) titleEl.textContent = opts.title;
+      overlay.classList.toggle('page-load-overlay--chat', !opts.blocking);
+    } else {
+      if (titleEl) titleEl.textContent = PAGE_LOAD_DEFAULT_TITLE;
+      overlay.classList.add('page-load-overlay--chat');
+    }
     overlay.classList.toggle('hidden', !on);
     overlay.hidden = !on;
     overlay.setAttribute('aria-busy', on ? 'true' : 'false');
+  }
+
+  function setAccountSwitchLoading(on) {
+    if (on) {
+      setChatPageLoading(true, { title: ACCOUNT_SWITCH_LOAD_TITLE, blocking: true });
+    } else {
+      setChatPageLoading(false);
+    }
   }
 
   function setNetworkBanner(down, message) {
@@ -2159,23 +2182,46 @@
     if (!activeThread()?.messages.length) renderMessages();
   }
 
-  async function loadModels(configDir) {
+  async function loadModels(configDir, opts = {}) {
+    const { showProgress = false } = opts;
     const dir = configDir || activeAccountConfigDir();
+    const seq = ++state.modelsLoadSeq;
+    if (state.modelsLoadProgressTimer) {
+      clearTimeout(state.modelsLoadProgressTimer);
+      state.modelsLoadProgressTimer = null;
+    }
+    if (showProgress) setAccountSwitchLoading(false);
+
     if (!dir) {
       state.models = [];
       renderModelOptions();
       return;
+    }
+    if (showProgress) {
+      state.modelsLoadProgressTimer = setTimeout(() => {
+        if (seq === state.modelsLoadSeq) setAccountSwitchLoading(true);
+      }, MODELS_LOAD_PROGRESS_DELAY_MS);
     }
     const qs = `?configDir=${encodeURIComponent(dir)}`;
     try {
       const r = await apiFetch(`/api/agent/models${qs}`);
       if (!r.ok) throw new Error(String(r.status));
       const data = await r.json();
+      if (seq !== state.modelsLoadSeq) return;
       state.models = (data.data || []).filter(m => m && m.id);
     } catch {
+      if (seq !== state.modelsLoadSeq) return;
       state.models = [];
+    } finally {
+      if (seq === state.modelsLoadSeq) {
+        if (state.modelsLoadProgressTimer) {
+          clearTimeout(state.modelsLoadProgressTimer);
+          state.modelsLoadProgressTimer = null;
+        }
+        if (showProgress) setAccountSwitchLoading(false);
+        renderModelOptions();
+      }
     }
-    renderModelOptions();
   }
 
   async function refreshAccounts() {
@@ -3205,7 +3251,8 @@
       const t = ensureActiveThread();
       t.accountConfigDir = e.target.value;
       markThreadDirty(t.id);
-      void loadModels(t.accountConfigDir);
+      updateAccountVisible();
+      void loadModels(t.accountConfigDir, { showProgress: true });
     });
     $('chat-mode')?.addEventListener('change', e => {
       if (isReadOnlySession()) return;

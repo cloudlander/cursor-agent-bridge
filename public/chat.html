@@ -16,7 +16,7 @@
   </div>
   <div id="chat-page-load" class="page-load-overlay page-load-overlay--chat" aria-live="polite" aria-busy="true">
     <div class="page-load-card">
-      <p class="page-load-title">Loading chat…</p>
+      <p class="page-load-title" id="chat-page-load-title">Loading chat…</p>
       <div class="page-load-bar" role="progressbar" aria-label="Loading">
         <span class="page-load-bar-indeterminate"></span>
       </div>
@@ -59,7 +59,6 @@
           <select id="chat-account" class="chat-mode-select chat-account-select" title="Cursor account" aria-label="Cursor account"></select>
         </div>
         <div class="chat-toolbar-actions">
-          <button type="button" class="btn small chat-right-panel-toggle" id="chat-right-panel-toggle" title="Terminal panel" aria-label="Toggle terminal panel" aria-pressed="false">Terminal</button>
           <select id="chat-model" class="chat-mode-select chat-model-select" title="Model" aria-label="Model"></select>
           <select id="chat-mode" class="chat-mode-select" title="Mode" aria-label="Mode">
             <option value="agent">agent</option>
@@ -68,6 +67,19 @@
           </select>
           <button type="button" class="btn small" id="chat-export" title="Export as Markdown">Export</button>
           <button type="button" class="btn small" id="chat-theme" title="Toggle theme">☀️</button>
+          <button
+            type="button"
+            class="chat-tools-panel-toggle"
+            id="chat-right-panel-toggle"
+            title="Tools panel"
+            aria-label="Toggle tools panel"
+            aria-pressed="false"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M15 4v16" stroke="currentColor" stroke-width="1.6"/>
+            </svg>
+          </button>
         </div>
       </header>
       <div class="chat-messages-wrap" id="chat-messages-wrap">
@@ -107,7 +119,7 @@
         <p class="chat-hint muted-text">Internal session on this proxy — no API key. Attach images or files for multimodal models. <kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline · <kbd>↑</kbd> edit last</p>
       </div>
     </div>
-    <aside class="chat-right-panel" id="chat-right-panel" aria-label="Side panel">
+    <aside class="chat-right-panel" id="chat-right-panel" aria-label="Tools panel">
       <div class="chat-right-panel-resize" id="chat-right-panel-resize" role="separator" aria-orientation="vertical" aria-label="Resize panel" tabindex="0"></div>
       <header class="chat-right-panel-head">
         <div class="chat-panel-tabs" role="tablist" aria-label="Panel tabs">

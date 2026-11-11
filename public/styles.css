@@ -1127,9 +1127,41 @@ body.chat-right-panel-dragging * {
   cursor: col-resize !important;
 }
 
-.chat-right-panel-toggle.active {
+.chat-tools-panel-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.chat-tools-panel-toggle:hover {
+  color: var(--text);
+  background: var(--panel-2);
+  border-color: var(--border-soft);
+}
+
+.chat-tools-panel-toggle:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.chat-tools-panel-toggle.active {
   border-color: var(--blue);
   color: var(--blue);
+}
+
+.chat-tools-panel-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .chat-terminal-status {
