@@ -12,6 +12,7 @@ import {
   mergeWebThreadPair,
   saveWebThreads,
   syncWebThreadFromChatRequest,
+  writeChatStore,
   webThreadMessagesFromApiBody,
   type WebChatThread,
 } from "./chat-store.js";
@@ -316,5 +317,80 @@ describe("syncWebThreadFromChatRequest", () => {
     const store = await readChatStore(config);
     const thread = store.threads.find((t) => t.id === threadId);
     expect(thread?.messages[0]?.attachments?.[0]?.path).toBe(filePath);
+  });
+
+  it("preserves assistant timing and reasoning across a later sync", async () => {
+    const config = makeTmpConfig();
+    const threadId = "sync-timing";
+    await syncWebThreadFromChatRequest(config, threadId, {
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello" },
+      ],
+    });
+    const store = await readChatStore(config);
+    const thread = store.threads.find((t) => t.id === threadId);
+    const assistant = thread?.messages.find((m) => m.role === "assistant");
+    expect(assistant).toBeTruthy();
+    assistant!.reasoning = "ponder";
+    assistant!.durationMs = 4200;
+    assistant!.thinkMs = 1500;
+    assistant!.ts = 1_700_000_000_000;
+    await writeChatStore(config, store);
+
+    await syncWebThreadFromChatRequest(config, threadId, {
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello" },
+        { role: "user", content: "again" },
+      ],
+    });
+    const next = await readChatStore(config);
+    const saved = next.threads.find((t) => t.id === threadId)?.messages.find((m) => m.role === "assistant");
+    expect(saved?.reasoning).toBe("ponder");
+    expect(saved?.durationMs).toBe(4200);
+    expect(saved?.thinkMs).toBe(1500);
+    expect(saved?.ts).toBe(1_700_000_000_000);
+  });
+
+  it("keeps server turn timing when a newer snapshot omits it", () => {
+    const base = {
+      id: "t",
+      source: "web" as const,
+      title: null,
+      pinned: false,
+      createdAt: 1,
+      updatedAt: 10,
+      model: "",
+      mode: "agent",
+    };
+    const server: WebChatThread = {
+      ...base,
+      messages: [
+        { role: "user", content: "hi", ts: 1 },
+        {
+          role: "assistant",
+          content: "hello",
+          reasoning: "hmm",
+          durationMs: 4200,
+          thinkMs: 1500,
+          ts: 9,
+        },
+      ],
+    };
+    const client: WebChatThread = {
+      ...base,
+      updatedAt: 20,
+      messages: [
+        { role: "user", content: "hi", ts: 1 },
+        { role: "assistant", content: "hello", reasoning: "hmm", ts: 20 },
+      ],
+    };
+    const merged = mergeWebThreadPair(server, client);
+    const assistant = merged.messages.find((m) => m.role === "assistant");
+    expect(merged.updatedAt).toBe(20);
+    expect(assistant?.durationMs).toBe(4200);
+    expect(assistant?.thinkMs).toBe(1500);
+    expect(assistant?.ts).toBe(20);
   });
 });

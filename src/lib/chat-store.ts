@@ -25,6 +25,10 @@ export type ChatMessage = {
   attachments?: ChatAttachment[];
   reasoning?: string;
   ts?: number;
+  /** Wall-clock length of this assistant turn, in milliseconds. */
+  durationMs?: number;
+  /** Time from the first reasoning token until the answer starts (or the turn ends). */
+  thinkMs?: number;
   error?: boolean;
   /** Human-readable failure reason when `error` is set (content may still hold a partial reply). */
   errorDetail?: string;
@@ -637,6 +641,8 @@ export async function finalizeWebThreadAssistant(
     content: string;
     reasoning?: string;
     error?: string;
+    durationMs?: number;
+    thinkMs?: number;
   },
 ): Promise<void> {
   await storeMutex.run(() => {
@@ -656,6 +662,9 @@ export async function finalizeWebThreadAssistant(
     if (update.error) msg.errorDetail = update.error;
     else delete msg.errorDetail;
     msg.ts = Date.now();
+    if (typeof update.durationMs === "number") msg.durationMs = update.durationMs;
+    if (typeof update.thinkMs === "number") msg.thinkMs = update.thinkMs;
+    else delete msg.thinkMs;
     thread.updatedAt = Date.now();
     writeStoreSync(storePath, store);
   });
@@ -673,6 +682,40 @@ function stableMessageCount(messages: ChatMessage[]): number {
   return messages.filter((m) => !m.streaming && messageHasPayload(m)).length;
 }
 
+function sameAssistantTurn(a: ChatMessage, b: ChatMessage): boolean {
+  if (a.content !== b.content) return false;
+  if (a.reasoning && b.reasoning && a.reasoning !== b.reasoning) return false;
+  return true;
+}
+
+/** Keep server-measured turn times when the winning snapshot never recorded them. */
+function withPreservedAssistantTiming(
+  chosen: WebChatThread,
+  other: WebChatThread,
+): WebChatThread {
+  const donors = other.messages.filter(
+    (m) => m.role === "assistant" && typeof m.durationMs === "number",
+  );
+  if (!donors.length) return chosen;
+  const used = new Set<number>();
+  const messages = chosen.messages.map((m) => {
+    if (m.role !== "assistant" || typeof m.durationMs === "number") return m;
+    const idx = donors.findIndex(
+      (d, i) => !used.has(i) && sameAssistantTurn(d, m),
+    );
+    if (idx < 0) return m;
+    used.add(idx);
+    const donor = donors[idx]!;
+    return {
+      ...m,
+      durationMs: donor.durationMs,
+      ...(typeof donor.thinkMs === "number" ? { thinkMs: donor.thinkMs } : {}),
+      ...(typeof m.ts !== "number" && typeof donor.ts === "number" ? { ts: donor.ts } : {}),
+    };
+  });
+  return { ...chosen, messages };
+}
+
 /** Prefer the copy with newer metadata or more durable message history. */
 export function mergeWebThreadPair(
   existing: WebChatThread,
@@ -682,11 +725,23 @@ export function mergeWebThreadPair(
   const b = normalizeWebThread(incoming);
   const aUpdated = a.updatedAt ?? 0;
   const bUpdated = b.updatedAt ?? 0;
-  if (bUpdated !== aUpdated) return bUpdated > aUpdated ? b : a;
-  const aStable = stableMessageCount(a.messages);
-  const bStable = stableMessageCount(b.messages);
-  if (bStable !== aStable) return bStable > aStable ? b : a;
-  return (b.messages?.length ?? 0) >= (a.messages?.length ?? 0) ? b : a;
+  let chosen = b;
+  let other = a;
+  if (bUpdated !== aUpdated) {
+    chosen = bUpdated > aUpdated ? b : a;
+    other = chosen === b ? a : b;
+  } else {
+    const aStable = stableMessageCount(a.messages);
+    const bStable = stableMessageCount(b.messages);
+    if (bStable !== aStable) {
+      chosen = bStable > aStable ? b : a;
+      other = chosen === b ? a : b;
+    } else if ((a.messages?.length ?? 0) > (b.messages?.length ?? 0)) {
+      chosen = a;
+      other = b;
+    }
+  }
+  return withPreservedAssistantTiming(chosen, other);
 }
 
 export async function saveWebThreads(
@@ -764,6 +819,23 @@ function normalizeStoredAttachments(
   return out.length ? out : undefined;
 }
 
+function findPreviousMessage(
+  prevMessages: ChatMessage[],
+  used: Set<number>,
+  role: "user" | "assistant",
+  content: string,
+): ChatMessage | undefined {
+  const trimmed = content.trim();
+  for (let i = 0; i < prevMessages.length; i++) {
+    if (used.has(i)) continue;
+    const pm = prevMessages[i];
+    if (pm.streaming || pm.role !== role || pm.content.trim() !== trimmed) continue;
+    used.add(i);
+    return pm;
+  }
+  return undefined;
+}
+
 function preserveAttachmentsFromPrevious(
   prevMessages: ChatMessage[],
   role: "user" | "assistant",
@@ -834,6 +906,7 @@ export async function syncWebThreadFromChatRequest(
 
     const prevMessages = thread.messages ?? [];
     const incoming = webThreadMessagesFromApiBody(opts.messages);
+    const usedPrev = new Set<number>();
     const chatMessages: ChatMessage[] = incoming.map((m) => {
       const attachments = preserveAttachmentsFromPrevious(
         prevMessages,
@@ -841,10 +914,14 @@ export async function syncWebThreadFromChatRequest(
         m.content,
         m.attachments,
       );
+      const prev = findPreviousMessage(prevMessages, usedPrev, m.role, m.content);
       return {
         role: m.role,
         content: m.content,
-        ts: m.ts ?? now,
+        ts: prev?.ts ?? m.ts ?? now,
+        ...(prev?.reasoning ? { reasoning: prev.reasoning } : {}),
+        ...(typeof prev?.durationMs === "number" ? { durationMs: prev.durationMs } : {}),
+        ...(typeof prev?.thinkMs === "number" ? { thinkMs: prev.thinkMs } : {}),
         ...(attachments?.length ? { attachments } : {}),
       };
     });

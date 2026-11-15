@@ -2312,7 +2312,7 @@ body.chat-right-panel-dragging * {
 .chat-suggestion-icon { flex-shrink: 0; }
 
 /* ───── messages ───── */
-.chat-msg-time { font-size: 11px; color: var(--dim); align-self: center; margin-left: 4px; }
+.chat-msg-time { font-size: 11px; color: var(--dim); align-self: center; margin-left: 4px; font-variant-numeric: tabular-nums; cursor: default; }
 .chat-msg-actions { opacity: 0; }
 .chat-msg:hover .chat-msg-actions { opacity: 1; }
 .chat-msg.user .chat-msg-body { display: flex; flex-direction: column; align-items: flex-end; }
@@ -2335,6 +2335,7 @@ body.chat-right-panel-dragging * {
 .chat-typing i:nth-child(3) { animation-delay: 0.3s; }
 .chat-think { margin: 2px 0 6px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--panel); font-size: 13px; }
 .chat-think summary { cursor: pointer; padding: 6px 10px; color: var(--muted); }
+.chat-think-time { margin-left: 8px; font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .chat-think-body { padding: 4px 12px 10px; color: var(--muted); white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
 .chat-edit { width: 100%; }
 .chat-edit-input {

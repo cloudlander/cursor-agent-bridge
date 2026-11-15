@@ -1641,13 +1641,44 @@
     );
   }
 
+  function formatElapsed(ms) {
+    const n = Number(ms);
+    if (!Number.isFinite(n) || n < 0) return '';
+    if (n < 100) return '<0.1s';
+    const s = n / 1000;
+    if (s < 10) return `${s.toFixed(1)}s`;
+    if (s < 60) return `${Math.round(s)}s`;
+    const totalSec = Math.round(s);
+    const minutes = Math.floor(totalSec / 60);
+    const rem = totalSec % 60;
+    if (minutes < 60) return rem ? `${minutes}m ${rem}s` : `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const min = minutes % 60;
+    return min ? `${hours}h ${min}m` : `${hours}h`;
+  }
+
+  /** Apply think time and total time measured on the server. */
+  function applyServerTurnTiming(msg, event) {
+    if (typeof event?.durationMs !== 'number') return false;
+    msg.durationMs = event.durationMs;
+    if (typeof event.thinkMs === 'number') msg.thinkMs = event.thinkMs;
+    else delete msg.thinkMs;
+    if (typeof event.updatedAt === 'number') msg.ts = event.updatedAt;
+    return true;
+  }
+
   function buildReasoning(m) {
     if (!m.reasoning) return null;
+    const thinking = m.streaming && !m.content;
+    const summary = el('summary', {}, thinking ? 'Thinking…' : 'Thought process');
+    if (!m.streaming && typeof m.thinkMs === 'number') {
+      summary.appendChild(el('span', { class: 'chat-think-time' }, formatElapsed(m.thinkMs)));
+    }
     const d = el('details', { class: 'chat-think' },
-      el('summary', {}, m.streaming && !m.content ? 'Thinking…' : 'Thought process'),
+      summary,
       el('div', { class: 'chat-think-body' }, m.reasoning),
     );
-    if (m.streaming && !m.content) d.open = true;
+    if (thinking) d.open = true;
     return d;
   }
 
@@ -1778,7 +1809,12 @@
     if (!isUser && isLast && !m.streaming && !busy) {
       actions.appendChild(actionBtn('Regenerate', 'Regenerate response', regenerateReply));
     }
-    if (m.ts && !m.streaming) {
+    if (!isUser && !m.streaming && typeof m.durationMs === 'number') {
+      const d = m.ts ? new Date(m.ts) : null;
+      const stamp = d && !Number.isNaN(d.getTime()) ? d.toLocaleString() : '';
+      actions.appendChild(el('span', { class: 'chat-msg-time', title: stamp || undefined },
+        formatElapsed(m.durationMs)));
+    } else if (m.ts && !m.streaming) {
       const d = new Date(m.ts);
       actions.appendChild(el('span', { class: 'chat-msg-time', title: d.toLocaleString() },
         d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })));
@@ -2368,8 +2404,8 @@
       return;
     }
     if (event.type === 'delta') {
-      if (event.content) msg.content = (msg.content || '') + event.content;
       if (event.reasoning) msg.reasoning = (msg.reasoning || '') + event.reasoning;
+      if (event.content) msg.content = (msg.content || '') + event.content;
       return;
     }
     if (event.type === 'done') {
@@ -2422,6 +2458,7 @@
           let event;
           try { event = JSON.parse(data); } catch { continue; }
           applyGenerationEvent(thread, msg, event);
+          if (event.type === 'done') applyServerTurnTiming(msg, event);
           if (event.type === 'delta' || event.type === 'snapshot') repaint(thread, event.type === 'delta');
           if (event.type === 'context_usage' || (event.type === 'snapshot' && event.contextWindowUsage)) {
             if (thread.id === state.activeId) renderContextUsage();
@@ -2448,7 +2485,6 @@
       }
     } finally {
       msg.streaming = false;
-      msg.ts = Date.now();
       sanitizeAssistantMessage(msg);
       state.streams.delete(thread.id);
       if (!msg.interrupted) touch(thread);
@@ -2469,6 +2505,8 @@
       if (last?.role === 'assistant' && !last.streaming && last.content?.trim() && !last.interrupted) continue;
       if (last?.interrupted) {
         delete last.interrupted;
+        delete last.durationMs;
+        delete last.thinkMs;
         last.streaming = true;
       }
       applyGenerationSnapshot(gen);
@@ -2532,9 +2570,17 @@
             if (thread.id === state.activeId) renderContextUsage();
             continue;
           }
+          if (json.object === 'bridge.turn_timing') {
+            applyServerTurnTiming(msg, json);
+            continue;
+          }
           const delta = json.choices?.[0]?.delta;
-          if (delta?.reasoning_content) msg.reasoning = (msg.reasoning || '') + delta.reasoning_content;
-          if (delta?.content) msg.content += delta.content;
+          if (delta?.reasoning_content) {
+            msg.reasoning = (msg.reasoning || '') + delta.reasoning_content;
+          }
+          if (delta?.content) {
+            msg.content += delta.content;
+          }
           if (delta?.content || delta?.reasoning_content) repaint(thread, true);
         }
       }
@@ -2561,7 +2607,6 @@
       }
     } finally {
       msg.streaming = false;
-      msg.ts = Date.now();
       sanitizeAssistantMessage(msg);
       state.streams.delete(thread.id);
       if (!msg.interrupted) touch(thread);
@@ -2984,11 +3029,19 @@
     void startAssistant(thread);
   }
 
-  function stopGenerating() {
+  async function stopGenerating() {
     const t = activeThread();
     if (!t) return;
+    const msg = t.messages[t.messages.length - 1];
     state.streams.get(t.id)?.abort();
-    void apiFetch(`/api/chat/generations/${encodeURIComponent(t.id)}`, { method: 'DELETE' }).catch(() => undefined);
+    try {
+      const res = await apiFetch(`/api/chat/generations/${encodeURIComponent(t.id)}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (msg?.role === 'assistant' && data?.timing) applyServerTurnTiming(msg, data.timing);
+    } catch {
+      /* generation may already have finished */
+    }
+    if (t.id === state.activeId) renderMessages();
   }
 
   // ───────────────────────── composer / chrome ─────────────────────────

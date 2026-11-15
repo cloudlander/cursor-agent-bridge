@@ -32,10 +32,18 @@ export type GenerationStreamEvent =
       status: GenerationStatus;
       error?: string;
       contextWindowUsage?: ContextWindowUsage;
+      startedAt?: number;
     }
   | { type: "delta"; content?: string; reasoning?: string }
   | { type: "context_usage"; usage: ContextWindowUsage }
-  | { type: "done"; error?: string };
+  | {
+      type: "done";
+      error?: string;
+      startedAt?: number;
+      updatedAt?: number;
+      durationMs?: number;
+      thinkMs?: number;
+    };
 
 type ActiveGeneration = {
   threadId: string;
@@ -46,6 +54,9 @@ type ActiveGeneration = {
   contextWindowUsage?: ContextWindowUsage;
   startedAt: number;
   updatedAt: number;
+  /** First reasoning token. Think time runs until the first answer token. */
+  reasoningStartedAt?: number;
+  contentStartedAt?: number;
   abortController: AbortController;
   usagePersistTimer: ReturnType<typeof setTimeout> | null;
   listeners: Set<StreamListener>;
@@ -54,6 +65,62 @@ type ActiveGeneration = {
 };
 
 const active = new Map<string, ActiveGeneration>();
+/** Timing for a turn that just finished, so a late stream reconnect still gets server numbers. */
+const recentTurns = new Map<string, GenerationTurnTiming>();
+
+export function getRecentTurnTiming(threadId: string): GenerationTurnTiming | null {
+  return recentTurns.get(threadId) ?? null;
+}
+
+function rememberTurn(threadId: string, turn: GenerationTurnTiming): void {
+  recentTurns.set(threadId, turn);
+  const timer = setTimeout(() => {
+    if (recentTurns.get(threadId) === turn) recentTurns.delete(threadId);
+  }, 60_000);
+  timer.unref?.();
+}
+
+function doneEventFromTurn(
+  turn: GenerationTurnTiming,
+  error?: string,
+): GenerationStreamEvent {
+  return {
+    type: "done",
+    error,
+    startedAt: turn.startedAt,
+    updatedAt: turn.updatedAt,
+    durationMs: turn.durationMs,
+    thinkMs: turn.thinkMs,
+  };
+}
+
+export function computeGenerationTiming(input: {
+  startedAt: number;
+  endedAt: number;
+  reasoning: string;
+  reasoningStartedAt?: number;
+  contentStartedAt?: number;
+}): { durationMs: number; thinkMs?: number } {
+  const durationMs = Math.max(0, input.endedAt - input.startedAt);
+  if (!input.reasoning.trim()) return { durationMs };
+  const thinkStart = input.reasoningStartedAt ?? input.startedAt;
+  const contentAt = input.contentStartedAt;
+  const thinkEnd =
+    contentAt != null && contentAt >= thinkStart ? contentAt : input.endedAt;
+  return { durationMs, thinkMs: Math.max(0, thinkEnd - thinkStart) };
+}
+
+function snapshotEvent(gen: ActiveGeneration): GenerationStreamEvent {
+  return {
+    type: "snapshot",
+    content: gen.content,
+    reasoning: gen.reasoning,
+    status: gen.status,
+    error: gen.error,
+    contextWindowUsage: gen.contextWindowUsage,
+    startedAt: gen.startedAt,
+  };
+}
 
 function snapshotOf(gen: ActiveGeneration): GenerationSnapshot {
   return {
@@ -91,7 +158,29 @@ function schedulePersist(gen: ActiveGeneration): void {
   }, 400);
 }
 
-function flushPersist(gen: ActiveGeneration): void {
+export type GenerationTurnTiming = {
+  durationMs: number;
+  thinkMs?: number;
+  startedAt: number;
+  updatedAt: number;
+};
+
+function turnTimingOf(
+  gen: ActiveGeneration,
+  timing: { durationMs: number; thinkMs?: number },
+): GenerationTurnTiming {
+  return {
+    durationMs: timing.durationMs,
+    ...(typeof timing.thinkMs === "number" ? { thinkMs: timing.thinkMs } : {}),
+    startedAt: gen.startedAt,
+    updatedAt: gen.updatedAt,
+  };
+}
+
+function flushPersist(
+  gen: ActiveGeneration,
+  timing?: { durationMs: number; thinkMs?: number },
+): void {
   if (gen.persistTimer) {
     clearTimeout(gen.persistTimer);
     gen.persistTimer = null;
@@ -100,6 +189,8 @@ function flushPersist(gen: ActiveGeneration): void {
     content: gen.content,
     reasoning: gen.reasoning || undefined,
     error: gen.status === "error" ? gen.error : undefined,
+    durationMs: timing?.durationMs,
+    thinkMs: timing?.thinkMs,
   }).catch(() => undefined);
 }
 
@@ -148,13 +239,7 @@ export function startWebGeneration(
     config,
   };
   active.set(threadId, gen);
-  notify(gen, {
-    type: "snapshot",
-    content: gen.content,
-    reasoning: gen.reasoning,
-    status: gen.status,
-    contextWindowUsage: gen.contextWindowUsage,
-  });
+  notify(gen, snapshotEvent(gen));
   return { signal: abortController.signal, existed: false };
 }
 
@@ -187,9 +272,16 @@ export function appendWebGenerationDelta(
 ): void {
   const gen = active.get(threadId);
   if (!gen || gen.status !== "running") return;
-  if (delta.content) gen.content += delta.content;
-  if (delta.reasoning) gen.reasoning += delta.reasoning;
-  gen.updatedAt = Date.now();
+  const now = Date.now();
+  if (delta.reasoning) {
+    if (!gen.reasoningStartedAt) gen.reasoningStartedAt = now;
+    gen.reasoning += delta.reasoning;
+  }
+  if (delta.content) {
+    if (!gen.contentStartedAt) gen.contentStartedAt = now;
+    gen.content += delta.content;
+  }
+  gen.updatedAt = now;
   notify(gen, { type: "delta", ...delta });
   schedulePersist(gen);
 }
@@ -197,24 +289,40 @@ export function appendWebGenerationDelta(
 export function finishWebGeneration(
   threadId: string,
   outcome: { ok: true } | { ok: false; error: string },
-): void {
+): GenerationTurnTiming | null {
   const gen = active.get(threadId);
-  if (!gen) return;
+  if (!gen) return null;
   gen.status = outcome.ok ? "done" : "error";
   gen.error = outcome.ok ? undefined : outcome.error;
   gen.updatedAt = Date.now();
-  notify(gen, { type: "done", error: gen.error });
-  flushPersist(gen);
+  const timing = computeGenerationTiming({
+    startedAt: gen.startedAt,
+    endedAt: gen.updatedAt,
+    reasoning: gen.reasoning,
+    reasoningStartedAt: gen.reasoningStartedAt,
+    contentStartedAt: gen.contentStartedAt,
+  });
+  const turn = turnTimingOf(gen, timing);
+  notify(gen, {
+    type: "done",
+    error: gen.error,
+    startedAt: turn.startedAt,
+    updatedAt: turn.updatedAt,
+    durationMs: turn.durationMs,
+    thinkMs: turn.thinkMs,
+  });
+  flushPersist(gen, timing);
   for (const listener of gen.listeners) gen.listeners.delete(listener);
   active.delete(threadId);
+  rememberTurn(threadId, turn);
+  return turn;
 }
 
-export function abortWebGeneration(threadId: string): boolean {
+export function abortWebGeneration(threadId: string): GenerationTurnTiming | null {
   const gen = active.get(threadId);
-  if (!gen || gen.status !== "running") return false;
+  if (!gen || gen.status !== "running") return null;
   gen.abortController.abort();
-  finishWebGeneration(threadId, { ok: false, error: "Stopped by user" });
-  return true;
+  return finishWebGeneration(threadId, { ok: false, error: "Stopped by user" });
 }
 
 export function subscribeWebGeneration(
@@ -224,13 +332,7 @@ export function subscribeWebGeneration(
   const gen = active.get(threadId);
   if (!gen) return () => undefined;
   gen.listeners.add(listener);
-  listener({
-    type: "snapshot",
-    content: gen.content,
-    reasoning: gen.reasoning,
-    status: gen.status,
-    error: gen.error,
-  });
+  listener(snapshotEvent(gen));
   return () => {
     gen.listeners.delete(listener);
   };
@@ -249,22 +351,17 @@ export function writeGenerationSse(
   const gen = active.get(threadId);
   if (!gen) {
     // Generation already finished (or never started) — normal for reconnect after completion.
-    writeEvent({ type: "done" });
+    const turn = recentTurns.get(threadId);
+    writeEvent(turn ? doneEventFromTurn(turn) : { type: "done" });
     res.end();
     return () => undefined;
   }
 
-  writeEvent({
-    type: "snapshot",
-    content: gen.content,
-    reasoning: gen.reasoning,
-    status: gen.status,
-    error: gen.error,
-    contextWindowUsage: gen.contextWindowUsage,
-  });
+  writeEvent(snapshotEvent(gen));
 
   if (gen.status !== "running") {
-    writeEvent({ type: "done", error: gen.error });
+    const turn = recentTurns.get(threadId);
+    writeEvent(turn ? doneEventFromTurn(turn, gen.error) : { type: "done", error: gen.error });
     res.end();
     return () => undefined;
   }

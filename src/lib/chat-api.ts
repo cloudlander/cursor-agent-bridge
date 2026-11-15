@@ -28,6 +28,7 @@ import { resolveWorkspace } from "./workspace.js";
 import {
   abortWebGeneration,
   getGeneration,
+  getRecentTurnTiming,
   listActiveGenerations,
   writeGenerationSse,
 } from "./web-chat-generation.js";
@@ -117,8 +118,9 @@ export async function handleChatApi(
       json(res, 404, { error: { message: "Not found", code: "not_found" } });
       return;
     }
-    const stopped = abortWebGeneration(threadId);
-    json(res, 200, { ok: true, stopped });
+    const stoppedTiming = abortWebGeneration(threadId);
+    const timing = stoppedTiming ?? getRecentTurnTiming(threadId);
+    json(res, 200, { ok: true, stopped: stoppedTiming != null, timing });
     return;
   }
 

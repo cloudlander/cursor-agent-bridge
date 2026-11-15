@@ -83,6 +83,7 @@ import {
   finishWebGeneration,
   startWebGeneration,
   writeGenerationSse,
+  type GenerationTurnTiming,
 } from "../web-chat-generation.js";
 import {
   buildMultimodalAcpPrompt,
@@ -112,6 +113,17 @@ function maybeRecordProxyChatSession(
 
 function isRateLimited(stderr: string): boolean {
   return /\b429\b|rate.?limit|too many requests/i.test(stderr);
+}
+
+/** Server-measured think time and turn time for the web chat client. */
+function writeBridgeTurnTiming(
+  res: http.ServerResponse,
+  timing: GenerationTurnTiming | null,
+): void {
+  if (!timing || res.writableEnded || res.destroyed) return;
+  res.write(
+    `data: ${JSON.stringify({ object: "bridge.turn_timing", ...timing })}\n\n`,
+  );
 }
 
 /** OpenAI streaming: first chunk should carry `delta.role` so clients init one assistant message. */
@@ -875,7 +887,8 @@ export async function handleChatCompletions(
       if (webThreadId) appendWebGenerationDelta(webThreadId, { reasoning: delta });
     };
     const finishWeb = (outcome: { ok: true } | { ok: false; error: string }) => {
-      if (webThreadId) finishWebGeneration(webThreadId, outcome);
+      if (!webThreadId) return;
+      writeBridgeTurnTiming(res, finishWebGeneration(webThreadId, outcome));
     };
     const streamResponseMeta = () => ({
       wireDeltaChars: chunkWriter.wireDeltaChars(),
