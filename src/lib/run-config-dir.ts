@@ -28,6 +28,8 @@ const debugConfig = debuglog("cursor-api-proxy:config");
  * per-session state the proxy never reuses (`chats/`, `acp-sessions/`).
  * Login is not in the config dir: the CLI keeps it in the macOS keychain or
  * in `auth.json` under the user's config home, keyed by neither path.
+ * Account runs set XDG_CONFIG_HOME (see account-cli-auth.ts) so the child
+ * reads that account's auth.json instead of the shared login.
  */
 export const RUN_CONFIG_FILES = [
   "cli-config.json",

@@ -4,8 +4,9 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  TOKEN_FILE,
   accessTokenMatchesAuthId,
+  accountAuthJsonPath,
+  ensureAccountCliAuth,
   readAccessTokenForAuth,
   readCachedToken,
   syncAccessTokenCacheForAuth,
@@ -75,6 +76,35 @@ describe("token-cache per-account", () => {
       expect(readCachedToken(dir)).toBe(tokenA);
     } finally {
       process.env.HOME = prevHome;
+    }
+  });
+
+  it("builds account auth.json from the cached token and ignores another account's shared login", () => {
+    const dir = mkDir();
+    const prevHome = process.env.HOME;
+    const prevXdg = process.env.XDG_CONFIG_HOME;
+    const home = mkDir();
+    process.env.HOME = home;
+    delete process.env.XDG_CONFIG_HOME;
+    const sharedDir = path.join(home, ".config", "cursor");
+    fs.mkdirSync(sharedDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sharedDir, "auth.json"),
+      JSON.stringify({ accessToken: tokenB, refreshToken: tokenB }),
+    );
+    writeCachedToken(dir, tokenA);
+    try {
+      expect(ensureAccountCliAuth(dir, authA)).toBe(true);
+      const stored = JSON.parse(
+        fs.readFileSync(accountAuthJsonPath(dir), "utf-8"),
+      ) as { accessToken: string; refreshToken: string };
+      expect(stored.accessToken).toBe(tokenA);
+      expect(stored.refreshToken).toBe(tokenA);
+      expect(readAccessTokenForAuth(dir, authA)).toBe(tokenA);
+    } finally {
+      process.env.HOME = prevHome;
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
     }
   });
 });

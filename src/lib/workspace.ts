@@ -14,13 +14,13 @@ export type WorkspaceResult = {
  * Env overrides for chat-only (isolated) workspace so the agent cannot load
  * rules from ~/.cursor or other user config paths.
  *
- * When `authConfigDir` is set (account pool), use it for `CURSOR_CONFIG_DIR` so the
- * CLI loads credentials from that profile.
+ * When `authConfigDir` is set (account pool), use it for `CURSOR_CONFIG_DIR`
+ * (cli-config, model). That directory does not hold the CLI login. Spawn paths
+ * call `applyAccountCliAuthEnv` so the child reads this account's `auth.json`
+ * instead of the shared `~/.config/cursor/auth.json`.
  *
- * We do **not** override `HOME` / `USERPROFILE` / `XDG_*` in that case: the Cursor CLI
- * still resolves auth relative to the real user profile for `agent --print` / ask, and
- * a fake `HOME` makes login fail even when `CURSOR_CONFIG_DIR` points at the pool.
- * Without a pool, the temp `HOME` keeps rules from the real `~/.cursor` from loading.
+ * We do **not** override `HOME` here: a fake `HOME` makes login fail. Without a
+ * pool, the temp `HOME` keeps rules from the real `~/.cursor` from loading.
  */
 export function getChatOnlyEnvOverrides(
   workspaceDir: string,

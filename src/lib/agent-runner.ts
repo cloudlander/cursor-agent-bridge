@@ -8,6 +8,7 @@ import type { CursorExecutionMode } from "./execution-mode.js";
 import { run, runStreaming } from "./process.js";
 import type { ClientToolDefinition } from "./tool-types.js";
 import { getChatOnlyEnvOverrides } from "./workspace.js";
+import { applyAccountCliAuthEnv } from "./account-cli-auth.js";
 import { readCursorCliAuth } from "./cursor-account-snapshot.js";
 import { syncAccessTokenCacheForAuth } from "./token-cache.js";
 
@@ -78,6 +79,7 @@ function acpInvocation(
   } else if (configDir) {
     env.CURSOR_CONFIG_DIR = configDir;
   }
+  if (configDir) applyAccountCliAuthEnv(env, configDir);
   return { args, env, model };
 }
 

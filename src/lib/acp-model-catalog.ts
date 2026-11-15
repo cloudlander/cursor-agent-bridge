@@ -1,5 +1,6 @@
 import * as path from "node:path";
 
+import { applyAccountCliAuthEnv } from "./account-cli-auth.js";
 import { AcpConnection, type AcpAvailableModel } from "./acp-connection.js";
 import { matchCliModelToAcpCatalog } from "./acp-model-match.js";
 import type { BridgeConfig } from "./config.js";
@@ -60,6 +61,7 @@ export async function fetchAcpAvailableModels(
   const env = { ...config.acpEnv };
   if (configDir) {
     env.CURSOR_CONFIG_DIR = path.resolve(configDir);
+    applyAccountCliAuthEnv(env, env.CURSOR_CONFIG_DIR);
   }
   const connection = new AcpConnection(
     config.acpCommand,

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { applyAccountCliAuthEnv } from "./account-cli-auth.js";
 import type { BridgeConfig } from "./config.js";
 import { decodeJwtPayload } from "./cursor-account-api.js";
 import { configDirsForAccountUsage } from "./cursor-account-snapshot.js";
@@ -107,7 +108,10 @@ export async function runAgentAuthRefresh(
     ...resolved.env,
     ...config.acpEnv,
   };
-  if (configDir) env.CURSOR_CONFIG_DIR = configDir;
+  if (configDir) {
+    env.CURSOR_CONFIG_DIR = configDir;
+    applyAccountCliAuthEnv(env, configDir);
+  }
 
   return new Promise((resolve) => {
     const child = spawn(resolved.command, resolved.args, {

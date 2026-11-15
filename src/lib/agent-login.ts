@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import type { BridgeConfig } from "./config.js";
+import { applyAccountCliAuthEnv } from "./account-cli-auth.js";
 import {
   accountNameAvailabilityError,
   registerAccountInBridge,
@@ -375,13 +376,15 @@ export function startAgentLoginSession(
     }, waitMs);
 
     const resolved = resolveAgentCommand(config.agentBin, ["login"]);
+    const loginEnv: Record<string, string | undefined> = {
+      ...resolved.env,
+      CURSOR_CONFIG_DIR: configDir,
+      NO_OPEN_BROWSER: "1",
+    };
+    applyAccountCliAuthEnv(loginEnv, configDir);
     const child = spawn(resolved.command, resolved.args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: {
-        ...resolved.env,
-        CURSOR_CONFIG_DIR: configDir,
-        NO_OPEN_BROWSER: "1",
-      },
+      env: loginEnv,
       windowsVerbatimArguments: resolved.windowsVerbatimArguments,
     });
     session.child = child;

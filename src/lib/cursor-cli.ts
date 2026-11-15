@@ -51,6 +51,7 @@ export async function listCursorCliModels(args: {
     cwd: tmpdir(),
     timeoutMs: args.timeoutMs,
     envOverrides,
+    configDir: args.configDir,
   });
 
   if (list.code !== 0) {

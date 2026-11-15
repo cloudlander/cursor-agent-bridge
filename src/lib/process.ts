@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { applyAccountCliAuthEnv } from "./account-cli-auth.js";
 import { resolveAgentCommand } from "./env.js";
 import { DETACH_CHILDREN, killProcessTree } from "./process-tree-kill.js";
 import { runMaxModePreflight } from "./max-mode-preflight.js";
@@ -79,6 +80,9 @@ function spawnChild(
   }
   if (opts?.envOverrides) {
     Object.assign(env, opts.envOverrides);
+  }
+  if (opts?.configDir) {
+    applyAccountCliAuthEnv(env, opts.configDir);
   }
 
   const useStdin = typeof opts?.stdinContent === "string";
