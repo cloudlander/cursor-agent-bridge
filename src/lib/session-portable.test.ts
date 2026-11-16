@@ -100,7 +100,7 @@ describe("session portable export/import", () => {
     const imported = await importSessionBundle(destConfig, { bundleDir: exportDir });
     expect(imported.webThreadsMerged).toBe(1);
 
-    const storePath = path.join(destBase, "chat-store.json");
+    const storePath = path.join(destBase, "chat-stores", "default.json");
     const store = JSON.parse(fs.readFileSync(storePath, "utf8")) as {
       threads: WebChatThread[];
     };

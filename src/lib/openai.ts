@@ -4,6 +4,8 @@ export type OpenAiChatCompletionRequest = {
   mode?: string;
   /** Web UI thread id — enables background generation across page refresh. */
   threadId?: string;
+  /** Web chat workspace id. Ignored on `/v1` requests. */
+  workspaceId?: string;
   messages: any[];
   stream?: boolean;
   tools?: any[];

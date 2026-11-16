@@ -37,7 +37,7 @@ import {
 import { recordProxyUsage } from "../token-usage.js";
 import { rememberResolvedModel, resolveModel } from "../resolve-model.js";
 import { resolveRequestMode } from "../resolve-mode.js";
-import { resolveWorkspace } from "../workspace.js";
+import { resolveAgentWorkspace } from "../workspaces.js";
 import { buildBridgeContextPreamble, BRIDGE_AGENT_PROMPT_SEPARATOR } from "../bridge-context-preamble.js";
 import { sanitizeMessages } from "../sanitize.js";
 import { normalizeAssistantReplyText } from "../assistant-text-dedupe.js";
@@ -99,6 +99,7 @@ function maybeRecordProxyChatSession(
   assistantText: string,
   model?: string,
   mode?: CursorExecutionMode,
+  cwd?: string,
 ): void {
   if (pathname === "/api/agent/chat" || !assistantText.trim()) return;
   void recordApiSession(config, {
@@ -108,6 +109,7 @@ function maybeRecordProxyChatSession(
     mode,
     messages: trafficMessages,
     assistantText,
+    cwd,
   }).catch(() => undefined);
 }
 
@@ -661,12 +663,22 @@ export async function handleChatCompletions(
       : config.chatOnlyWorkspaceExplicit && config.chatOnlyWorkspace;
 
   const headerWs = req.headers["x-cursor-workspace"];
+  const fromWebChat = pathname === "/api/agent/chat";
   let workspaceDir: string;
   let tempDir: string | undefined;
+  let workspaceId = "default";
+  let workspaceName: string | undefined;
   try {
-    const ws = resolveWorkspace(config, headerWs, effectiveChatOnly);
+    const ws = await resolveAgentWorkspace(config, {
+      workspaceId: fromWebChat && typeof body.workspaceId === "string" ? body.workspaceId : undefined,
+      headerWs,
+      chatOnly: effectiveChatOnly,
+      fromWebChat,
+    });
     workspaceDir = ws.workspaceDir;
     tempDir = ws.tempDir;
+    workspaceId = ws.record.id;
+    workspaceName = fromWebChat ? ws.record.name : undefined;
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Invalid workspace";
     json(res, 400, { error: { message: msg, code: "invalid_workspace" } });
@@ -681,6 +693,7 @@ export async function handleChatCompletions(
         isolatedChatOnly: tempDir !== undefined,
         cursorMode: mode,
         contextExtra: config.contextExtra,
+        workspaceName,
       })}${BRIDGE_AGENT_PROMPT_SEPARATOR}${prompt}`
     : prompt;
 
@@ -848,8 +861,9 @@ export async function handleChatCompletions(
         model: displayModel,
         mode,
         messages: webSyncMessages,
+        workspaceId,
       }).catch(() => undefined);
-      const reg = startWebGeneration(config, webThreadId);
+      const reg = startWebGeneration(config, webThreadId, workspaceId);
       if (reg.existed) {
         writeGenerationSse(res, webThreadId);
         return;
@@ -1002,6 +1016,7 @@ export async function handleChatCompletions(
             normalizedAccumulated,
             displayModel ?? cursorModel,
             mode,
+            workspaceDir,
           );
           const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
           const completionTokens = Math.max(
@@ -1087,6 +1102,7 @@ export async function handleChatCompletions(
           normalizedAccumulated,
           displayModel ?? cursorModel,
           mode,
+          workspaceDir,
         );
         const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));
         const completionTokens = Math.max(
@@ -1233,6 +1249,7 @@ export async function handleChatCompletions(
     content,
     displayModel ?? cursorModel,
     mode,
+    workspaceDir,
   );
 
   const promptTokens = Math.max(1, Math.round(agentPrompt.length / 4));

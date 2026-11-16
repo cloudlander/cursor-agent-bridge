@@ -4,6 +4,7 @@ import * as path from "node:path";
 import type { BridgeConfig } from "./config.js";
 import {
   defaultCursorHome,
+  listAllWebThreads,
   migrateLocalThreads,
   readChatStore,
   resolveCursorDataRoots,
@@ -189,8 +190,11 @@ export async function exportSessionBundle(
   const outDir = path.resolve(opts.outDir);
   fs.mkdirSync(outDir, { recursive: true });
 
-  const store = await readChatStore(config);
-  const threads = store.threads.filter((t) =>
+  const [allThreads, store] = await Promise.all([
+    listAllWebThreads(config),
+    readChatStore(config),
+  ]);
+  const threads = allThreads.filter((t) =>
     sessionActiveSince(t.updatedAt, t.createdAt, sinceMs),
   );
   const apiSessions = store.apiSessions.filter((s) =>

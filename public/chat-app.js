@@ -23,6 +23,9 @@
   const SIDEBAR_WIDTH_MAX = 520;
   const SIDEBAR_WIDTH_DEFAULT = 280;
   const MIGRATED_KEY = 'cursor-bridge-chat-migrated';
+  const FOLDS_KEY = 'cursor-bridge-chat-folds';
+  const CURRENT_WS_KEY = 'cursor-bridge-chat-workspace';
+  const GROUP_ORDER = ['Pinned', 'Today', 'Yesterday', 'Previous 7 days', 'Previous 30 days', 'Older'];
 
   const SOURCE_LABELS = {
     web: 'Web',
@@ -54,6 +57,13 @@
     threads: [],
     /** Sidebar entries: web + api + cli + acp (from server catalog). */
     sessionCatalog: [],
+    workspaces: [],
+    currentWorkspaceId: 'default',
+    loadedWorkspaces: new Set(),
+    activeByWorkspace: {},
+    folds: { workspaces: {}, expanded: {}, groups: {} },
+    /** threadId -> workspaceId for generations started before that workspace is loaded. */
+    generationWorkspaces: new Map(),
     activeId: null,
     /** threadId -> AbortController */
     streams: new Map(),
@@ -66,6 +76,7 @@
     /** Web thread ids with local metadata edits to push (not full history sync). */
     dirtyThreadIds: new Set(),
     dirtyActiveId: false,
+    dirtyActiveWorkspaceId: null,
     loadingSessionId: null,
     /** Pending uploads before send: { name, mimeType, path, url, previewUrl? } */
     pendingAttachments: [],
@@ -973,37 +984,137 @@
     }
   }
 
+  function loadFolds() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(FOLDS_KEY) || '{}');
+      return {
+        workspaces: raw.workspaces && typeof raw.workspaces === 'object' ? raw.workspaces : {},
+        expanded: raw.expanded && typeof raw.expanded === 'object' ? raw.expanded : {},
+        groups: raw.groups && typeof raw.groups === 'object' ? raw.groups : {},
+      };
+    } catch {
+      return { workspaces: {}, expanded: {}, groups: {} };
+    }
+  }
+
+  function saveFolds() {
+    try { localStorage.setItem(FOLDS_KEY, JSON.stringify(state.folds)); } catch { /* ignore */ }
+  }
+
+  function isWorkspaceCollapsed(id) {
+    if (state.searchQuery.trim()) return false;
+    if (state.folds.workspaces[id]) return true;
+    if (state.folds.expanded[id]) return false;
+    return id !== state.currentWorkspaceId;
+  }
+
+  function setWorkspaceCollapsed(id, collapsed) {
+    if (collapsed) {
+      state.folds.workspaces[id] = true;
+      delete state.folds.expanded[id];
+    } else {
+      delete state.folds.workspaces[id];
+      state.folds.expanded[id] = true;
+    }
+    saveFolds();
+  }
+
+  function groupKey(workspaceId, label) {
+    return `${workspaceId}:${label}`;
+  }
+
+  function isGroupCollapsed(workspaceId, label) {
+    if (state.searchQuery.trim()) return false;
+    return !!state.folds.groups[groupKey(workspaceId, label)];
+  }
+
+  function noteGenerationWorkspace(gen) {
+    if (gen?.threadId && gen.workspaceId) state.generationWorkspaces.set(gen.threadId, gen.workspaceId);
+  }
+
+  function workspaceBusy(id) {
+    for (const threadId of state.streams.keys()) {
+      const thread = state.threads.find(t => t.id === threadId);
+      if (thread?.workspaceId === id || state.generationWorkspaces.get(threadId) === id) return true;
+    }
+    return false;
+  }
+
+  function sessionsForWorkspace(id) {
+    return state.sessionCatalog.filter(s => s.workspaceId === id);
+  }
+
+  function applyWorkspacePayload(id, data) {
+    const compactList = data.compact === true;
+    const sessions = (Array.isArray(data.sessions) ? data.sessions : [])
+      .map(s => ({ ...s, workspaceId: id }));
+    const serverIds = new Set(sessions.map(s => s.id));
+    const localOnly = state.sessionCatalog.filter(s =>
+      s.workspaceId === id && !serverIds.has(s.id) && !s.readOnly && (s.id === state.activeId || state.dirtyThreadIds.has(s.id)),
+    );
+    state.sessionCatalog = state.sessionCatalog.filter(s => s.workspaceId !== id).concat(sessions, localOnly);
+    const incoming = Array.isArray(data.threads) ? data.threads : [];
+    const incomingIds = new Set(incoming.map(t => t.id));
+    state.threads = state.threads.filter(t =>
+      t.workspaceId !== id || incomingIds.has(t.id) || state.dirtyThreadIds.has(t.id) || state.streams.has(t.id),
+    );
+    for (const raw of incoming) {
+      if (state.streams.has(raw.id) || state.dirtyThreadIds.has(raw.id)) {
+        const existing = state.threads.find(t => t.id === raw.id);
+        if (existing) existing.workspaceId = id;
+        continue;
+      }
+      mergeServerWebThread({ ...raw, workspaceId: id }, compactList, id);
+    }
+    state.threads.forEach(t => {
+      if (t.workspaceId !== id) return;
+      rehydrateThreadAttachments(t);
+      sanitizeThreadMessages(t);
+    });
+    state.activeByWorkspace[id] = data.activeId ?? null;
+    state.loadedWorkspaces.add(id);
+  }
+
+  async function pullWorkspace(id) {
+    const r = await apiFetch(`/api/chat/threads?compact=1&workspaceId=${encodeURIComponent(id)}`);
+    if (!r.ok) throw new Error(String(r.status));
+    const data = await r.json();
+    applyWorkspacePayload(id, data);
+    return data;
+  }
+
+  async function loadUnloadedWorkspaces() {
+    const missing = state.workspaces.filter(w => !state.loadedWorkspaces.has(w.id));
+    await Promise.all(missing.map(w => pullWorkspace(w.id).catch(() => undefined)));
+  }
+
   async function loadThreads() {
     try {
+      state.folds = loadFolds();
       await migrateLocalThreadsIfNeeded();
-      const [threadsRes, activeGens] = await Promise.all([
-        apiFetch('/api/chat/threads?compact=1'),
+      const [wsRes, activeGens] = await Promise.all([
+        apiFetch('/api/workspaces'),
         fetchActiveGenerations(),
       ]);
-      if (!threadsRes.ok) throw new Error(String(threadsRes.status));
-      const data = await threadsRes.json();
-      const compactList = data.compact === true;
-      state.sessionCatalog = Array.isArray(data.sessions) ? data.sessions : [];
-      state.threads = Array.isArray(data.threads)
-        ? data.threads.map(t => ({
-          ...t,
-          source: 'web',
-          title: t.title || null,
-          model: t.model || '',
-          mode: t.mode || '',
-          messages: compactList || !Array.isArray(t.messages) ? [] : t.messages,
-        }))
-        : [];
-      state.threads.forEach(t => {
-        rehydrateThreadAttachments(t);
-        sanitizeThreadMessages(t);
-      });
+      if (!wsRes.ok) throw new Error(String(wsRes.status));
+      const wsData = await wsRes.json();
+      state.workspaces = Array.isArray(wsData.workspaces) && wsData.workspaces.length
+        ? wsData.workspaces
+        : [{ id: 'default', name: 'Default', dirName: null, isDefault: true }];
+      let current = localStorage.getItem(CURRENT_WS_KEY) || 'default';
+      if (!state.workspaces.some(w => w.id === current)) current = 'default';
+      state.currentWorkspaceId = current;
+      try { localStorage.setItem(CURRENT_WS_KEY, current); } catch { /* ignore */ }
+      for (const gen of activeGens) noteGenerationWorkspace(gen);
+      await pullWorkspace(current);
       const activeIds = new Set(activeGens.map(g => g.threadId));
       finalizeInterruptedMessages(state.threads, activeIds);
-      for (const gen of activeGens) {
-        applyGenerationSnapshot(gen);
-      }
-      state.activeId = data.activeId || state.threads[0]?.id || state.sessionCatalog[0]?.id || null;
+      for (const gen of activeGens) applyGenerationSnapshot(gen);
+      const inWorkspace = state.sessionCatalog.filter(s => s.workspaceId === current);
+      state.activeId = state.activeByWorkspace[current]
+        || state.threads.find(t => t.workspaceId === current)?.id
+        || inWorkspace[0]?.id
+        || null;
       state.threadsLoaded = true;
       for (const t of state.threads) updateSessionSnapshot(t.id);
       if (state.activeId) updateSessionSnapshot(state.activeId);
@@ -1045,6 +1156,7 @@
 
   function markActiveIdDirty() {
     state.dirtyActiveId = true;
+    state.dirtyActiveWorkspaceId = state.currentWorkspaceId || 'default';
     schedulePersistThreads();
   }
 
@@ -1056,22 +1168,40 @@
     }, 400);
   }
 
+  function dirtyThreadsByWorkspace() {
+    const groups = new Map();
+    for (const thread of state.threads) {
+      if (thread.readOnly || !state.dirtyThreadIds.has(thread.id)) continue;
+      const id = thread.workspaceId || state.currentWorkspaceId || 'default';
+      if (!groups.has(id)) groups.set(id, []);
+      groups.get(id).push({ ...thread, source: 'web' });
+    }
+    if (state.dirtyActiveId) {
+      const id = state.dirtyActiveWorkspaceId || state.currentWorkspaceId || 'default';
+      if (!groups.has(id)) groups.set(id, []);
+    }
+    return groups;
+  }
+
   /** Push only UI metadata / active selection — message bodies come from server + agent chat. */
   async function persistThreads() {
-    const threads = state.threads
-      .filter(t => !t.readOnly && state.dirtyThreadIds.has(t.id))
-      .map(t => ({ ...t, source: 'web' }));
-    if (!threads.length && !state.dirtyActiveId) return;
+    const groups = dirtyThreadsByWorkspace();
+    if (!groups.size) return;
     try {
-      const body = { threads };
-      if (state.dirtyActiveId) body.activeId = state.activeId;
-      await apiFetch('/api/chat/threads', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      for (const t of threads) state.dirtyThreadIds.delete(t.id);
+      for (const [workspaceId, threads] of groups) {
+        const body = { workspaceId, threads };
+        if (state.dirtyActiveId && workspaceId === (state.dirtyActiveWorkspaceId || state.currentWorkspaceId)) {
+          body.activeId = state.activeByWorkspace[workspaceId] ?? state.activeId;
+        }
+        await apiFetch('/api/chat/threads', {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        for (const t of threads) state.dirtyThreadIds.delete(t.id);
+      }
       state.dirtyActiveId = false;
+      state.dirtyActiveWorkspaceId = null;
     } catch {
       toast('Failed to save chat to server');
     }
@@ -1079,19 +1209,17 @@
 
   async function refreshSessionCatalog() {
     try {
-      const r = await apiFetch('/api/chat/threads?compact=1');
-      if (!r.ok) return;
-      const data = await r.json();
-      state.sessionCatalog = Array.isArray(data.sessions) ? data.sessions : [];
-      if (data.activeId) state.activeId = data.activeId;
-      mergeServerWebThreads(data.threads || [], data.compact === true);
+      const ids = state.loadedWorkspaces.size
+        ? [...state.loadedWorkspaces]
+        : [state.currentWorkspaceId || 'default'];
+      for (const id of ids) await pullWorkspace(id);
       renderThreadList();
     } catch {
       /* ignore */
     }
   }
 
-  function mergeServerWebThread(serverThread, compact = false) {
+  function mergeServerWebThread(serverThread, compact = false, workspaceId = state.currentWorkspaceId) {
     if (!serverThread?.id || state.streams.has(serverThread.id)) return false;
     const idx = state.threads.findIndex(t => t.id === serverThread.id);
     const entry = catalogEntry(serverThread.id);
@@ -1102,6 +1230,7 @@
         const stub = {
           id: serverThread.id,
           source: 'web',
+          workspaceId,
           title: serverThread.title ?? entry?.title ?? null,
           pinned: serverThread.pinned ?? entry?.pinned ?? false,
           createdAt: serverThread.createdAt ?? entry?.createdAt ?? Date.now(),
@@ -1110,12 +1239,14 @@
           mode: serverThread.mode ?? entry?.mode ?? '',
           messages: [],
           readOnly: false,
+          contextWindowUsage: serverThread.contextWindowUsage,
         };
         state.threads.push(stub);
         if (entry && serverThread.updatedAt) entry.updatedAt = serverThread.updatedAt;
         return true;
       }
       if ((local.updatedAt ?? 0) > (serverThread.updatedAt ?? 0)) return false;
+      local.workspaceId = workspaceId;
       local.title = serverThread.title ?? local.title;
       local.pinned = serverThread.pinned ?? local.pinned;
       local.model = serverThread.model ?? local.model;
@@ -1134,6 +1265,7 @@
     const merged = {
       ...serverThread,
       source: 'web',
+      workspaceId,
       readOnly: false,
       messages: Array.isArray(serverThread.messages) ? serverThread.messages : [],
     };
@@ -1151,10 +1283,10 @@
     return true;
   }
 
-  function mergeServerWebThreads(serverThreads, compact = false) {
+  function mergeServerWebThreads(serverThreads, compact = false, workspaceId = state.currentWorkspaceId) {
     let changed = false;
     for (const t of serverThreads || []) {
-      if (mergeServerWebThread(t, compact)) changed = true;
+      if (mergeServerWebThread(t, compact, workspaceId)) changed = true;
     }
     return changed;
   }
@@ -1172,6 +1304,7 @@
       const thread = {
         id,
         source: entry?.source || session.source || 'web',
+        workspaceId: entry?.workspaceId || state.currentWorkspaceId,
         title: entry?.title || session.title || null,
         pinned: entry?.pinned ?? session.pinned ?? false,
         createdAt: entry?.createdAt ?? session.createdAt ?? Date.now(),
@@ -1245,24 +1378,32 @@
     let ok = false;
     try {
       const prevCatalog = state.sessionCatalog;
-      const [threadsRes, activeGens] = await Promise.all([
-        apiFetch('/api/chat/threads?compact=1'),
-        fetchActiveGenerations(),
-      ]);
-      if (!threadsRes.ok) {
-        noteNetworkFailure();
-        return;
+      const activeGens = await fetchActiveGenerations();
+      for (const gen of activeGens) noteGenerationWorkspace(gen);
+      const ids = state.loadedWorkspaces.size
+        ? [...state.loadedWorkspaces]
+        : [state.currentWorkspaceId || 'default'];
+      let catalogChanged = false;
+      let threadsChanged = false;
+      let currentData = null;
+      for (const id of ids) {
+        const r = await apiFetch(`/api/chat/threads?compact=1&workspaceId=${encodeURIComponent(id)}`);
+        if (!r.ok) {
+          noteNetworkFailure();
+          return;
+        }
+        const data = await r.json();
+        const nextSessions = (Array.isArray(data.sessions) ? data.sessions : [])
+          .map(s => ({ ...s, workspaceId: id }));
+        const prevSlice = prevCatalog.filter(s => s.workspaceId === id);
+        if (sessionCatalogDiffers(prevSlice, nextSessions)) catalogChanged = true;
+        applyWorkspacePayload(id, data);
+        if (mergeServerWebThreads(data.threads || [], data.compact === true, id)) threadsChanged = true;
+        if (id === state.currentWorkspaceId) currentData = data;
       }
-      const data = await threadsRes.json();
-      const compactList = data.compact === true;
-
-      const nextCatalog = Array.isArray(data.sessions) ? data.sessions : [];
-      const catalogChanged = sessionCatalogDiffers(prevCatalog, nextCatalog);
-      state.sessionCatalog = nextCatalog;
-      const threadsChanged = mergeServerWebThreads(data.threads || [], compactList);
 
       if (catalogChanged || threadsChanged) renderThreadList();
-      await syncActiveSession(data, compactList);
+      if (currentData) await syncActiveSession(currentData, currentData.compact === true);
       await reconnectActiveGenerations(activeGens);
       ok = true;
     } catch {
@@ -1317,6 +1458,7 @@
     const thread = {
       id: uuid(),
       source: 'web',
+      workspaceId: state.currentWorkspaceId || 'default',
       title: null,
       pinned: false,
       createdAt: now,
@@ -1330,6 +1472,7 @@
     state.sessionCatalog.unshift({
       id: thread.id,
       source: 'web',
+      workspaceId: thread.workspaceId,
       title: 'New chat',
       pinned: false,
       createdAt: now,
@@ -1343,7 +1486,9 @@
   function ensureActiveThread() {
     if (activeThread()) return activeThread();
     // Reuse an existing empty web thread instead of piling up blanks.
-    const blank = state.threads.find(t => !t.readOnly && !t.messages.length);
+    const blank = state.threads.find(t =>
+      t.workspaceId === state.currentWorkspaceId && !t.readOnly && !t.messages.length,
+    );
     const t = blank ?? createThread();
     state.activeId = t.id;
     markThreadDirty(t.id);
@@ -1380,19 +1525,40 @@
   }
 
   function selectThread(id) {
+    const entry = catalogEntry(id);
+    const thread = state.threads.find(t => t.id === id);
+    const workspaceId = entry?.workspaceId || thread?.workspaceId || state.currentWorkspaceId;
+    if (workspaceId && workspaceId !== state.currentWorkspaceId) {
+      state.currentWorkspaceId = workspaceId;
+      try { localStorage.setItem(CURRENT_WS_KEY, workspaceId); } catch { /* ignore */ }
+    }
+    setWorkspaceCollapsed(workspaceId, false);
+    const activityAt = entry?.updatedAt ?? entry?.createdAt ?? thread?.updatedAt ?? Date.now();
+    const label = entry?.pinned || thread?.pinned ? 'Pinned' : dayBucket(activityAt);
+    delete state.folds.groups[groupKey(workspaceId, label)];
+    saveFolds();
     state.activeId = id;
+    state.activeByWorkspace[workspaceId] = id;
     state.stickToBottom = true;
     state.editingIdx = null;
     markActiveIdDirty();
     renderAll();
+    requestAnimationFrame(() => {
+      const node = document.querySelector(`[data-thread-id="${CSS.escape(id)}"]`);
+      node?.scrollIntoView({ block: 'nearest' });
+    });
     void ensureExternalSessionLoaded(id).then(() => updateSessionSnapshot(id));
     if (isMobileChatLayout()) setSidebar(false);
   }
 
   function newChat() {
     state.editingIdx = null;
+    setWorkspaceCollapsed(state.currentWorkspaceId, false);
+    delete state.folds.groups[groupKey(state.currentWorkspaceId, 'Today')];
+    saveFolds();
     const t = createThread();
     state.activeId = t.id;
+    state.activeByWorkspace[t.workspaceId] = t.id;
     state.stickToBottom = true;
     markThreadDirty(t.id);
     markActiveIdDirty();
@@ -1410,15 +1576,18 @@
     const t = state.threads.find(x => x.id === id);
     if (!t) return;
     if (t.messages.length && !confirm(`Delete "${threadTitle(t)}"?`)) return;
+    const workspaceId = t.workspaceId || state.currentWorkspaceId;
     state.streams.get(id)?.abort();
     state.threads = state.threads.filter(x => x.id !== id);
     state.sessionCatalog = state.sessionCatalog.filter(x => x.id !== id);
     if (state.activeId === id) {
-      state.activeId = state.sessionCatalog[0]?.id ?? null;
+      state.activeId = state.sessionCatalog.find(s => s.workspaceId === workspaceId)?.id ?? null;
+      state.activeByWorkspace[workspaceId] = state.activeId;
       if (!state.activeId) ensureActiveThread();
     }
     try {
-      await apiFetch(`/api/chat/threads/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const qs = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : '';
+      await apiFetch(`/api/chat/threads/${encodeURIComponent(id)}${qs}`, { method: 'DELETE' });
     } catch {
       toast('Failed to delete on server');
     }
@@ -1427,18 +1596,25 @@
   }
 
   async function clearAllThreads() {
-    const webWithMessages = state.threads.filter(t => !t.readOnly && t.messages.length);
+    const workspaceId = state.currentWorkspaceId || 'default';
+    const webWithMessages = state.threads.filter(t =>
+      t.workspaceId === workspaceId && !t.readOnly && t.messages.length,
+    );
     if (!webWithMessages.length) return;
-    if (!confirm('Delete all web chats? External sessions stay on the server.')) return;
-    for (const ac of state.streams.values()) ac.abort();
+    if (!confirm('Delete all chats in this workspace? Other workspaces stay.')) return;
+    for (const t of webWithMessages) state.streams.get(t.id)?.abort();
     for (const t of webWithMessages) {
       try {
-        await apiFetch(`/api/chat/threads/${encodeURIComponent(t.id)}`, { method: 'DELETE' });
+        await apiFetch(
+          `/api/chat/threads/${encodeURIComponent(t.id)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+          { method: 'DELETE' },
+        );
       } catch { /* ignore */ }
     }
-    state.threads = state.threads.filter(t => t.readOnly);
-    state.sessionCatalog = state.sessionCatalog.filter(s => s.readOnly);
-    state.activeId = state.sessionCatalog[0]?.id ?? null;
+    state.threads = state.threads.filter(t => t.workspaceId !== workspaceId || t.readOnly);
+    state.sessionCatalog = state.sessionCatalog.filter(s => s.workspaceId !== workspaceId || s.readOnly);
+    state.activeId = state.sessionCatalog.find(s => s.workspaceId === workspaceId)?.id ?? null;
+    state.activeByWorkspace[workspaceId] = state.activeId;
     if (!state.activeId) ensureActiveThread();
     markActiveIdDirty();
     renderAll();
@@ -1506,33 +1682,257 @@
     if (!list) return;
     const q = state.searchQuery.trim();
     const activityAt = s => s.updatedAt ?? s.createdAt ?? 0;
-    const filtered = state.sessionCatalog
-      .filter(s => s.messageCount > 0 && threadMatchesSearch(s, q))
-      .sort((a, b) => activityAt(b) - activityAt(a));
+    const nodes = [];
+    let anyMatch = false;
 
-    if (!filtered.length) {
-      list.replaceChildren(
-        el('li', { class: 'chat-thread-empty muted-text' }, q ? 'No matching chats' : 'No chats yet'),
+    for (const ws of state.workspaces) {
+      const loaded = state.loadedWorkspaces.has(ws.id);
+      const sessions = sessionsForWorkspace(ws.id)
+        .filter(s => (s.messageCount > 0 || s.id === state.activeId) && threadMatchesSearch(s, q))
+        .sort((a, b) => activityAt(b) - activityAt(a));
+      if (q && !sessions.length) continue;
+      anyMatch = true;
+      const collapsed = isWorkspaceCollapsed(ws.id);
+      const count = loaded ? sessions.length : null;
+      const busy = workspaceBusy(ws.id);
+      const nameBtn = el('button', {
+        type: 'button',
+        class: 'chat-workspace-name',
+        title: ws.name,
+        onclick: e => { e.stopPropagation(); void activateWorkspace(ws.id); },
+      }, ws.name);
+      const actions = el('span', { class: 'chat-thread-actions' },
+        el('button', {
+          type: 'button',
+          class: 'chat-thread-btn',
+          title: 'Rename workspace',
+          onclick: e => { e.stopPropagation(); startWorkspaceRename(ws, nameBtn); },
+        }, '✎'),
+        ws.isDefault ? null : el('button', {
+          type: 'button',
+          class: 'chat-thread-btn danger',
+          title: 'Delete workspace',
+          onclick: e => { e.stopPropagation(); void deleteWorkspace(ws.id); },
+        }, '×'),
       );
+      const row = el('div', {
+        class: `chat-workspace-row${ws.id === state.currentWorkspaceId ? ' current' : ''}${busy && collapsed ? ' generating' : ''}`,
+        'data-workspace-id': ws.id,
+        'data-collapsed': collapsed ? '1' : '0',
+      },
+        el('button', {
+          type: 'button',
+          class: 'chat-fold',
+          title: collapsed ? 'Expand workspace' : 'Collapse workspace',
+          'aria-expanded': collapsed ? 'false' : 'true',
+          onclick: e => { e.stopPropagation(); void toggleWorkspaceFold(ws.id); },
+        }, collapsed ? '▶' : '▼'),
+        busy && collapsed ? el('button', {
+          type: 'button',
+          class: 'chat-thread-busy chat-fold-busy',
+          title: 'Generating…',
+          onclick: e => { e.stopPropagation(); void expandWorkspace(ws.id); },
+        }) : null,
+        nameBtn,
+        count == null ? null : el('span', { class: 'chat-fold-count' }, String(count)),
+        actions,
+      );
+      const body = [];
+      if (!collapsed) {
+        if (!sessions.length) {
+          body.push(el('li', { class: 'chat-thread-empty muted-text' }, q ? 'No matching chats' : 'No chats yet'));
+        } else {
+          const groups = new Map();
+          for (const s of sessions) {
+            const label = s.pinned ? 'Pinned' : dayBucket(activityAt(s));
+            if (!groups.has(label)) groups.set(label, []);
+            groups.get(label).push(s);
+          }
+          for (const label of GROUP_ORDER) {
+            const items = groups.get(label);
+            if (!items) continue;
+            const groupCollapsed = isGroupCollapsed(ws.id, label);
+            const groupBusy = items.some(s => state.streams.has(s.id));
+            body.push(el('li', {
+              class: `chat-group-row${groupBusy && groupCollapsed ? ' generating' : ''}`,
+              'data-group-key': groupKey(ws.id, label),
+              onclick: () => toggleGroupFold(ws.id, label),
+            },
+              el('button', {
+                type: 'button',
+                class: 'chat-fold',
+                title: groupCollapsed ? 'Expand group' : 'Collapse group',
+                'aria-expanded': groupCollapsed ? 'false' : 'true',
+                onclick: e => { e.stopPropagation(); toggleGroupFold(ws.id, label); },
+              }, groupCollapsed ? '▶' : '▼'),
+              groupBusy && groupCollapsed ? el('button', {
+                type: 'button',
+                class: 'chat-thread-busy chat-fold-busy',
+                title: 'Generating…',
+                onclick: e => {
+                  e.stopPropagation();
+                  delete state.folds.groups[groupKey(ws.id, label)];
+                  saveFolds();
+                  renderThreadList();
+                },
+              }) : null,
+              el('button', {
+                type: 'button',
+                class: 'chat-group-label',
+                onclick: e => { e.stopPropagation(); toggleGroupFold(ws.id, label); },
+              }, label),
+              el('span', { class: 'chat-fold-count' }, String(items.length)),
+            ));
+            if (!groupCollapsed) {
+              for (const s of items) body.push(buildThreadItem(s));
+            }
+          }
+        }
+      }
+      nodes.push(el('li', { class: 'chat-workspace' },
+        row,
+        body.length ? el('ul', { class: 'chat-workspace-sessions' }, ...body) : null,
+      ));
+    }
+
+    if (!nodes.length) {
+      list.replaceChildren(el('li', { class: 'chat-thread-empty muted-text' }, q ? 'No matching chats' : 'No chats yet'));
       return;
     }
-
-    const groups = new Map();
-    const push = (label, s) => {
-      if (!groups.has(label)) groups.set(label, []);
-      groups.get(label).push(s);
-    };
-    for (const s of filtered) push(s.pinned ? 'Pinned' : dayBucket(activityAt(s)), s);
-    const order = ['Pinned', 'Today', 'Yesterday', 'Previous 7 days', 'Previous 30 days', 'Older'];
-
-    const nodes = [];
-    for (const label of order) {
-      const items = groups.get(label);
-      if (!items) continue;
-      nodes.push(el('li', { class: 'chat-sidebar-label' }, label));
-      for (const s of items) nodes.push(buildThreadItem(s));
+    if (q && !anyMatch) {
+      list.replaceChildren(el('li', { class: 'chat-thread-empty muted-text' }, 'No matching chats'));
+      return;
     }
     list.replaceChildren(...nodes);
+  }
+
+  async function toggleWorkspaceFold(id) {
+    const collapsed = isWorkspaceCollapsed(id);
+    setWorkspaceCollapsed(id, !collapsed);
+    if (collapsed && !state.loadedWorkspaces.has(id)) {
+      try { await pullWorkspace(id); } catch { toast('Could not load workspace'); }
+    }
+    renderThreadList();
+  }
+
+  async function expandWorkspace(id) {
+    setWorkspaceCollapsed(id, false);
+    if (!state.loadedWorkspaces.has(id)) {
+      try { await pullWorkspace(id); } catch { toast('Could not load workspace'); }
+    }
+    renderThreadList();
+  }
+
+  async function activateWorkspace(id) {
+    if (isWorkspaceCollapsed(id)) setWorkspaceCollapsed(id, false);
+    if (!state.loadedWorkspaces.has(id)) {
+      try { await pullWorkspace(id); } catch { toast('Could not load workspace'); return; }
+    }
+    state.currentWorkspaceId = id;
+    try { localStorage.setItem(CURRENT_WS_KEY, id); } catch { /* ignore */ }
+    state.activeId = state.activeByWorkspace[id] || null;
+    if (!state.activeId) ensureActiveThread();
+    renderAll();
+    if (state.activeId) void ensureExternalSessionLoaded(state.activeId);
+  }
+
+  function toggleGroupFold(workspaceId, label) {
+    const key = groupKey(workspaceId, label);
+    if (state.folds.groups[key]) delete state.folds.groups[key];
+    else state.folds.groups[key] = true;
+    saveFolds();
+    renderThreadList();
+  }
+
+  function startWorkspaceRename(ws, nameNode) {
+    const input = el('input', {
+      class: 'chat-thread-rename',
+      type: 'text',
+      value: ws.name,
+      maxlength: '64',
+    });
+    let done = false;
+    const finish = async save => {
+      if (done) return;
+      done = true;
+      const next = input.value.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+      if (save && next && next !== ws.name) {
+        try {
+          const r = await apiFetch(`/api/workspaces/${encodeURIComponent(ws.id)}`, {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ name: next }),
+          });
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data?.error?.message || 'Rename failed');
+          ws.name = data.workspace?.name || next;
+        } catch (e) {
+          toast(e.message || 'Rename failed');
+        }
+      }
+      renderThreadList();
+    };
+    input.addEventListener('click', e => e.stopPropagation());
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') void finish(true);
+      else if (e.key === 'Escape') void finish(false);
+    });
+    input.addEventListener('blur', () => void finish(true));
+    nameNode.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
+  async function deleteWorkspace(id) {
+    const ws = state.workspaces.find(w => w.id === id);
+    if (!ws || ws.isDefault) return;
+    if (!confirm(`Delete workspace "${ws.name}" and its chats?`)) return;
+    try {
+      const r = await apiFetch(`/api/workspaces/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data?.error?.message || 'Delete failed');
+      }
+    } catch (e) {
+      toast(e.message || 'Delete failed');
+      return;
+    }
+    state.workspaces = state.workspaces.filter(w => w.id !== id);
+    state.threads = state.threads.filter(t => t.workspaceId !== id);
+    state.sessionCatalog = state.sessionCatalog.filter(s => s.workspaceId !== id);
+    state.loadedWorkspaces.delete(id);
+    delete state.activeByWorkspace[id];
+    delete state.folds.workspaces[id];
+    delete state.folds.expanded[id];
+    saveFolds();
+    if (state.currentWorkspaceId === id) {
+      await activateWorkspace('default');
+      return;
+    }
+    renderThreadList();
+  }
+
+  async function createWorkspace() {
+    const name = window.prompt('Workspace name');
+    if (name == null) return;
+    try {
+      const r = await apiFetch('/api/workspaces', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data?.error?.message || 'Could not create workspace');
+      const ws = data.workspace;
+      if (!ws?.id) throw new Error('Could not create workspace');
+      state.workspaces.push(ws);
+      setWorkspaceCollapsed(ws.id, false);
+      state.loadedWorkspaces.add(ws.id);
+      state.activeByWorkspace[ws.id] = null;
+      await activateWorkspace(ws.id);
+    } catch (e) {
+      toast(e.message || 'Could not create workspace');
+    }
   }
 
   /** Update generating indicators without rebuilding the sidebar. */
@@ -1543,10 +1943,28 @@
       const id = item.getAttribute('data-thread-id');
       const busy = id && state.streams.has(id);
       item.classList.toggle('generating', !!busy);
-      let dot = item.querySelector('.chat-thread-busy');
+      let dot = item.querySelector(':scope > .chat-thread-busy');
       if (busy && !dot) {
         dot = el('span', { class: 'chat-thread-busy', title: 'Generating…' });
         item.insertBefore(dot, item.firstChild);
+      } else if (!busy && dot) {
+        dot.remove();
+      }
+    });
+    list.querySelectorAll('.chat-workspace-row[data-workspace-id]').forEach(row => {
+      const id = row.getAttribute('data-workspace-id');
+      const collapsed = row.getAttribute('data-collapsed') === '1';
+      const busy = !!(collapsed && id && workspaceBusy(id));
+      row.classList.toggle('generating', busy);
+      let dot = row.querySelector('.chat-fold-busy');
+      if (busy && !dot) {
+        dot = el('button', {
+          type: 'button',
+          class: 'chat-thread-busy chat-fold-busy',
+          title: 'Generating…',
+          onclick: e => { e.stopPropagation(); void expandWorkspace(id); },
+        });
+        row.querySelector('.chat-workspace-name')?.before(dot);
       } else if (!busy && dot) {
         dot.remove();
       }
@@ -2350,6 +2768,7 @@
     const cfg = state.config || {};
     const payload = {
       threadId: thread.id,
+      workspaceId: thread.workspaceId || state.currentWorkspaceId || 'default',
       model: thread.model || cfg.defaultModel,
       mode: thread.mode || cfg.mode || 'agent',
       stream: true,
@@ -2665,7 +3084,9 @@
       const xhr = new XMLHttpRequest();
       xhr.open(
         'POST',
-        typeof bridgePath === "function" ? bridgePath('/api/chat/upload') : '/api/chat/upload',
+        typeof bridgePath === "function"
+          ? bridgePath(`/api/chat/upload?workspaceId=${encodeURIComponent(state.currentWorkspaceId || 'default')}`)
+          : `/api/chat/upload?workspaceId=${encodeURIComponent(state.currentWorkspaceId || 'default')}`,
       );
       xhr.responseType = 'json';
       xhr.upload.onprogress = (ev) => {
@@ -3269,9 +3690,14 @@
       if (state.searchDebounce) clearTimeout(state.searchDebounce);
       state.searchDebounce = setTimeout(() => {
         state.searchDebounce = null;
-        renderThreadList();
+        const run = async () => {
+          if (state.searchQuery.trim()) await loadUnloadedWorkspaces();
+          renderThreadList();
+        };
+        void run();
       }, 120);
     });
+    $('chat-new-workspace')?.addEventListener('click', () => void createWorkspace());
 
     const wrap = messagesWrap();
     wrap?.addEventListener('scroll', () => {
@@ -3350,19 +3776,19 @@
         state.persistTimer = null;
       }
       try {
-        const threads = state.threads
-          .filter(t => !t.readOnly && state.dirtyThreadIds.has(t.id))
-          .map(t => ({ ...t, source: 'web' }));
-        if (!threads.length && !state.dirtyActiveId) return;
-        const payload = { threads };
-        if (state.dirtyActiveId) payload.activeId = state.activeId;
-        const body = JSON.stringify(payload);
-        apiFetch('/api/chat/threads', {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body,
-          keepalive: true,
-        }).catch(() => undefined);
+        const groups = dirtyThreadsByWorkspace();
+        for (const [workspaceId, threads] of groups) {
+          const payload = { workspaceId, threads };
+          if (state.dirtyActiveId && workspaceId === (state.dirtyActiveWorkspaceId || state.currentWorkspaceId)) {
+            payload.activeId = state.activeByWorkspace[workspaceId] ?? state.activeId;
+          }
+          apiFetch('/api/chat/threads', {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+            keepalive: true,
+          }).catch(() => undefined);
+        }
       } catch {
         /* ignore */
       }

@@ -26,6 +26,8 @@ export type BridgeContextPreambleInput = {
   clientLaunchDir?: string;
   /** Optional process name/command of the client (lsof COMMAND column). */
   clientProcessName?: string;
+  /** Display name of the web-chat workspace whose directory is the agent cwd. */
+  workspaceName?: string;
 };
 
 export function readHttpHeader(
@@ -62,6 +64,13 @@ export function buildBridgeContextPreamble(
   const lines: string[] = [
     `Via cursor-api-proxy → Cursor CLI. ${loc}; mode=${input.cursorMode}${sandbox}.`,
   ];
+
+  const workspaceName = input.workspaceName?.trim();
+  if (workspaceName) {
+    lines.push(
+      `chat workspace "${truncate(workspaceName, 64)}" (${truncate(input.agentWorkspaceDir, 200)})`,
+    );
+  }
 
   const pathHint = readHttpHeader(input.headers, "x-cursor-workspace");
   if (pathHint) {
