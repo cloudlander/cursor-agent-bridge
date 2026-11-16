@@ -15,7 +15,7 @@ import {
   getChatSession,
   listChatSessions,
   migrateLocalThreads,
-  readChatStore,
+  readWorkspaceChatStore,
   saveWebThreads,
   type WebChatThread,
 } from "./chat-store.js";
@@ -24,7 +24,7 @@ import {
   MultipartUploadError,
   saveMultipartFieldToFile,
 } from "./multipart-upload.js";
-import { resolveWorkspace } from "./workspace.js";
+import { resolveAgentWorkspace, getWorkspace } from "./workspaces.js";
 import {
   abortWebGeneration,
   getGeneration,
@@ -51,14 +51,22 @@ function attachmentPublicUrl(filePath: string): string {
 async function pruneChatManagedStorage(
   config: BridgeConfig,
   workspaceDir: string,
+  workspaceId: string,
   extraThreads?: WebChatThread[],
 ): Promise<void> {
-  const store = await readChatStore(config);
+  const store = await readWorkspaceChatStore(config, workspaceId);
   const threads = extraThreads?.length
     ? [...store.threads, ...extraThreads]
     : store.threads;
   const keepPaths = collectReferencedManagedPaths(threads, workspaceDir);
   pruneManagedStorage(workspaceDir, { keepPaths });
+}
+
+function queryParam(req: http.IncomingMessage, name: string): string | undefined {
+  if (!(req.url ?? "").includes("?")) return undefined;
+  const value = new URL(req.url ?? "", "http://127.0.0.1").searchParams.get(name);
+  const trimmed = value?.trim();
+  return trimmed || undefined;
 }
 
 function sessionIdFromPath(pathname: string): string | null {
@@ -129,7 +137,18 @@ export async function handleChatApi(
       ? new URL(req.url ?? "", "http://127.0.0.1").searchParams
       : null;
     const compactThreads = query?.get("compact") === "1";
-    const data = await listChatSessions(config, { compactThreads });
+    const requested = query?.get("workspaceId")?.trim() || undefined;
+    if (requested) {
+      const known = await getWorkspace(config, requested);
+      if (!known) {
+        json(res, 404, { error: { message: "Workspace not found", code: "not_found" } });
+        return;
+      }
+    }
+    const data = await listChatSessions(config, {
+      compactThreads,
+      workspaceId: requested,
+    });
     json(res, 200, data);
     return;
   }
@@ -150,7 +169,7 @@ export async function handleChatApi(
   }
 
   if (req.method === "PUT" && pathname === "/api/chat/threads") {
-    let body: { activeId?: string | null; threads?: WebChatThread[] };
+    let body: { activeId?: string | null; threads?: WebChatThread[]; workspaceId?: string };
     try {
       body = JSON.parse(await readBody(req)) as typeof body;
     } catch {
@@ -163,13 +182,31 @@ export async function handleChatApi(
       });
       return;
     }
+    const workspaceId = typeof body.workspaceId === "string" ? body.workspaceId.trim() : "";
+    if (workspaceId) {
+      const known = await getWorkspace(config, workspaceId);
+      if (!known) {
+        json(res, 400, { error: { message: "Workspace not found", code: "invalid_workspace" } });
+        return;
+      }
+    }
     await saveWebThreads(config, {
       activeId: body.activeId ?? null,
       threads: body.threads,
+      workspaceId: workspaceId || undefined,
     });
     try {
-      const workspaceDir = resolveWorkspace(config, undefined, false).workspaceDir;
-      await pruneChatManagedStorage(config, workspaceDir, body.threads);
+      const resolved = await resolveAgentWorkspace(config, {
+        workspaceId: workspaceId || undefined,
+        chatOnly: false,
+        fromWebChat: true,
+      });
+      await pruneChatManagedStorage(
+        config,
+        resolved.workspaceDir,
+        resolved.record.id,
+        body.threads,
+      );
     } catch {
       /* non-fatal */
     }
@@ -178,9 +215,24 @@ export async function handleChatApi(
   }
 
   if (req.method === "POST" && pathname === "/api/chat/upload") {
+    const requestedWorkspace = queryParam(req, "workspaceId");
     let workspaceDir: string;
+    let workspaceId: string;
     try {
-      workspaceDir = resolveWorkspace(config, undefined, false).workspaceDir;
+      if (requestedWorkspace) {
+        const known = await getWorkspace(config, requestedWorkspace);
+        if (!known) {
+          json(res, 400, { error: { message: "Workspace not found", code: "invalid_workspace" } });
+          return;
+        }
+      }
+      const resolved = await resolveAgentWorkspace(config, {
+        workspaceId: requestedWorkspace,
+        chatOnly: false,
+        fromWebChat: true,
+      });
+      workspaceDir = resolved.workspaceDir;
+      workspaceId = resolved.record.id;
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Invalid workspace";
       json(res, 400, { error: { message: msg, code: "invalid_workspace" } });
@@ -267,7 +319,7 @@ export async function handleChatApi(
       }
 
       try {
-        await pruneChatManagedStorage(config, workspaceDir);
+        await pruneChatManagedStorage(config, workspaceDir, workspaceId);
       } catch {
         /* non-fatal */
       }
@@ -322,7 +374,7 @@ export async function handleChatApi(
       json(res, 404, { error: { message: "Not found", code: "not_found" } });
       return;
     }
-    const removed = await deleteWebThread(config, id);
+    const removed = await deleteWebThread(config, id, queryParam(req, "workspaceId"));
     if (!removed) {
       json(res, 404, {
         error: {

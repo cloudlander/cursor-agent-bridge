@@ -11,6 +11,7 @@ import {
   type CursorAccountDashboardSnapshot,
 } from "./cursor-account-snapshot.js";
 import { chatApiMatches, handleChatApi } from "./chat-api.js";
+import { handleWorkspaceApi, workspaceApiMatches } from "./workspaces.js";
 import { handlePluginApi, pluginApiMatches } from "./plugins/plugin-api.js";
 import {
   handleMcpOAuthCallback,
@@ -392,6 +393,7 @@ export function adminDashboardMatches(
   if (req.method === "DELETE" && pathname === "/api/cursor-account") return true;
   if (req.method === "POST" && pathname === "/api/apps/deploy") return true;
   if (upstreamSyncApiMatches(req)) return true;
+  if (workspaceApiMatches(req)) return true;
   if (chatApiMatches(req)) return true;
   if (terminalApiMatches(req)) return true;
   return false;
@@ -467,6 +469,10 @@ export function handleAdminDashboard(
   }
   if (pluginApiMatches(req)) {
     void handlePluginApi(req, res, config);
+    return;
+  }
+  if (workspaceApiMatches(req)) {
+    void handleWorkspaceApi(req, res, config);
     return;
   }
   if (chatApiMatches(req)) {

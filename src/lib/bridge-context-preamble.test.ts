@@ -35,6 +35,19 @@ describe("buildBridgeContextPreamble", () => {
     expect(text.split("\n").length).toBe(1);
   });
 
+  it("names the web-chat workspace without replacing the cwd line", () => {
+    const text = buildBridgeContextPreamble({
+      headers: {},
+      bridgeWorkspaceBase: "/w",
+      agentWorkspaceDir: "/sessions/workspaces/ws_abc",
+      isolatedChatOnly: false,
+      cursorMode: "agent",
+      workspaceName: "Research",
+    });
+    expect(text).toContain('chat workspace "Research"');
+    expect(text).toContain("/sessions/workspaces/ws_abc");
+  });
+
   it("dedupes to cwd= only when workspace matches cwd and not sandboxed", () => {
     const text = buildBridgeContextPreamble({
       headers: {},

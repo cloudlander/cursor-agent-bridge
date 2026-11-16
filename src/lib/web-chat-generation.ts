@@ -13,6 +13,7 @@ export type GenerationStatus = "running" | "done" | "error";
 
 export type GenerationSnapshot = {
   threadId: string;
+  workspaceId?: string;
   content: string;
   reasoning: string;
   status: GenerationStatus;
@@ -47,6 +48,7 @@ export type GenerationStreamEvent =
 
 type ActiveGeneration = {
   threadId: string;
+  workspaceId: string;
   content: string;
   reasoning: string;
   status: GenerationStatus;
@@ -125,6 +127,7 @@ function snapshotEvent(gen: ActiveGeneration): GenerationStreamEvent {
 function snapshotOf(gen: ActiveGeneration): GenerationSnapshot {
   return {
     threadId: gen.threadId,
+    workspaceId: gen.workspaceId,
     content: gen.content,
     reasoning: gen.reasoning,
     status: gen.status,
@@ -154,7 +157,7 @@ function schedulePersist(gen: ActiveGeneration): void {
       reasoning: gen.reasoning || undefined,
       streaming: gen.status === "running",
       error: gen.status === "error",
-    }).catch(() => undefined);
+    }, gen.workspaceId).catch(() => undefined);
   }, 400);
 }
 
@@ -191,7 +194,7 @@ function flushPersist(
     error: gen.status === "error" ? gen.error : undefined,
     durationMs: timing?.durationMs,
     thinkMs: timing?.thinkMs,
-  }).catch(() => undefined);
+  }, gen.workspaceId).catch(() => undefined);
 }
 
 export function listActiveGenerations(): GenerationSnapshot[] {
@@ -216,6 +219,7 @@ export function getGenerationAbortSignal(threadId: string): AbortSignal | undefi
 export function startWebGeneration(
   config: BridgeConfig,
   threadId: string,
+  workspaceId = "default",
 ): { signal: AbortSignal; existed: boolean } {
   const existing = active.get(threadId);
   if (existing?.status === "running") {
@@ -226,6 +230,7 @@ export function startWebGeneration(
   const now = Date.now();
   const gen: ActiveGeneration = {
     threadId,
+    workspaceId: workspaceId || existing?.workspaceId || "default",
     content: existing?.content ?? "",
     reasoning: existing?.reasoning ?? "",
     status: "running",
@@ -248,9 +253,12 @@ function scheduleUsagePersist(gen: ActiveGeneration): void {
   gen.usagePersistTimer = setTimeout(() => {
     gen.usagePersistTimer = null;
     if (!gen.contextWindowUsage) return;
-    void updateWebThreadContextUsage(gen.config, gen.threadId, gen.contextWindowUsage).catch(
-      () => undefined,
-    );
+    void updateWebThreadContextUsage(
+      gen.config,
+      gen.threadId,
+      gen.contextWindowUsage,
+      gen.workspaceId,
+    ).catch(() => undefined);
   }, 600);
 }
 

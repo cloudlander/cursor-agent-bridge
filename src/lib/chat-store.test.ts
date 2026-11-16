@@ -9,6 +9,7 @@ import {
   parseAgentTranscript,
   summarizeAgentTranscript,
   readChatStore,
+  recordApiSession,
   mergeWebThreadPair,
   saveWebThreads,
   syncWebThreadFromChatRequest,
@@ -392,5 +393,93 @@ describe("syncWebThreadFromChatRequest", () => {
     expect(assistant?.durationMs).toBe(4200);
     expect(assistant?.thinkMs).toBe(1500);
     expect(assistant?.ts).toBe(20);
+  });
+});
+
+describe("per-workspace chat stores", () => {
+  it("migrates a legacy chat-store.json into the default workspace once", async () => {
+    const config = makeTmpConfig();
+    const dir = path.dirname(config.sessionsLogPath);
+    const legacy = path.join(dir, "chat-store.json");
+    fs.writeFileSync(
+      legacy,
+      JSON.stringify({
+        version: 1,
+        activeId: "t1",
+        threads: [
+          {
+            id: "t1",
+            source: "web",
+            title: "Old",
+            pinned: false,
+            createdAt: 1,
+            updatedAt: 2,
+            model: "",
+            mode: "agent",
+            messages: [{ role: "user", content: "hi" }],
+          },
+        ],
+        apiSessions: [
+          {
+            id: "api1",
+            source: "api",
+            api: "chat",
+            apiPath: "/v1/chat/completions",
+            title: "API",
+            createdAt: 1,
+            updatedAt: 2,
+            messages: [{ role: "user", content: "q" }],
+          },
+        ],
+      }),
+    );
+    const store = await readChatStore(config);
+    expect(store.activeId).toBe("t1");
+    expect(store.threads.map((t) => t.id)).toEqual(["t1"]);
+    expect(store.apiSessions.map((s) => s.id)).toEqual(["api1"]);
+    expect(fs.existsSync(legacy)).toBe(false);
+    expect(fs.existsSync(`${legacy}.migrated`)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "chat-stores", "default.json"))).toBe(true);
+    const again = await readChatStore(config);
+    expect(again.threads).toHaveLength(1);
+    expect(fs.existsSync(`${legacy}.migrated`)).toBe(true);
+  });
+
+  it("reads and lists only the requested workspace", async () => {
+    const { createWorkspace } = await import("./workspaces.js");
+    const config = makeTmpConfig();
+    const research = await createWorkspace(config, "Research");
+    const thread = (id: string): WebChatThread => ({
+      id,
+      source: "web",
+      title: id,
+      pinned: false,
+      createdAt: 1,
+      updatedAt: 2,
+      model: "",
+      mode: "agent",
+      messages: [{ role: "user", content: id }],
+    });
+    await saveWebThreads(config, { activeId: "a", threads: [thread("a")] });
+    await saveWebThreads(config, {
+      workspaceId: research.id,
+      activeId: "b",
+      threads: [thread("b")],
+    });
+    await recordApiSession(config, {
+      api: "chat",
+      apiPath: "/v1/chat/completions",
+      messages: [{ role: "user", content: "from api" }],
+      assistantText: "ok",
+      cwd: path.join(config.workspace, "sub"),
+    });
+    const def = await listChatSessions(config, { workspaceId: "default" });
+    const other = await listChatSessions(config, { workspaceId: research.id });
+    expect(def.threads.map((t) => t.id)).toEqual(["a"]);
+    expect(def.activeId).toBe("a");
+    expect(other.threads.map((t) => t.id)).toEqual(["b"]);
+    expect(other.activeId).toBe("b");
+    expect(def.sessions.some((s) => s.source === "api" && s.cwd?.endsWith("sub"))).toBe(true);
+    expect(other.sessions.some((s) => s.source === "api")).toBe(false);
   });
 });

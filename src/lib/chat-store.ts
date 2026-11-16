@@ -10,6 +10,16 @@ import {
   type ContextWindowUsage,
 } from "./acp-context-usage.js";
 import { configDirsForAccountUsage } from "./cursor-account-snapshot.js";
+import {
+  DEFAULT_WORKSPACE_ID,
+  apiSessionsPath,
+  chatStoresDir,
+  isWorkspaceId,
+  legacyChatStorePath,
+  listWorkspaces,
+  workspaceChatStorePath,
+  workspaceIdForAgentCwd,
+} from "./workspaces.js";
 
 export type ChatAttachment = {
   name: string;
@@ -89,7 +99,20 @@ export type ApiSessionRecord = {
   updatedAt: number;
   model?: string;
   mode?: string;
+  /** Resolved agent cwd for this API call. Sidebar hint only; not a workspace id. */
+  cwd?: string;
   messages: ChatMessage[];
+};
+
+export type WorkspaceChatStore = {
+  version: 1;
+  activeId: string | null;
+  threads: WebChatThread[];
+};
+
+type ApiSessionsFile = {
+  version: 1;
+  sessions: ApiSessionRecord[];
 };
 
 const STORE_VERSION = 1 as const;
@@ -115,50 +138,200 @@ class StoreMutex {
   }
 }
 
-const storeMutex = new StoreMutex();
+const mutexes = new Map<string, StoreMutex>();
+const migrationMutex = new StoreMutex();
 
+function mutexFor(key: string): StoreMutex {
+  let mutex = mutexes.get(key);
+  if (!mutex) {
+    mutex = new StoreMutex();
+    mutexes.set(key, mutex);
+  }
+  return mutex;
+}
+
+/** Legacy combined path. New writes go to `chat-stores/` and `api-sessions.json`. */
 export function chatStorePath(config: BridgeConfig): string {
-  return path.join(path.dirname(config.sessionsLogPath), "chat-store.json");
+  return legacyChatStorePath(config);
 }
 
-function defaultStore(): ChatStoreFile {
-  return { version: STORE_VERSION, activeId: null, threads: [], apiSessions: [] };
+function emptyWorkspaceStore(): WorkspaceChatStore {
+  return { version: STORE_VERSION, activeId: null, threads: [] };
 }
 
-function readStoreSync(storePath: string): ChatStoreFile {
+function emptyApiSessions(): ApiSessionsFile {
+  return { version: STORE_VERSION, sessions: [] };
+}
+
+function writeJsonAtomic(filePath: string, value: unknown): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), "utf8");
+  fs.renameSync(tmp, filePath);
+}
+
+function readWorkspaceStoreSync(filePath: string): WorkspaceChatStore {
   try {
-    const raw = fs.readFileSync(storePath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<ChatStoreFile>;
-    if (parsed.version !== STORE_VERSION) return defaultStore();
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<WorkspaceChatStore>;
+    if (parsed.version !== STORE_VERSION) return emptyWorkspaceStore();
     return {
       version: STORE_VERSION,
       activeId: typeof parsed.activeId === "string" ? parsed.activeId : null,
       threads: Array.isArray(parsed.threads) ? parsed.threads : [],
-      apiSessions: Array.isArray(parsed.apiSessions) ? parsed.apiSessions : [],
     };
   } catch {
-    return defaultStore();
+    return emptyWorkspaceStore();
   }
 }
 
-function writeStoreSync(storePath: string, store: ChatStoreFile): void {
-  fs.mkdirSync(path.dirname(storePath), { recursive: true });
-  const tmp = `${storePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(store, null, 2), "utf8");
-  fs.renameSync(tmp, storePath);
+function readApiSessionsSync(filePath: string): ApiSessionsFile {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<ApiSessionsFile>;
+    if (parsed.version !== STORE_VERSION) return emptyApiSessions();
+    return {
+      version: STORE_VERSION,
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    };
+  } catch {
+    return emptyApiSessions();
+  }
 }
 
+/** One-shot, repeatable move from `chat-store.json` into the per-workspace files. */
+function migrateLegacyChatStoreSync(config: BridgeConfig): void {
+  const dest = workspaceChatStorePath(config, DEFAULT_WORKSPACE_ID);
+  if (fs.existsSync(dest)) return;
+  const legacy = legacyChatStorePath(config);
+  if (!fs.existsSync(legacy)) return;
+  let parsed: Partial<ChatStoreFile>;
+  try {
+    parsed = JSON.parse(fs.readFileSync(legacy, "utf8")) as Partial<ChatStoreFile>;
+  } catch {
+    return;
+  }
+  if (parsed.version !== STORE_VERSION) return;
+  const threads = Array.isArray(parsed.threads) ? parsed.threads : [];
+  const activeId = typeof parsed.activeId === "string" ? parsed.activeId : null;
+  writeJsonAtomic(dest, {
+    version: STORE_VERSION,
+    activeId,
+    threads,
+  } satisfies WorkspaceChatStore);
+  const apiPath = apiSessionsPath(config);
+  if (!fs.existsSync(apiPath)) {
+    const sessions = Array.isArray(parsed.apiSessions) ? parsed.apiSessions : [];
+    writeJsonAtomic(apiPath, {
+      version: STORE_VERSION,
+      sessions,
+    } satisfies ApiSessionsFile);
+  }
+  fs.renameSync(legacy, `${legacy}.migrated`);
+}
+
+async function ensureMigrated(config: BridgeConfig): Promise<void> {
+  await migrationMutex.run(() => migrateLegacyChatStoreSync(config));
+}
+
+function workspaceStoreIdsSync(config: BridgeConfig): string[] {
+  const dir = chatStoresDir(config);
+  if (!fs.existsSync(dir)) return [];
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => name.slice(0, -".json".length))
+    .filter((id) => isWorkspaceId(id));
+}
+
+function findWorkspaceIdForThreadSync(config: BridgeConfig, threadId: string): string | null {
+  for (const id of workspaceStoreIdsSync(config)) {
+    const store = readWorkspaceStoreSync(workspaceChatStorePath(config, id));
+    if (store.threads.some((thread) => thread.id === threadId)) return id;
+  }
+  return null;
+}
+
+async function withWorkspaceStore<T>(
+  config: BridgeConfig,
+  workspaceId: string,
+  operation: (store: WorkspaceChatStore, filePath: string) => T,
+): Promise<T> {
+  const id = isWorkspaceId(workspaceId) ? workspaceId : DEFAULT_WORKSPACE_ID;
+  await ensureMigrated(config);
+  return mutexFor(`store:${id}`).run(() => {
+    const filePath = workspaceChatStorePath(config, id);
+    const store = readWorkspaceStoreSync(filePath);
+    return operation(store, filePath);
+  });
+}
+
+export async function readWorkspaceChatStore(
+  config: BridgeConfig,
+  workspaceId: string = DEFAULT_WORKSPACE_ID,
+): Promise<WorkspaceChatStore> {
+  const id = isWorkspaceId(workspaceId) ? workspaceId : DEFAULT_WORKSPACE_ID;
+  return readWorkspaceStore(config, id);
+}
+
+async function readWorkspaceStore(
+  config: BridgeConfig,
+  workspaceId: string,
+): Promise<WorkspaceChatStore> {
+  return withWorkspaceStore(config, workspaceId, (store) => store);
+}
+
+async function readApiSessions(config: BridgeConfig): Promise<ApiSessionRecord[]> {
+  await ensureMigrated(config);
+  return mutexFor("api").run(() => readApiSessionsSync(apiSessionsPath(config)).sessions);
+}
+
+/** Default-workspace threads plus API session history. */
 export async function readChatStore(config: BridgeConfig): Promise<ChatStoreFile> {
-  return storeMutex.run(() => readStoreSync(chatStorePath(config)));
+  const [web, apiSessions] = await Promise.all([
+    readWorkspaceStore(config, DEFAULT_WORKSPACE_ID),
+    readApiSessions(config),
+  ]);
+  return {
+    version: STORE_VERSION,
+    activeId: web.activeId,
+    threads: web.threads,
+    apiSessions,
+  };
 }
 
 export async function writeChatStore(
   config: BridgeConfig,
   store: ChatStoreFile,
 ): Promise<void> {
-  return storeMutex.run(() => {
-    writeStoreSync(chatStorePath(config), store);
+  await ensureMigrated(config);
+  await mutexFor(`store:${DEFAULT_WORKSPACE_ID}`).run(() => {
+    writeJsonAtomic(workspaceChatStorePath(config, DEFAULT_WORKSPACE_ID), {
+      version: STORE_VERSION,
+      activeId: store.activeId,
+      threads: store.threads,
+    } satisfies WorkspaceChatStore);
   });
+  await mutexFor("api").run(() => {
+    writeJsonAtomic(apiSessionsPath(config), {
+      version: STORE_VERSION,
+      sessions: store.apiSessions,
+    } satisfies ApiSessionsFile);
+  });
+}
+
+export async function listAllWebThreads(config: BridgeConfig): Promise<WebChatThread[]> {
+  await ensureMigrated(config);
+  const ids = workspaceStoreIdsSync(config);
+  const threads: WebChatThread[] = [];
+  for (const id of ids) {
+    const store = await readWorkspaceStore(config, id);
+    threads.push(...store.threads);
+  }
+  return threads;
 }
 
 function truncateTitle(text: string, max = 48): string {
@@ -326,6 +499,7 @@ function apiSessionSummary(record: ApiSessionRecord): ChatSessionSummary {
     messageCount: record.messages.length,
     readOnly: true,
     apiPath: record.apiPath,
+    cwd: record.cwd,
   };
 }
 
@@ -492,6 +666,8 @@ function mergeDiscoveredSessions(discovered: DiscoveredSession[]): DiscoveredSes
 export type ListChatSessionsOptions = {
   /** Omit message bodies from web threads (lighter polling payloads). */
   compactThreads?: boolean;
+  /** Workspace whose web threads to return. Missing or unknown ids use the default workspace. */
+  workspaceId?: string;
 };
 
 export type WebChatThreadListEntry = Omit<WebChatThread, "messages"> & {
@@ -507,18 +683,31 @@ export async function listChatSessions(
   sessions: ChatSessionSummary[];
   compact?: boolean;
 }> {
-  const store = await readChatStore(config);
+  const records = await listWorkspaces(config);
+  const requested = options.workspaceId?.trim();
+  const record =
+    (requested && records.find((row) => row.id === requested)) ||
+    records.find((row) => row.isDefault) ||
+    records[0];
+  const workspaceId = record?.id ?? DEFAULT_WORKSPACE_ID;
+  const store = await readWorkspaceStore(config, workspaceId);
   const webSummaries = store.threads.map(webThreadSummary);
   const webIds = new Set(webSummaries.map((s) => s.id));
 
   const discovered = mergeDiscoveredSessions([
     ...(await discoverAgentTranscripts(config, { summariesOnly: true })),
     ...discoverAcpSessions(config),
-  ]).filter((s) => !webIds.has(s.id));
+  ]).filter((session) => {
+    if (webIds.has(session.id)) return false;
+    return workspaceIdForAgentCwd(config, session.cwd, records) === workspaceId;
+  });
 
-  const apiSummaries = store.apiSessions
-    .filter((s) => !webIds.has(s.id))
-    .map(apiSessionSummary);
+  const apiSummaries =
+    workspaceId === DEFAULT_WORKSPACE_ID
+      ? (await readApiSessions(config))
+          .filter((session) => !webIds.has(session.id))
+          .map(apiSessionSummary)
+      : [];
 
   const discoveredSummaries = discovered.map(({ messages: _m, transcriptPath: _p, ...rest }) => rest);
 
@@ -555,11 +744,14 @@ export async function getChatSession(
   config: BridgeConfig,
   id: string,
 ): Promise<(WebChatThread | ApiSessionRecord | DiscoveredSession) | null> {
-  const store = await readChatStore(config);
-  const web = store.threads.find((t) => t.id === id);
-  if (web) return enrichWebThreadContextUsage(web);
+  await ensureMigrated(config);
+  for (const workspaceId of workspaceStoreIdsSync(config)) {
+    const store = await readWorkspaceStore(config, workspaceId);
+    const web = store.threads.find((thread) => thread.id === id);
+    if (web) return enrichWebThreadContextUsage(web);
+  }
 
-  const api = store.apiSessions.find((s) => s.id === id);
+  const api = (await readApiSessions(config)).find((session) => session.id === id);
   if (api) return api;
 
   const discovered = mergeDiscoveredSessions([
@@ -578,8 +770,32 @@ export async function getChatSession(
   return { ...hit, contextWindowUsage: hit.contextWindowUsage ?? estimate };
 }
 
-function findWebThread(store: ChatStoreFile, threadId: string): WebChatThread | undefined {
+function findWebThread(
+  store: { threads: WebChatThread[] },
+  threadId: string,
+): WebChatThread | undefined {
   return store.threads.find((t) => t.id === threadId);
+}
+
+async function mutateWorkspaceThread(
+  config: BridgeConfig,
+  threadId: string,
+  workspaceId: string | undefined,
+  mutate: (thread: WebChatThread) => void,
+): Promise<void> {
+  await ensureMigrated(config);
+  const id =
+    workspaceId && isWorkspaceId(workspaceId)
+      ? workspaceId
+      : findWorkspaceIdForThreadSync(config, threadId) ?? DEFAULT_WORKSPACE_ID;
+  await mutexFor(`store:${id}`).run(() => {
+    const filePath = workspaceChatStorePath(config, id);
+    const store = readWorkspaceStoreSync(filePath);
+    const thread = findWebThread(store, threadId);
+    if (!thread) return;
+    mutate(thread);
+    writeJsonAtomic(filePath, store);
+  });
 }
 
 function lastAssistantMessage(thread: WebChatThread): ChatMessage | undefined {
@@ -598,12 +814,9 @@ export async function updateWebThreadAssistantProgress(
     streaming?: boolean;
     error?: boolean;
   },
+  workspaceId?: string,
 ): Promise<void> {
-  await storeMutex.run(() => {
-    const storePath = chatStorePath(config);
-    const store = readStoreSync(storePath);
-    const thread = findWebThread(store, threadId);
-    if (!thread) return;
+  await mutateWorkspaceThread(config, threadId, workspaceId, (thread) => {
     let msg = lastAssistantMessage(thread);
     if (!msg || !msg.streaming) {
       msg = { role: "assistant", content: "", streaming: true };
@@ -614,7 +827,6 @@ export async function updateWebThreadAssistantProgress(
     if (update.streaming !== undefined) msg.streaming = update.streaming;
     if (update.error !== undefined) msg.error = update.error;
     thread.updatedAt = Date.now();
-    writeStoreSync(storePath, store);
   });
 }
 
@@ -622,15 +834,11 @@ export async function updateWebThreadContextUsage(
   config: BridgeConfig,
   threadId: string,
   usage: ContextWindowUsage,
+  workspaceId?: string,
 ): Promise<void> {
-  await storeMutex.run(() => {
-    const storePath = chatStorePath(config);
-    const store = readStoreSync(storePath);
-    const thread = findWebThread(store, threadId);
-    if (!thread) return;
+  await mutateWorkspaceThread(config, threadId, workspaceId, (thread) => {
     thread.contextWindowUsage = usage;
     thread.updatedAt = Date.now();
-    writeStoreSync(storePath, store);
   });
 }
 
@@ -644,12 +852,9 @@ export async function finalizeWebThreadAssistant(
     durationMs?: number;
     thinkMs?: number;
   },
+  workspaceId?: string,
 ): Promise<void> {
-  await storeMutex.run(() => {
-    const storePath = chatStorePath(config);
-    const store = readStoreSync(storePath);
-    const thread = findWebThread(store, threadId);
-    if (!thread) return;
+  await mutateWorkspaceThread(config, threadId, workspaceId, (thread) => {
     let msg = lastAssistantMessage(thread);
     if (!msg) {
       msg = { role: "assistant", content: "", streaming: false, ts: Date.now() };
@@ -666,7 +871,6 @@ export async function finalizeWebThreadAssistant(
     if (typeof update.thinkMs === "number") msg.thinkMs = update.thinkMs;
     else delete msg.thinkMs;
     thread.updatedAt = Date.now();
-    writeStoreSync(storePath, store);
   });
 }
 
@@ -746,18 +950,23 @@ export function mergeWebThreadPair(
 
 export async function saveWebThreads(
   config: BridgeConfig,
-  payload: { activeId?: string | null; threads: WebChatThread[] },
+  payload: { activeId?: string | null; threads: WebChatThread[]; workspaceId?: string },
 ): Promise<void> {
-  const store = await readChatStore(config);
-  const byId = new Map(store.threads.map((t) => [t.id, t]));
-  for (const raw of payload.threads) {
-    const incoming = normalizeWebThread(raw);
-    const prev = byId.get(incoming.id);
-    byId.set(incoming.id, prev ? mergeWebThreadPair(prev, incoming) : incoming);
-  }
-  store.threads = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
-  if (payload.activeId !== undefined) store.activeId = payload.activeId;
-  await writeChatStore(config, store);
+  const workspaceId =
+    payload.workspaceId && isWorkspaceId(payload.workspaceId)
+      ? payload.workspaceId
+      : DEFAULT_WORKSPACE_ID;
+  await withWorkspaceStore(config, workspaceId, (store, filePath) => {
+    const byId = new Map(store.threads.map((thread) => [thread.id, thread]));
+    for (const raw of payload.threads) {
+      const incoming = normalizeWebThread(raw);
+      const prev = byId.get(incoming.id);
+      byId.set(incoming.id, prev ? mergeWebThreadPair(prev, incoming) : incoming);
+    }
+    store.threads = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt);
+    if (payload.activeId !== undefined) store.activeId = payload.activeId;
+    writeJsonAtomic(filePath, store);
+  });
 }
 
 export type WebThreadSyncMessage = {
@@ -880,11 +1089,15 @@ export async function syncWebThreadFromChatRequest(
     model?: string;
     mode?: string;
     messages: WebThreadSyncMessage[];
+    workspaceId?: string;
   },
 ): Promise<void> {
-  await storeMutex.run(() => {
-    const storePath = chatStorePath(config);
-    const store = readStoreSync(storePath);
+  await ensureMigrated(config);
+  const workspaceId =
+    opts.workspaceId && isWorkspaceId(opts.workspaceId)
+      ? opts.workspaceId
+      : findWorkspaceIdForThreadSync(config, threadId) ?? DEFAULT_WORKSPACE_ID;
+  await withWorkspaceStore(config, workspaceId, (store, filePath) => {
     let thread = findWebThread(store, threadId);
     const now = Date.now();
     if (!thread) {
@@ -938,40 +1151,49 @@ export async function syncWebThreadFromChatRequest(
       }
     }
     thread.updatedAt = now;
-    writeStoreSync(storePath, store);
+    writeJsonAtomic(filePath, store);
   });
 }
 
 export async function deleteWebThread(
   config: BridgeConfig,
   id: string,
+  workspaceId?: string,
 ): Promise<boolean> {
-  const store = await readChatStore(config);
-  const before = store.threads.length;
-  store.threads = store.threads.filter((t) => t.id !== id);
-  if (store.activeId === id) {
-    store.activeId = store.threads[0]?.id ?? null;
+  await ensureMigrated(config);
+  const ids = workspaceId && isWorkspaceId(workspaceId)
+    ? [workspaceId]
+    : workspaceStoreIdsSync(config);
+  for (const storeId of ids) {
+    const removed = await withWorkspaceStore(config, storeId, (store, filePath) => {
+      const before = store.threads.length;
+      store.threads = store.threads.filter((thread) => thread.id !== id);
+      if (store.threads.length === before) return false;
+      if (store.activeId === id) store.activeId = store.threads[0]?.id ?? null;
+      writeJsonAtomic(filePath, store);
+      return true;
+    });
+    if (removed) return true;
   }
-  if (store.threads.length === before) return false;
-  await writeChatStore(config, store);
-  return true;
+  return false;
 }
 
 export async function migrateLocalThreads(
   config: BridgeConfig,
   imported: WebChatThread[],
 ): Promise<{ merged: number }> {
-  const store = await readChatStore(config);
-  const existingIds = new Set(store.threads.map((t) => t.id));
   let merged = 0;
-  for (const thread of imported) {
-    if (existingIds.has(thread.id)) continue;
-    store.threads.push({ ...thread, source: "web" });
-    existingIds.add(thread.id);
-    merged++;
-  }
-  store.threads.sort((a, b) => b.updatedAt - a.updatedAt);
-  await writeChatStore(config, store);
+  await withWorkspaceStore(config, DEFAULT_WORKSPACE_ID, (store, filePath) => {
+    const existingIds = new Set(store.threads.map((thread) => thread.id));
+    for (const thread of imported) {
+      if (existingIds.has(thread.id)) continue;
+      store.threads.push({ ...thread, source: "web" });
+      existingIds.add(thread.id);
+      merged++;
+    }
+    store.threads.sort((a, b) => b.updatedAt - a.updatedAt);
+    writeJsonAtomic(filePath, store);
+  });
   return { merged };
 }
 
@@ -985,6 +1207,7 @@ export async function recordApiSession(
     messages: Array<{ role: string; content: string }>;
     assistantText: string;
     sessionId?: string;
+    cwd?: string;
   },
 ): Promise<void> {
   const userMessages = opts.messages.filter(
@@ -1011,13 +1234,14 @@ export async function recordApiSession(
     }
   }
 
-  await storeMutex.run(() => {
-    const storePath = chatStorePath(config);
-    const store = readStoreSync(storePath);
+  await ensureMigrated(config);
+  await mutexFor("api").run(() => {
+    const filePath = apiSessionsPath(config);
+    const file = readApiSessionsSync(filePath);
     const id =
       opts.sessionId ??
       `api_${now}_${Math.random().toString(16).slice(2, 10)}`;
-    const existing = store.apiSessions.find((s) => s.id === id);
+    const existing = file.sessions.find((session) => session.id === id);
     const record: ApiSessionRecord = existing
       ? {
           ...existing,
@@ -1025,6 +1249,7 @@ export async function recordApiSession(
           updatedAt: now,
           model: opts.model ?? existing.model,
           mode: opts.mode ?? existing.mode,
+          cwd: opts.cwd ?? existing.cwd,
           messages: messages.slice(-MAX_STORED_MESSAGES),
         }
       : {
@@ -1037,14 +1262,15 @@ export async function recordApiSession(
           updatedAt: now,
           model: opts.model,
           mode: opts.mode,
+          cwd: opts.cwd,
           messages: messages.slice(-MAX_STORED_MESSAGES),
         };
 
-    store.apiSessions = [
+    file.sessions = [
       record,
-      ...store.apiSessions.filter((s) => s.id !== id),
+      ...file.sessions.filter((session) => session.id !== id),
     ].slice(0, MAX_API_SESSIONS);
-    writeStoreSync(storePath, store);
+    writeJsonAtomic(filePath, file);
   });
 }
 
