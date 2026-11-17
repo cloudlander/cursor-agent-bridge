@@ -191,6 +191,25 @@ function executableOnPath(
   return undefined;
 }
 
+/** Installed `cursor-agent` or `agent`, or undefined when the command is not on disk. */
+export function installedAgentBinary(
+  env: EnvSource,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  const resolved = resolveAgentBinary(env, platform);
+  if (resolved.includes(path.sep) || path.isAbsolute(resolved)) {
+    try {
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile()) return undefined;
+      if (platform !== "win32") fs.accessSync(resolved, fs.constants.X_OK);
+      return resolved;
+    } catch {
+      return undefined;
+    }
+  }
+  return executableOnPath(resolved, env, platform);
+}
+
 function resolveAgentBinary(
   env: EnvSource,
   platform: NodeJS.Platform,
@@ -309,9 +328,9 @@ function isAuthenticatedAccountDir(dir: string): boolean {
   if (!fs.existsSync(configFile)) return false;
   try {
     const config = JSON.parse(fs.readFileSync(configFile, "utf-8")) as {
-      authInfo?: { email?: string };
+      authInfo?: { email?: string; authId?: string };
     };
-    return Boolean(config?.authInfo?.email);
+    return Boolean(config?.authInfo?.email || config?.authInfo?.authId);
   } catch {
     return false;
   }

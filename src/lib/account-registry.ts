@@ -26,9 +26,9 @@ function isAuthenticatedAccountDir(dir: string): boolean {
   if (!fs.existsSync(configFile)) return false;
   try {
     const config = JSON.parse(fs.readFileSync(configFile, "utf-8")) as {
-      authInfo?: { email?: string };
+      authInfo?: { email?: string; authId?: string };
     };
-    return Boolean(config?.authInfo?.email);
+    return Boolean(config?.authInfo?.email || config?.authInfo?.authId);
   } catch {
     return false;
   }

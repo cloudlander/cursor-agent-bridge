@@ -481,6 +481,20 @@ describe("discoverAccountDirs filtering", () => {
     expect(loaded.configDirs).toEqual([]);
   });
 
+  it("auto-discovers an account that has authId and no email", () => {
+    const accountsDir = makeTmpAccounts();
+    const dir = path.join(accountsDir, "auth-id-only");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "cli-config.json"),
+      JSON.stringify({ authInfo: { authId: "auth0|user_A" } }),
+    );
+
+    const loaded = loadEnvConfig({ env: { HOME: tmpBase }, cwd: "/workspace" });
+    expect(loaded.configDirs).toHaveLength(1);
+    expect(loaded.configDirs[0]).toContain("auth-id-only");
+  });
+
   it("returns empty when accounts dir does not exist", () => {
     tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), "cap-test-"));
     const loaded = loadEnvConfig({ env: { HOME: tmpBase }, cwd: "/workspace" });

@@ -99,6 +99,8 @@ npm test
 npm start            # 127.0.0.1:8765 default
 ```
 
+This path does not use `scripts/bootstrap-cai-application.sh`. If `cursor-agent` / `agent` is installed and a valid CLI token already exists (macOS Keychain, `~/.config/cursor/auth.json`, or `CURSOR_API_KEY`), startup copies that login into `~/.cursor-api-proxy/accounts/` (`CURSOR_BRIDGE_ADOPT_HOST_LOGIN`, default on).
+
 Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (never commit filled `.env`).
 
 ---
@@ -121,7 +123,7 @@ Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (neve
 | Plugin marketplace & deploy | `src/lib/plugins/*` | |
 | Admin UI & web chat | `src/lib/admin-dashboard.ts`, `chat-api.ts`, `public/` | Mobile layout: `public/chat*.css/js` |
 | Dynamic user apps | `src/lib/dynamic-apps.ts`, `src/lib/app-catalog.ts`, `src/lib/dynamic-app-supervisor.ts` | Static sites and localhost catalog proxies together at `/apps/{name}/` and `/{name}/`; `POST /api/apps/deploy`; `POST /api/apps/catalog`; launch-backed apps start on listen and stay up; Restart/Stop/Delete on `/apps`; storage `<sessions-log-dir>/apps/` |
-| CLI entry | `src/cli.ts`, `src/cli/*` | Published bin: `cursor-api-proxy` |
+| CLI entry | `src/cli.ts`, `src/cli/*`, `src/lib/adopt-host-login.ts` | Published bin: `cursor-api-proxy`. Startup adopts an existing host CLI login into the account pool. |
 | SDK consumer | `src/client.ts` | npm export `"."` |
 | CAI deploy | `app.py`, `app.sh`, `scripts/bootstrap-cai-application.sh`, `docs/CAI-DEPLOYMENT.md` | Not required for generic Node deploy |
 | ACP → Web Chat import | `scripts/restore-acp-to-web.mjs` | `npm run restore-acp-to-web -- <acp-session-dir>`; Node 22+ (`node:sqlite`) |

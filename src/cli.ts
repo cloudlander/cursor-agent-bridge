@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { adoptHostCursorLogin } from "./lib/adopt-host-login.js";
 import { loadBridgeConfig } from "./lib/config.js";
 import { loadEnvConfig } from "./lib/env.js";
 import { startBridgeServer, setupGracefulShutdown } from "./lib/server.js";
@@ -100,6 +101,7 @@ async function main(): Promise<void> {
     env: mergedEnv,
     mode: args.mode,
   });
+  adoptHostCursorLogin(config, { env: mergedEnv });
   const servers = await startBridgeServer({ version: pkg.version, config });
   setupGracefulShutdown(servers);
 }

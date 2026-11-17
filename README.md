@@ -49,6 +49,24 @@ npx cursor-api-proxy
 # or from repo: npm start / node dist/cli.js
 ```
 
+### Local machine (macOS, Linux, Windows)
+
+A Cloudera AI deploy uses `scripts/bootstrap-cai-application.sh` and `app.sh`. A normal development machine does not. From a clone of this repo, with Node.js 22+ and the Cursor CLI already installed:
+
+```bash
+curl https://cursor.com/install -fsS | bash
+agent login
+agent --list-models
+
+npm install
+npm run build
+npm start
+```
+
+`npm start` listens on http://127.0.0.1:8765. `npm install` already runs the TypeScript build; `npm run build` refreshes `dist/` after later edits.
+
+If `cursor-agent` or `agent` is on `PATH` and this machine already has a valid Cursor token — macOS Keychain (`cursor-access-token`), `~/.config/cursor/auth.json` (or `~/.cursor/auth.json`), or `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` — startup copies that login into `~/.cursor-api-proxy/accounts/<name>` and puts it in the account pool. You do not need `cursor-api-proxy login` or a dashboard add for that account. A second start reuses the same folder. Set `CURSOR_BRIDGE_ADOPT_HOST_LOGIN=0` to skip. `CURSOR_CONFIG_DIRS` still lists the pool explicitly and skips this copy.
+
 Inspect completed requests without opening the dashboard:
 
 ```bash
@@ -362,7 +380,8 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 | `CURSOR_BRIDGE_API_KEY` | — | If set, require `Authorization: Bearer <key>` (or `x-api-key`) on **`/v1/*`** and **`/health`** only |
 | `CURSOR_BRIDGE_DISABLE_CDSW_INBOUND_KEY` | — | When `1`, do not auto-use `CDSW_API_KEY` for `/v1` auth in CAI applications |
 | `CURSOR_BRIDGE_CDSW_BYPASS_AUTHENTICATION` | `true` | Mirrors CDSW `/application` `bypass_authentication`. `app.sh` sets this on CAI startup; when `false`, `/v1` skips API-key auth |
-| `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` | — | Cursor access token passed to spawned CLI/ACP children (automation, headless). Same value can be used for both names. |
+| `CURSOR_API_KEY` / `CURSOR_AUTH_TOKEN` | — | Cursor access token passed to spawned CLI/ACP children (automation, headless). Same value can be used for both names. On startup, a valid key is also copied into an account when no CLI `auth.json` login is present. |
+| `CURSOR_BRIDGE_ADOPT_HOST_LOGIN` | `true` | When `cursor-agent` / `agent` is installed, copy an existing valid CLI token (macOS Keychain, `auth.json`, or `CURSOR_API_KEY`) into `~/.cursor-api-proxy/accounts/` so that login is in the pool without `cursor-api-proxy login`. Set `0` / `false` / `off` to skip. Skipped when `CURSOR_CONFIG_DIRS` is set. |
 | `CURSOR_BRIDGE_WORKSPACE` | process cwd | Base workspace directory for Cursor CLI. With `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false`, header `X-Cursor-Workspace` must point to an existing directory under this path (after resolving real paths). |
 | `CURSOR_BRIDGE_MODE` | — | Server default for Cursor CLI `--mode`: `agent`, `ask`, or `plan`. If unset, default is `ask`. Env wins over CLI `--mode` when both are set. Per request, JSON body `mode` or header `X-Cursor-Mode` overrides (precedence: body → header → DSH auto-mode → this env → `--mode` → `ask`). Invalid value → startup error. With `agent` (or `plan`) and real workspace, the CLI may read/write files under `CURSOR_BRIDGE_WORKSPACE` / cwd. See `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE`. |
 | `CURSOR_BRIDGE_DSH_AUTO_MODE` | `false` | When enabled, requests whose system/developer content contains the DSH system marker use Cursor `plan` while the plan marker is present and `agent` otherwise. Ordinary user content is never inspected. Explicit body/header modes still win. |
@@ -463,6 +482,10 @@ CLI subcommands (see `cursor-api-proxy --help`): `login <name>`, `accounts` (lis
 Use multiple Cursor accounts to spread load and stay under usage limits. The proxy includes a built-in account manager.
 
 ### Adding accounts
+
+On a machine that already has `agent` installed and a valid CLI token, starting the proxy creates that account for you. See [Local machine](#local-machine-macos-linux-windows).
+
+To add a different Cursor account, run an isolated browser login:
 
 ```bash
 npx cursor-api-proxy login account1

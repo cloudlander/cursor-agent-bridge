@@ -188,25 +188,44 @@ export function syncAccessTokenCacheForAuth(
   writeCachedToken(configDir, keychain);
 }
 
+/** macOS Keychain slot written by `agent login`. Empty on other platforms. */
+export function readMacKeychainAccessToken(): string | undefined {
+  if (process.platform !== "darwin") return undefined;
+  try {
+    const t = execSync(
+      'security find-generic-password -s "cursor-access-token" -w',
+      { stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
+    )
+      .toString()
+      .trim();
+    return t || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Read the Cursor CLI's shared access token: the macOS Keychain slot, or
  * `$XDG_CONFIG_HOME/cursor/auth.json` (default `~/.config/cursor`) elsewhere.
  */
 export function readKeychainToken(): string | undefined {
-  if (process.platform === "darwin") {
-    try {
-      const t = execSync(
-        'security find-generic-password -s "cursor-access-token" -w',
-        { stdio: ["pipe", "pipe", "pipe"], timeout: 5000 },
-      )
-        .toString()
-        .trim();
-      if (t) return t;
-    } catch {
-      /* fall through */
-    }
-  }
-  return readAuthFileToken();
+  return readMacKeychainAccessToken() ?? readAuthFileToken();
+}
+
+/** Persist this account's CLI `auth.json` and `.cursor-token` cache. */
+export function writeAccountCliCredentials(
+  configDir: string,
+  creds: { accessToken: string; refreshToken?: string },
+  platform: NodeJS.Platform = process.platform,
+): void {
+  const access = creds.accessToken.trim();
+  if (!access) return;
+  const refresh = creds.refreshToken?.trim() || access;
+  writeAuthJson(accountAuthJsonPath(configDir, platform), {
+    accessToken: access,
+    refreshToken: refresh,
+  });
+  writeCachedToken(configDir, access);
 }
 
 function readAuthFileToken(): string | undefined {
