@@ -2,6 +2,46 @@
   'use strict';
 
   const _fetch = globalThis.fetch.bind(globalThis);
+  /** Show the toolbar spinner only after an RPC has been pending this long. */
+  const RPC_SPINNER_DELAY_MS = 2000;
+  let rpcSlowCount = 0;
+
+  function pageLoadOverlayVisible() {
+    const overlay = document.getElementById('chat-page-load');
+    if (!overlay) return false;
+    return !overlay.hidden && !overlay.classList.contains('hidden');
+  }
+
+  function syncRpcSpinner() {
+    const node = document.getElementById('chat-rpc-spinner');
+    if (!node) return;
+    const show = rpcSlowCount > 0 && !pageLoadOverlayVisible();
+    node.hidden = !show;
+    node.setAttribute('aria-hidden', show ? 'false' : 'true');
+  }
+
+  function trackSlowRpc(promise) {
+    let slow = false;
+    const timer = setTimeout(() => {
+      slow = true;
+      rpcSlowCount += 1;
+      syncRpcSpinner();
+    }, RPC_SPINNER_DELAY_MS);
+    const done = () => {
+      clearTimeout(timer);
+      if (!slow) return;
+      rpcSlowCount = Math.max(0, rpcSlowCount - 1);
+      syncRpcSpinner();
+    };
+    Promise.resolve(promise).then(done, done);
+  }
+
+  function trackedFetch(input, init) {
+    const pending = _fetch(input, init);
+    trackSlowRpc(pending);
+    return pending;
+  }
+
   function apiFetch(input, init) {
     if (
       typeof input === "string" &&
@@ -9,10 +49,28 @@
       !input.startsWith("//") &&
       typeof bridgePath === "function"
     ) {
-      return _fetch(bridgePath(input), init);
+      return trackedFetch(bridgePath(input), init);
     }
-    return _fetch(input, init);
+    return trackedFetch(input, init);
   }
+
+  globalThis.fetch = trackedFetch;
+
+  const _xhrSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function (...args) {
+    const xhr = this;
+    let finish = () => {};
+    trackSlowRpc(new Promise((resolve) => {
+      finish = () => resolve();
+      xhr.addEventListener('loadend', finish, { once: true });
+    }));
+    try {
+      return _xhrSend.apply(xhr, args);
+    } catch (err) {
+      finish();
+      throw err;
+    }
+  };
 
   const THREADS_KEY = 'cursor-bridge-chat-threads';
   const ACTIVE_KEY = 'cursor-bridge-chat-active';
@@ -1174,7 +1232,11 @@
       if (thread.readOnly || !state.dirtyThreadIds.has(thread.id)) continue;
       const id = thread.workspaceId || state.currentWorkspaceId || 'default';
       if (!groups.has(id)) groups.set(id, []);
-      groups.get(id).push({ ...thread, source: 'web' });
+      groups.get(id).push({
+        ...thread,
+        source: 'web',
+        title: explicitTitle(thread.title) || null,
+      });
     }
     if (state.dirtyActiveId) {
       const id = state.dirtyActiveWorkspaceId || state.currentWorkspaceId || 'default';
@@ -1231,7 +1293,7 @@
           id: serverThread.id,
           source: 'web',
           workspaceId,
-          title: serverThread.title ?? entry?.title ?? null,
+          title: explicitTitle(serverThread.title) || explicitTitle(entry?.title) || null,
           pinned: serverThread.pinned ?? entry?.pinned ?? false,
           createdAt: serverThread.createdAt ?? entry?.createdAt ?? Date.now(),
           updatedAt: serverThread.updatedAt ?? entry?.updatedAt ?? Date.now(),
@@ -1245,22 +1307,29 @@
         if (entry && serverThread.updatedAt) entry.updatedAt = serverThread.updatedAt;
         return true;
       }
-      if ((local.updatedAt ?? 0) > (serverThread.updatedAt ?? 0)) return false;
+      if ((local.updatedAt ?? 0) > (serverThread.updatedAt ?? 0)) {
+        return repairAutoTitle(local, entry);
+      }
       local.workspaceId = workspaceId;
-      local.title = serverThread.title ?? local.title;
+      const incomingTitle = explicitTitle(serverThread.title);
+      if (incomingTitle) local.title = incomingTitle;
+      else if (!explicitTitle(local.title)) local.title = null;
       local.pinned = serverThread.pinned ?? local.pinned;
       local.model = serverThread.model ?? local.model;
       local.mode = serverThread.mode ?? local.mode;
       local.updatedAt = Math.max(local.updatedAt ?? 0, serverThread.updatedAt ?? 0);
       if (entry) {
-        entry.title = local.title || entry.title;
+        const next = explicitTitle(local.title) || explicitTitle(entry.title) || titleFromThreadMessages(local);
+        if (next) entry.title = next;
         entry.pinned = local.pinned;
         if (serverThread.updatedAt) entry.updatedAt = serverThread.updatedAt;
       }
       return true;
     }
 
-    if (local && (local.updatedAt ?? 0) > (serverThread.updatedAt ?? 0)) return false;
+    if (local && (local.updatedAt ?? 0) > (serverThread.updatedAt ?? 0)) {
+      return repairAutoTitle(local, entry);
+    }
 
     const merged = {
       ...serverThread,
@@ -1269,6 +1338,7 @@
       readOnly: false,
       messages: Array.isArray(serverThread.messages) ? serverThread.messages : [],
     };
+    if (!explicitTitle(merged.title)) merged.title = null;
     if (idx >= 0) state.threads[idx] = merged;
     else state.threads.push(merged);
     rehydrateThreadAttachments(merged);
@@ -1277,7 +1347,7 @@
     if (entry) {
       entry.updatedAt = merged.updatedAt;
       entry.messageCount = countStableMessages(merged.messages);
-      const title = merged.title || threadTitle(merged);
+      const title = explicitTitle(merged.title) || explicitTitle(entry.title) || titleFromThreadMessages(merged);
       if (title) entry.title = title;
     }
     return true;
@@ -1305,7 +1375,7 @@
         id,
         source: entry?.source || session.source || 'web',
         workspaceId: entry?.workspaceId || state.currentWorkspaceId,
-        title: entry?.title || session.title || null,
+        title: explicitTitle(session.title) || null,
         pinned: entry?.pinned ?? session.pinned ?? false,
         createdAt: entry?.createdAt ?? session.createdAt ?? Date.now(),
         updatedAt: session.updatedAt ?? entry?.updatedAt ?? Date.now(),
@@ -1324,7 +1394,8 @@
       if (entry) {
         entry.updatedAt = thread.updatedAt;
         entry.messageCount = countStableMessages(messages);
-        if (session.title) entry.title = session.title;
+        const title = explicitTitle(thread.title) || explicitTitle(entry.title) || titleFromThreadMessages(thread);
+        if (title) entry.title = title;
       }
       updateSessionSnapshot(id);
       return true;
@@ -1369,6 +1440,7 @@
       updateSessionSnapshot(id);
       renderMessages();
       renderToolbar();
+      renderThreadList();
     }
   }
 
@@ -1445,7 +1517,12 @@
     try {
       const ok = await fetchAndApplySession(id);
       if (!ok) throw new Error('missing session');
-      if (state.activeId === id) renderMessages();
+      if (state.activeId === id) {
+        renderMessages();
+        const titleEl = $('chat-title');
+        if (titleEl) titleEl.textContent = threadTitle(id);
+      }
+      renderThreadList();
     } catch {
       toast('Could not load session messages');
     } finally {
@@ -1496,21 +1573,59 @@
     return t;
   }
 
+  const PLACEHOLDER_TITLE = 'New chat';
+
+  /** Explicit rename. The sidebar placeholder is not a stored title. */
+  function explicitTitle(title) {
+    const t = typeof title === 'string' ? title.trim() : '';
+    if (!t || t === PLACEHOLDER_TITLE) return '';
+    return t;
+  }
+
+  function titleFromThreadMessages(thread) {
+    const first = thread?.messages?.find(m => m.role === 'user');
+    const raw = first?.content?.trim() || first?.attachments?.[0]?.name || '';
+    if (!raw) return '';
+    const t = raw.replace(/\s+/g, ' ');
+    return t.length > 48 ? `${t.slice(0, 48)}…` : t;
+  }
+
+  function applyAutoTitle(thread) {
+    const entry = catalogEntry(thread?.id);
+    if (!thread || !entry || explicitTitle(thread.title) || explicitTitle(entry.title)) return;
+    const derived = titleFromThreadMessages(thread);
+    if (derived) entry.title = derived;
+  }
+
+  /** Drop a sticky placeholder so a newer local copy cannot hide the real title. */
+  function repairAutoTitle(thread, entry) {
+    let changed = false;
+    if (thread && !explicitTitle(thread.title) && thread.title) {
+      thread.title = null;
+      changed = true;
+    }
+    if (entry && !explicitTitle(entry.title)) {
+      const next = explicitTitle(thread?.title) || titleFromThreadMessages(thread);
+      if (next) {
+        entry.title = next;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   function threadTitle(threadOrId) {
     const thread = typeof threadOrId === 'string'
       ? state.threads.find(t => t.id === threadOrId)
       : threadOrId;
     const entry = typeof threadOrId === 'string' ? catalogEntry(threadOrId) : catalogEntry(thread?.id);
-    if (thread?.title) return thread.title;
-    if (entry?.title) return entry.title;
-    const first = thread?.messages?.find(m => m.role === 'user');
-    if (first?.content?.trim()) {
-      const t = first.content.trim().replace(/\s+/g, ' ');
-      return t.length > 48 ? `${t.slice(0, 48)}…` : t;
-    }
-    const att = first?.attachments?.[0]?.name;
-    if (att) return att.length > 48 ? `${att.slice(0, 48)}…` : att;
-    return 'New chat';
+    const custom = explicitTitle(thread?.title);
+    if (custom) return custom;
+    const fromEntry = explicitTitle(entry?.title);
+    if (fromEntry) return fromEntry;
+    const fromMessages = titleFromThreadMessages(thread);
+    if (fromMessages) return fromMessages;
+    return PLACEHOLDER_TITLE;
   }
 
   function threadMatchesSearch(entry, q) {
@@ -1646,9 +1761,9 @@
       done = true;
       if (save) {
         const v = input.value.trim();
-        t.title = v || null;
+        t.title = explicitTitle(v) || null;
         const entry = catalogEntry(id);
-        if (entry) entry.title = t.title || threadTitle(t);
+        if (entry) entry.title = t.title || titleFromThreadMessages(t) || PLACEHOLDER_TITLE;
         markThreadDirty(id);
       }
       renderThreadList();
@@ -2526,6 +2641,7 @@
     overlay.classList.toggle('hidden', !on);
     overlay.hidden = !on;
     overlay.setAttribute('aria-busy', on ? 'true' : 'false');
+    syncRpcSpinner();
   }
 
   function setAccountSwitchLoading(on) {
@@ -2730,7 +2846,11 @@
     for (const s of next) {
       const p = prevMap.get(s.id);
       if (!p) return true;
-      if (p.updatedAt !== s.updatedAt || p.messageCount !== s.messageCount) return true;
+      if (
+        p.updatedAt !== s.updatedAt
+        || p.messageCount !== s.messageCount
+        || p.title !== s.title
+      ) return true;
     }
     return false;
   }
@@ -2787,10 +2907,8 @@
     if (entry) {
       entry.updatedAt = thread.updatedAt;
       entry.messageCount = thread.messages.filter(m => !m.streaming && messageHasPayload(m)).length;
-      if (!entry.title || entry.title === 'New chat') {
-        const first = thread.messages.find(m => m.role === 'user');
-        if (first?.content) entry.title = threadTitle(thread);
-      }
+      if (explicitTitle(thread.title)) entry.title = thread.title.trim();
+      else applyAutoTitle(thread);
     }
     updateSessionSnapshot(thread.id);
   }
@@ -2907,8 +3025,13 @@
       sanitizeAssistantMessage(msg);
       state.streams.delete(thread.id);
       if (!msg.interrupted) touch(thread);
+      else applyAutoTitle(thread);
       renderComposerState();
-      if (thread.id === state.activeId) renderMessages();
+      if (thread.id === state.activeId) {
+        renderMessages();
+        const titleEl = $('chat-title');
+        if (titleEl) titleEl.textContent = threadTitle(thread);
+      }
       renderThreadList();
       void refreshSessionCatalog();
       if (thread.id === state.activeId) $('chat-input')?.focus();
@@ -3029,8 +3152,13 @@
       sanitizeAssistantMessage(msg);
       state.streams.delete(thread.id);
       if (!msg.interrupted) touch(thread);
+      else applyAutoTitle(thread);
       renderComposerState();
-      if (thread.id === state.activeId) renderMessages();
+      if (thread.id === state.activeId) {
+        renderMessages();
+        const titleEl = $('chat-title');
+        if (titleEl) titleEl.textContent = threadTitle(thread);
+      }
       renderThreadList();
       void refreshSessionCatalog();
       if (thread.id === state.activeId) $('chat-input')?.focus();

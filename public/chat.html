@@ -55,6 +55,9 @@
       <header class="chat-toolbar" id="chat-toolbar">
         <button type="button" class="chat-sidebar-toggle btn small" id="chat-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
         <h1 class="chat-toolbar-title" id="chat-title">New chat</h1>
+        <div id="chat-rpc-spinner" class="chat-rpc-spinner" hidden>
+          <progress class="loading-spinner" aria-label="Waiting for the server"></progress>
+        </div>
         <div class="chat-account-wrap" id="chat-account-wrap">
           <span class="chat-account-visible mono" id="chat-account-visible" aria-live="polite">…</span>
           <select id="chat-account" class="chat-mode-select chat-account-select" title="Cursor account" aria-label="Cursor account"></select>

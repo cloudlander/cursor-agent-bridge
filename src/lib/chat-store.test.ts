@@ -185,6 +185,27 @@ describe("chat store persistence", () => {
     expect(compact.threads[0]?.id).toBe("web-1");
   });
 
+  it("does not persist the New chat placeholder as a real title", async () => {
+    const config = makeTmpConfig();
+    const thread: WebChatThread = {
+      id: "put-placeholder",
+      source: "web",
+      title: "New chat",
+      pinned: false,
+      createdAt: 1,
+      updatedAt: 5,
+      model: "",
+      mode: "agent",
+      messages: [{ role: "user", content: "hello from put" }],
+    };
+    await saveWebThreads(config, { threads: [thread] });
+    const stored = await readChatStore(config);
+    expect(stored.threads.find((t) => t.id === thread.id)?.title).toBeNull();
+    const listed = await listChatSessions(config);
+    expect(listed.sessions.find((s) => s.id === thread.id)?.title).toBe("hello from put");
+    expect(listed.threads.find((t) => t.id === thread.id)?.title).toBeNull();
+  });
+
   it("excludes zero-message sessions and sorts by createdAt", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-store-isolated-"));
     tmpDirs.push(dir);
@@ -352,6 +373,59 @@ describe("syncWebThreadFromChatRequest", () => {
     expect(saved?.durationMs).toBe(4200);
     expect(saved?.thinkMs).toBe(1500);
     expect(saved?.ts).toBe(1_700_000_000_000);
+  });
+
+  it("names a new web thread from the first user message", async () => {
+    const config = makeTmpConfig();
+    const threadId = "sync-title";
+    await syncWebThreadFromChatRequest(config, threadId, {
+      messages: [{ role: "user", content: "Fix the sidebar title" }],
+    });
+    const store = await readChatStore(config);
+    expect(store.threads.find((t) => t.id === threadId)?.title).toBe("Fix the sidebar title");
+
+    const thread = store.threads.find((t) => t.id === threadId);
+    expect(thread).toBeTruthy();
+    thread!.title = "Custom";
+    await writeChatStore(config, store);
+    await syncWebThreadFromChatRequest(config, threadId, {
+      messages: [
+        { role: "user", content: "Fix the sidebar title" },
+        { role: "user", content: "follow up" },
+      ],
+    });
+    const kept = await readChatStore(config);
+    expect(kept.threads.find((t) => t.id === threadId)?.title).toBe("Custom");
+  });
+
+  it("replaces a stored New chat placeholder and does not list it as the title", async () => {
+    const config = makeTmpConfig();
+    const thread: WebChatThread = {
+      id: "placeholder",
+      source: "web",
+      title: "New chat",
+      pinned: false,
+      createdAt: 1,
+      updatedAt: 2,
+      model: "",
+      mode: "agent",
+      messages: [{ role: "user", content: "UI 加强: chat 标题" }],
+    };
+    await writeChatStore(config, {
+      version: 1,
+      activeId: thread.id,
+      threads: [thread],
+      apiSessions: [],
+    });
+    const listed = await listChatSessions(config);
+    expect(listed.sessions.find((s) => s.id === thread.id)?.title).toBe("UI 加强: chat 标题");
+    expect(listed.threads.find((t) => t.id === thread.id)?.title).toBeNull();
+
+    await syncWebThreadFromChatRequest(config, thread.id, {
+      messages: [{ role: "user", content: "UI 加强: chat 标题" }],
+    });
+    const stored = await readChatStore(config);
+    expect(stored.threads.find((t) => t.id === thread.id)?.title).toBe("UI 加强: chat 标题");
   });
 
   it("keeps server turn timing when a newer snapshot omits it", () => {

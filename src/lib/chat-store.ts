@@ -334,10 +334,41 @@ export async function listAllWebThreads(config: BridgeConfig): Promise<WebChatTh
   return threads;
 }
 
+const PLACEHOLDER_CHAT_TITLE = "New chat";
+
 function truncateTitle(text: string, max = 48): string {
   const t = text.trim().replace(/\s+/g, " ");
-  if (!t) return "New chat";
+  if (!t) return PLACEHOLDER_CHAT_TITLE;
   return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/** Missing title, blank, or the sidebar placeholder — not an explicit rename. */
+function isPlaceholderChatTitle(title: string | null | undefined): boolean {
+  const t = title?.trim();
+  return !t || t === PLACEHOLDER_CHAT_TITLE;
+}
+
+function autoTitleFromMessages(messages: ChatMessage[] | undefined): string | null {
+  const first = messages?.find((m) => m.role === "user");
+  const text = first?.content?.trim() || first?.attachments?.[0]?.name || "";
+  if (!text) return null;
+  const title = truncateTitle(text);
+  return isPlaceholderChatTitle(title) ? null : title;
+}
+
+function storedWebThreadTitle(title: string | null | undefined): string | null {
+  if (isPlaceholderChatTitle(title)) return null;
+  return title!.trim();
+}
+
+function displayWebThreadTitle(thread: Pick<WebChatThread, "title" | "messages">): string {
+  return storedWebThreadTitle(thread.title) || autoTitleFromMessages(thread.messages) || PLACEHOLDER_CHAT_TITLE;
+}
+
+function publishWebThread<T extends { title: string | null }>(thread: T): T {
+  const title = storedWebThreadTitle(thread.title);
+  if (title === thread.title) return thread;
+  return { ...thread, title };
 }
 
 function extractUserQuery(text: string): string {
@@ -465,14 +496,7 @@ function inferSessionSource(
 }
 
 function webThreadSummary(thread: WebChatThread): ChatSessionSummary {
-  const firstUserMsg = thread.messages.find((m) => m.role === "user");
-  const firstUser =
-    firstUserMsg?.content?.trim() ||
-    firstUserMsg?.attachments?.[0]?.name ||
-    "";
-  const title =
-    thread.title ||
-    (firstUser ? truncateTitle(firstUser) : "New chat");
+  const title = displayWebThreadTitle(thread);
   return {
     id: thread.id,
     source: "web",
@@ -718,9 +742,9 @@ export async function listChatSessions(
   const threads: WebChatThreadListEntry[] = options.compactThreads
     ? store.threads.map((t) => {
         const { messages: _messages, ...meta } = enrichWebThreadContextUsage(t);
-        return meta;
+        return publishWebThread(meta);
       })
-    : store.threads.map((t) => enrichWebThreadContextUsage(t));
+    : store.threads.map((t) => publishWebThread(enrichWebThreadContextUsage(t)));
 
   return {
     activeId: store.activeId,
@@ -748,7 +772,7 @@ export async function getChatSession(
   for (const workspaceId of workspaceStoreIdsSync(config)) {
     const store = await readWorkspaceStore(config, workspaceId);
     const web = store.threads.find((thread) => thread.id === id);
-    if (web) return enrichWebThreadContextUsage(web);
+    if (web) return publishWebThread(enrichWebThreadContextUsage(web));
   }
 
   const api = (await readApiSessions(config)).find((session) => session.id === id);
@@ -878,6 +902,7 @@ function normalizeWebThread(t: WebChatThread): WebChatThread {
   return {
     ...t,
     source: "web" as const,
+    title: storedWebThreadTitle(t.title),
     messages: (t.messages ?? []).slice(-MAX_STORED_MESSAGES),
   };
 }
@@ -1149,6 +1174,9 @@ export async function syncWebThreadFromChatRequest(
       if (last?.role !== "assistant" || !last.streaming) {
         thread.messages.push(streamingAssistant);
       }
+    }
+    if (isPlaceholderChatTitle(thread.title)) {
+      thread.title = autoTitleFromMessages(thread.messages);
     }
     thread.updatedAt = now;
     writeJsonAtomic(filePath, store);
