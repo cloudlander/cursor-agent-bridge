@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import type { BridgeConfig } from "../config.js";
 import {
@@ -6,6 +9,18 @@ import {
   startPluginsUiBackgroundInit,
   waitForPluginsUiInitialized,
 } from "./manager.js";
+
+vi.mock("./marketplace.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./marketplace.js")>();
+  return {
+    ...actual,
+    // Scheduling tests must not clone the official marketplace. That git
+    // fetch is what blows the 5s timeout on hosted runners.
+    syncMarketplace: vi.fn(async () =>
+      fs.mkdtempSync(path.join(os.tmpdir(), "plugins-init-mkt-")),
+    ),
+  };
+});
 
 function testConfig(): BridgeConfig {
   return {
@@ -22,7 +37,10 @@ function testConfig(): BridgeConfig {
     strictModel: true,
     workspace: process.cwd(),
     timeoutMs: 30_000,
-    sessionsLogPath: "/tmp/cursor-proxy-manager-init-defer.log",
+    sessionsLogPath: path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "plugins-init-")),
+      "sessions.log",
+    ),
     chatOnlyWorkspace: true,
     chatOnlyWorkspaceExplicit: false,
     verbose: false,
