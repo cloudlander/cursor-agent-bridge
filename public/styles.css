@@ -1145,6 +1145,12 @@ body.chat-sidebar-dragging * {
   font-size: 12px;
 }
 
+.chat-thread-loading {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+}
+
 .chat-sidebar-foot {
   padding: 10px 14px;
   font-size: 11px;

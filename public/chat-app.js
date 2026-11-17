@@ -118,6 +118,12 @@
     workspaces: [],
     currentWorkspaceId: 'default',
     loadedWorkspaces: new Set(),
+    /** Workspace ids whose session list is still being fetched. */
+    loadingWorkspaces: new Set(),
+    /** workspaceId -> in-flight pullWorkspace promise. */
+    workspaceLoads: new Map(),
+    /** First-load failures; avoids treating a failed fetch as an empty workspace. */
+    workspaceLoadFailed: new Set(),
     activeByWorkspace: {},
     folds: { workspaces: {}, expanded: {}, groups: {} },
     /** threadId -> workspaceId for generations started before that workspace is loaded. */
@@ -1134,11 +1140,42 @@
   }
 
   async function pullWorkspace(id) {
-    const r = await apiFetch(`/api/chat/threads?compact=1&workspaceId=${encodeURIComponent(id)}`);
-    if (!r.ok) throw new Error(String(r.status));
-    const data = await r.json();
-    applyWorkspacePayload(id, data);
-    return data;
+    const inflight = state.workspaceLoads.get(id);
+    if (inflight) return inflight;
+    const firstLoad = !state.loadedWorkspaces.has(id);
+    if (firstLoad) {
+      state.workspaceLoadFailed.delete(id);
+      state.loadingWorkspaces.add(id);
+    }
+    const task = (async () => {
+      try {
+        const r = await apiFetch(`/api/chat/threads?compact=1&workspaceId=${encodeURIComponent(id)}`);
+        if (!r.ok) throw new Error(String(r.status));
+        const data = await r.json();
+        applyWorkspacePayload(id, data);
+        return data;
+      } catch (err) {
+        if (firstLoad) state.workspaceLoadFailed.add(id);
+        throw err;
+      } finally {
+        state.workspaceLoads.delete(id);
+        if (firstLoad) state.loadingWorkspaces.delete(id);
+      }
+    })();
+    state.workspaceLoads.set(id, task);
+    return task;
+  }
+
+  /** Start a first load if this expanded workspace has no session list yet. */
+  function queueWorkspaceLoad(id) {
+    if (state.loadedWorkspaces.has(id) || state.loadingWorkspaces.has(id) || state.workspaceLoadFailed.has(id)) return;
+    void pullWorkspace(id).then(() => renderThreadList()).catch(() => renderThreadList());
+  }
+
+  function workspaceLoadingItem() {
+    return el('li', { class: 'chat-thread-empty chat-thread-loading' },
+      el('progress', { class: 'loading-spinner', 'aria-label': 'Loading chats' }),
+    );
   }
 
   async function loadUnloadedWorkspaces() {
@@ -1805,7 +1842,7 @@
       const sessions = sessionsForWorkspace(ws.id)
         .filter(s => (s.messageCount > 0 || s.id === state.activeId) && threadMatchesSearch(s, q))
         .sort((a, b) => activityAt(b) - activityAt(a));
-      if (q && !sessions.length) continue;
+      if (q && loaded && !sessions.length) continue;
       anyMatch = true;
       const collapsed = isWorkspaceCollapsed(ws.id);
       const count = loaded ? sessions.length : null;
@@ -1854,8 +1891,13 @@
       );
       const body = [];
       if (!collapsed) {
-        if (!sessions.length) {
-          body.push(el('li', { class: 'chat-thread-empty muted-text' }, q ? 'No matching chats' : 'No chats yet'));
+        if (!loaded) queueWorkspaceLoad(ws.id);
+        const loadingSessions = !loaded && (state.loadingWorkspaces.has(ws.id) || !state.workspaceLoadFailed.has(ws.id));
+        if (loadingSessions) {
+          body.push(workspaceLoadingItem());
+        } else if (!sessions.length) {
+          body.push(el('li', { class: 'chat-thread-empty muted-text' },
+            !loaded ? 'Could not load chats' : (q ? 'No matching chats' : 'No chats yet')));
         } else {
           const groups = new Map();
           for (const s of sessions) {
@@ -1924,24 +1966,38 @@
   async function toggleWorkspaceFold(id) {
     const collapsed = isWorkspaceCollapsed(id);
     setWorkspaceCollapsed(id, !collapsed);
-    if (collapsed && !state.loadedWorkspaces.has(id)) {
-      try { await pullWorkspace(id); } catch { toast('Could not load workspace'); }
-    }
+    if (collapsed) state.workspaceLoadFailed.delete(id);
     renderThreadList();
+    if (collapsed && !state.loadedWorkspaces.has(id)) {
+      const pending = state.workspaceLoads.get(id);
+      try { if (pending) await pending; } catch { toast('Could not load workspace'); }
+    }
   }
 
   async function expandWorkspace(id) {
     setWorkspaceCollapsed(id, false);
-    if (!state.loadedWorkspaces.has(id)) {
-      try { await pullWorkspace(id); } catch { toast('Could not load workspace'); }
-    }
+    state.workspaceLoadFailed.delete(id);
     renderThreadList();
+    if (!state.loadedWorkspaces.has(id)) {
+      const pending = state.workspaceLoads.get(id);
+      try { if (pending) await pending; } catch { toast('Could not load workspace'); }
+    }
   }
 
   async function activateWorkspace(id) {
     if (isWorkspaceCollapsed(id)) setWorkspaceCollapsed(id, false);
+    state.workspaceLoadFailed.delete(id);
     if (!state.loadedWorkspaces.has(id)) {
-      try { await pullWorkspace(id); } catch { toast('Could not load workspace'); return; }
+      renderThreadList();
+      const pending = state.workspaceLoads.get(id);
+      try {
+        if (pending) await pending;
+        else await pullWorkspace(id);
+      } catch {
+        toast('Could not load workspace');
+        renderThreadList();
+        return;
+      }
     }
     state.currentWorkspaceId = id;
     try { localStorage.setItem(CURRENT_WS_KEY, id); } catch { /* ignore */ }
@@ -3819,7 +3875,10 @@
       state.searchDebounce = setTimeout(() => {
         state.searchDebounce = null;
         const run = async () => {
-          if (state.searchQuery.trim()) await loadUnloadedWorkspaces();
+          if (state.searchQuery.trim()) {
+            renderThreadList();
+            await loadUnloadedWorkspaces();
+          }
           renderThreadList();
         };
         void run();
