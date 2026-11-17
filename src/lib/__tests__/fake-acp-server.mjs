@@ -2,8 +2,13 @@
  * Fake ACP server. Tool scenarios act as an MCP HTTP client so tests exercise
  * the real proxy-owned MCP transport and parked tools/call lifecycle.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
+
+/** Unbuffered stderr so logs land in the pipe before the parent SIGKILLs. */
+function writeStderr(line) {
+  writeSync(2, line);
+}
 
 const scenario = process.env.FAKE_ACP_SCENARIO || "";
 const waiting = new Map();
@@ -68,7 +73,7 @@ function cliModelArg() {
 }
 
 if (realCatalog && cliModelArg() && !realCatalog.sessions[cliModelArg()]) {
-  process.stderr.write(`Cannot use this model: ${cliModelArg()}.\n`);
+  writeStderr(`Cannot use this model: ${cliModelArg()}.\n`);
   process.exit(1);
 }
 
@@ -312,7 +317,7 @@ async function requestToolPermission(name, index) {
       },
     ],
   });
-  process.stderr.write(
+  writeStderr(
     `__FAKE_ACP_PERMISSION__:${JSON.stringify(response)}\n`,
   );
   if (response?.outcome?.optionId !== "allow-once") {
@@ -393,7 +398,7 @@ async function runBuiltinPermissionPrompt() {
       },
     ],
   });
-  process.stderr.write(
+  writeStderr(
     `__FAKE_ACP_PERMISSION__:${JSON.stringify(response)}\n`,
   );
   update("agent_message_chunk", { content: { text: "Builtin handled" } });
@@ -472,7 +477,7 @@ rl.on("line", (line) => {
   if (msg.id == null || !msg.method) return;
 
   if (msg.method === "session/set_config_option") {
-    process.stderr.write(
+    writeStderr(
       `__FAKE_ACP_SET_CONFIG__:${JSON.stringify(msg.params)}\n`,
     );
   }
@@ -508,7 +513,7 @@ rl.on("line", (line) => {
   }
   if (msg.method === "session/new") {
     mcpServers = msg.params?.mcpServers ?? [];
-    process.stderr.write(
+    writeStderr(
       `__FAKE_ACP_MCP_SERVERS__:${JSON.stringify(mcpServers)}\n`,
     );
     send({ id: msg.id, result: sessionNewResult() });
@@ -565,7 +570,7 @@ rl.on("line", (line) => {
     operation.then(
       () => send({ id: msg.id, result: {} }),
       (error) => {
-        process.stderr.write(`__FAKE_ACP_ERROR__:${error.stack ?? error}\n`);
+        writeStderr(`__FAKE_ACP_ERROR__:${error.stack ?? error}\n`);
         send({
           id: msg.id,
           error: { code: -32603, message: error.message },

@@ -61,8 +61,11 @@ describe("token-cache per-account", () => {
   it("does not write mismatched token to cache", () => {
     const dir = mkDir();
     const prevHome = process.env.HOME;
+    const prevXdg = process.env.XDG_CONFIG_HOME;
     const home = mkDir();
     process.env.HOME = home;
+    // Runners set XDG_CONFIG_HOME, which readKeychainToken() prefers over $HOME/.config.
+    delete process.env.XDG_CONFIG_HOME;
     const configHome = path.join(home, ".config", "cursor");
     fs.mkdirSync(configHome, { recursive: true });
     fs.writeFileSync(
@@ -76,6 +79,8 @@ describe("token-cache per-account", () => {
       expect(readCachedToken(dir)).toBe(tokenA);
     } finally {
       process.env.HOME = prevHome;
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
     }
   });
 

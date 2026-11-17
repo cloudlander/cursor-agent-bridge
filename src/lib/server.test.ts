@@ -216,27 +216,34 @@ describe("startBridgeServer", () => {
     const prevKey = process.env.CURSOR_API_KEY;
     const prevToken = process.env.CURSOR_AUTH_TOKEN;
     const prevHome = process.env.HOME;
+    const prevXdg = process.env.XDG_CONFIG_HOME;
     delete process.env.CURSOR_API_KEY;
     delete process.env.CURSOR_AUTH_TOKEN;
+    // Shared CLI auth is $XDG_CONFIG_HOME/cursor/auth.json when that var is set.
+    delete process.env.XDG_CONFIG_HOME;
     process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "cap-auth-"));
 
-    servers = await startBridgeServer({
-      version: "1.0.0",
-      config: createTestConfig({ configDirs: [] }),
-    });
+    try {
+      servers = await startBridgeServer({
+        version: "1.0.0",
+        config: createTestConfig({ configDirs: [] }),
+      });
 
-    const { status, body } = await fetchServer(servers[0], "/api/agent-auth");
-    expect(status).toBe(200);
-    const auth = JSON.parse(body) as { authenticated: boolean; viaApiKey: boolean };
-    expect(auth.authenticated).toBe(false);
-    expect(auth.viaApiKey).toBe(false);
-
-    if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
-    else process.env.CURSOR_API_KEY = prevKey;
-    if (prevToken === undefined) delete process.env.CURSOR_AUTH_TOKEN;
-    else process.env.CURSOR_AUTH_TOKEN = prevToken;
-    if (prevHome === undefined) delete process.env.HOME;
-    else process.env.HOME = prevHome;
+      const { status, body } = await fetchServer(servers[0], "/api/agent-auth");
+      expect(status).toBe(200);
+      const auth = JSON.parse(body) as { authenticated: boolean; viaApiKey: boolean };
+      expect(auth.authenticated).toBe(false);
+      expect(auth.viaApiKey).toBe(false);
+    } finally {
+      if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+      else process.env.CURSOR_API_KEY = prevKey;
+      if (prevToken === undefined) delete process.env.CURSOR_AUTH_TOKEN;
+      else process.env.CURSOR_AUTH_TOKEN = prevToken;
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
+    }
   });
 
   it("serves GET /chat without Authorization when requiredKey is set", async () => {
