@@ -2,8 +2,18 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 
+import {
+  catalogEntryOnline,
+  handleCatalogApi,
+  listCatalogEntries,
+  matchCatalogApi,
+  proxyCatalogApp,
+  readCatalogEntry,
+  type CatalogEntry,
+} from "./app-catalog.js";
 import type { BridgeConfig } from "./config.js";
 import { getBridgePublicContext } from "./bridge-request-context.js";
+import { handleDynamicAppControl } from "./dynamic-app-supervisor.js";
 import { publicPath } from "./http-public-path.js";
 import { json } from "./http.js";
 
@@ -108,6 +118,16 @@ export type AppSummary = {
   shortUrl: string;
   hasIndex: boolean;
   updatedAt?: string;
+  /** `static` is a folder with files; `proxy` is a process registered in the catalog. */
+  kind: "static" | "proxy";
+  title?: string;
+  online?: boolean;
+  description?: string;
+  /** Proxy only. `stopped` means the supervisor will not relaunch it. */
+  desired?: "running" | "stopped";
+  /** Proxy published a launch command the bridge can start. */
+  managed?: boolean;
+  pid?: number;
 };
 
 /** Scan appsDir for subdirectories containing index.html (no caching — hot deploy). */
@@ -147,10 +167,36 @@ export function listApps(appsDir: string): AppSummary[] {
       shortUrl: `/${name}/`,
       hasIndex,
       updatedAt,
+      kind: "static",
     });
   }
-  apps.sort((a, b) => a.name.localeCompare(b.name));
-  return apps;
+  return mergeCatalogApps(appsDir, apps);
+}
+
+function mergeCatalogApps(appsDir: string, apps: AppSummary[]): AppSummary[] {
+  const byName = new Map(apps.map((app) => [app.name, app]));
+  for (const entry of listCatalogEntries(appsDir)) {
+    const existing = byName.get(entry.name);
+    byName.set(entry.name, catalogSummary(entry, existing?.hasIndex ?? false));
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function catalogSummary(entry: CatalogEntry, hasIndex: boolean): AppSummary {
+  return {
+    name: entry.name,
+    url: `/apps/${entry.name}/`,
+    shortUrl: `/${entry.name}/`,
+    hasIndex,
+    updatedAt: entry.heartbeatAt,
+    kind: "proxy",
+    title: entry.title,
+    online: entry.desired === "stopped" ? false : catalogEntryOnline(entry),
+    description: entry.description,
+    desired: entry.desired,
+    managed: Boolean(entry.launch),
+    pid: entry.pid,
+  };
 }
 
 export function isRegisteredAppName(appsDir: string, name: string): boolean {
@@ -202,6 +248,8 @@ export function dynamicAppsMatches(
   const pathname = pathnameOf(req);
   if (pathname === "/api/apps") return method === "GET";
   if (pathname === "/api/apps/deploy") return method === "POST";
+  if (matchCatalogApi(method, pathname)) return true;
+  if (config && catalogOwns(appsDirOf(config), pathname)) return true;
   if (method !== "GET" && method !== "HEAD") return false;
   if (pathname === "/apps" || pathname.startsWith("/apps/")) return true;
   if (pathname.startsWith("/static/")) return true;
@@ -211,8 +259,38 @@ export function dynamicAppsMatches(
   return isRegisteredAppName(appsDirOf(config), short.name);
 }
 
+function catalogOwns(appsDir: string, pathname: string): boolean {
+  const appsRoute = parseAppsRoute(pathname);
+  if (appsRoute?.kind === "app" && readCatalogEntry(appsDir, appsRoute.name)) return true;
+  const short = parseShortAppRoute(pathname);
+  if (short && readCatalogEntry(appsDir, short.name)) return true;
+  return false;
+}
+
 function pathnameOf(req: http.IncomingMessage): string {
   return (req.url ?? "/").split("?")[0] ?? "/";
+}
+
+function searchOf(req: http.IncomingMessage): string {
+  const raw = req.url ?? "/";
+  const q = raw.indexOf("?");
+  return q < 0 ? "" : raw.slice(q);
+}
+
+function upstreamPath(rel: string, search: string): string {
+  const path = rel ? `/${rel}` : "/";
+  return `${path}${search}`;
+}
+
+function forwardedPrefix(
+  req: http.IncomingMessage,
+  config: BridgeConfig,
+  internal: string,
+): string {
+  const ctx = getBridgePublicContext(req);
+  const stripped = internal.replace(/\/$/, "") || "/";
+  if (!ctx) return stripped;
+  return publicPath(stripped, ctx.mount, config.appSegment).replace(/\/$/, "") || stripped;
 }
 
 function serveAppFile(
@@ -304,16 +382,42 @@ export function deployAppFromSource(
   };
 }
 
-function renderAppsIndexHtml(apps: AppSummary[]): string {
+function appKindLabel(app: AppSummary): string {
+  if (app.kind === "proxy") {
+    if (app.desired === "stopped") return "proxy · stopped";
+    const state = app.online === false ? "proxy · offline" : "proxy · online";
+    return app.managed === false ? `${state} · no launch command` : state;
+  }
+  return app.hasIndex ? "static" : "static · missing index.html";
+}
+
+function proxyActions(app: AppSummary): string {
+  if (app.kind !== "proxy") return "";
+  const name = escapeHtml(app.name);
+  const unmanaged = app.managed === false;
+  const restartDisabled =
+    unmanaged && app.desired !== "stopped"
+      ? ' disabled title="No launch command registered"'
+      : "";
+  const stopDisabled = unmanaged ? ' disabled title="No launch command registered"' : "";
+  return `<span class="actions">
+    <button type="button" data-app-action="restart" data-app-name="${name}"${restartDisabled}>Restart</button>
+    <button type="button" data-app-action="stop" data-app-name="${name}"${stopDisabled}>Stop</button>
+    <button type="button" class="danger" data-app-action="delete" data-app-name="${name}">Delete</button>
+  </span>`;
+}
+
+function renderAppsIndexHtml(apps: AppSummary[], catalogApi: string): string {
   const rows =
     apps.length === 0
-      ? "<p class=\"empty\">No apps yet. Copy a site folder into the apps directory (must include <code>index.html</code>).</p>"
+      ? "<p class=\"empty\">No apps yet. Add a static folder with <code>index.html</code>, or register a local process with <code>POST /api/apps/catalog</code>.</p>"
       : `<ul>${apps
           .map(
             (a) =>
-              `<li><a href="${a.shortUrl}">${escapeHtml(a.name)}</a> <span class="muted">(${escapeHtml(a.url)})</span>${a.hasIndex ? "" : " <em>(missing index.html)</em>"}</li>`,
+              `<li><div><a href="${a.shortUrl}">${escapeHtml(a.title || a.name)}</a> <span class="muted">${escapeHtml(a.name)} · ${escapeHtml(appKindLabel(a))}${a.pid ? ` · pid ${a.pid}` : ""} · ${escapeHtml(a.url)}</span></div>${proxyActions(a)}</li>`,
           )
           .join("")}</ul>`;
+  const api = JSON.stringify(catalogApi);
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -321,18 +425,54 @@ function renderAppsIndexHtml(apps: AppSummary[]): string {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>User apps</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+    body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
     h1 { font-size: 1.25rem; }
-    ul { line-height: 1.8; }
+    ul { list-style: none; padding: 0; margin: 0; }
+    li { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; border-top: 1px solid #e6e6e6; padding: 0.65rem 0; }
     .muted { color: #666; font-size: 0.9em; }
     .empty { color: #555; }
+    .actions { display: flex; gap: 0.35rem; flex-shrink: 0; }
+    button { font: inherit; font-size: 0.8rem; padding: 0.2rem 0.55rem; cursor: pointer; }
+    button.danger { color: #a40000; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
     code { background: #f4f4f4; padding: 0.1em 0.35em; border-radius: 3px; }
+    #app-action-status { min-height: 1.2em; color: #a40000; }
   </style>
 </head>
 <body>
   <h1>Deployed apps</h1>
-  <p>Served dynamically from the apps storage directory — no bridge restart required.</p>
+  <p>Static sites and dynamic apps are listed together. A dynamic app that registers a launch command is started with the bridge and restarted if it exits. Restart, Stop, and Delete apply to dynamic apps.</p>
   ${rows}
+  <p id="app-action-status" role="status"></p>
+  <script>
+    const catalogApi = ${api};
+    const status = document.getElementById("app-action-status");
+    document.body.addEventListener("click", async (event) => {
+      const button = event.target instanceof Element ? event.target.closest("[data-app-action]") : null;
+      if (!(button instanceof HTMLButtonElement)) return;
+      const action = button.getAttribute("data-app-action");
+      const name = button.getAttribute("data-app-name");
+      if (!action || !name) return;
+      if (action === "stop" && !confirm("Stop " + name + "? It stays stopped until you restart it.")) return;
+      if (action === "delete" && !confirm("Deregister " + name + " and stop its process?")) return;
+      if (action === "restart" && !confirm("Restart " + name + "?")) return;
+      button.disabled = true;
+      status.textContent = "";
+      const method = action === "delete" ? "DELETE" : "POST";
+      const path = action === "delete"
+        ? catalogApi + "/" + encodeURIComponent(name)
+        : catalogApi + "/" + encodeURIComponent(name) + "/" + action;
+      try {
+        const res = await fetch(path, { method });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText || String(res.status));
+        location.reload();
+      } catch (err) {
+        status.textContent = err instanceof Error ? err.message : String(err);
+        button.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -356,6 +496,16 @@ export function handleDynamicApps(
 ): boolean {
   const pathname = pathnameOf(req);
   const appsDir = appsDirOf(config);
+  const catalogMatch = matchCatalogApi(req.method ?? "GET", pathname);
+  if (
+    catalogMatch &&
+    (catalogMatch.op === "stop" ||
+      catalogMatch.op === "restart" ||
+      catalogMatch.op === "delete")
+  ) {
+    handleDynamicAppControl(req, res, appsDir, catalogMatch);
+    return true;
+  }
 
   if (req.method === "GET" && pathname === "/api/apps") {
     json(res, 200, {
@@ -365,16 +515,34 @@ export function handleDynamicApps(
     return true;
   }
 
+  if (
+    handleCatalogApi(req, res, {
+      appsDir,
+      reservedNames: RESERVED_APP_SEGMENTS,
+    })
+  ) {
+    return true;
+  }
+
+  const search = searchOf(req);
   const appsRoute = parseAppsRoute(pathname);
   if (appsRoute) {
     if (appsRoute.kind === "list") {
+      if (req.method !== "GET" && req.method !== "HEAD") return false;
       if (req.method === "HEAD") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end();
         return true;
       }
+      const ctx = getBridgePublicContext(req);
+      const catalogApi = publicPath(
+        "/api/apps/catalog",
+        ctx?.mount ?? "",
+        config.appSegment,
+      );
       const html = renderAppsIndexHtml(
         mapAppsPublic(listApps(appsDir), req, config),
+        catalogApi,
       );
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
@@ -383,6 +551,19 @@ export function handleDynamicApps(
       res.end(html);
       return true;
     }
+
+    const catalogApp = readCatalogEntry(appsDir, appsRoute.name);
+    if (catalogApp) {
+      proxyCatalogApp(
+        req,
+        res,
+        catalogApp,
+        upstreamPath(appsRoute.rel, search),
+        forwardedPrefix(req, config, `/apps/${appsRoute.name}`),
+      );
+      return true;
+    }
+    if ((req.method ?? "GET") !== "GET" && (req.method ?? "GET") !== "HEAD") return false;
 
     return handleAppAssetRoute(
       res,
@@ -395,6 +576,18 @@ export function handleDynamicApps(
 
   const shortRoute = parseShortAppRoute(pathname);
   if (shortRoute) {
+    const catalogApp = readCatalogEntry(appsDir, shortRoute.name);
+    if (catalogApp) {
+      proxyCatalogApp(
+        req,
+        res,
+        catalogApp,
+        upstreamPath(shortRoute.rel, search),
+        forwardedPrefix(req, config, `/${shortRoute.name}`),
+      );
+      return true;
+    }
+    if ((req.method ?? "GET") !== "GET" && (req.method ?? "GET") !== "HEAD") return false;
     const registered = isRegisteredAppName(appsDir, shortRoute.name);
     if (!registered) {
       if (shortRoute.rel === "" && pathname === `/${shortRoute.name}`) {

@@ -19,3 +19,20 @@ proxy.pid
 chat-store.json
 # SwiftPM build artifacts (widget)
 widget-mac/.build/
+# CAI project root is $HOME. Keep local runtime and credentials out of git.
+.Rprofile
+.bash_history
+.lesshst
+.viminfo
+.cache/
+.ccv-mcp/
+.conda/
+.config/
+.fluxbox/
+.ipython/
+.jupyter/
+.local/
+.npm/
+.pip/
+.pki/
+.ssh/

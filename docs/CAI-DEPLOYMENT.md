@@ -59,10 +59,15 @@ Static HTML/CSS/JS apps are served **without restarting** the bridge after deplo
 | `/{name}/` | Short URL for deployed app (e.g. `/aigc-course/`) |
 | `/apps/{name}/` | Canonical app URL |
 | `/apps` | App index page |
-| `GET /api/apps` | JSON list + `appsDir` path |
-| `POST /api/apps/deploy` | Hot-deploy from workspace — body `{ "name": "my-app", "sourceDir": "public/my-app" }` |
+| `GET /api/apps` | JSON list of static apps and catalog proxies + `appsDir` path |
+| `POST /api/apps/deploy` | Hot-deploy a static site from the workspace — body `{ "name": "my-app", "sourceDir": "public/my-app" }` |
+| `POST /api/apps/catalog` | Register a process listening on `127.0.0.1:{port}` — body `{ "name", "port", "title?", "pid?", "launch?" }` |
+| `POST /api/apps/catalog/{name}/heartbeat` | Refresh a catalog registration. Optional body `{ "pid", "launch" }` |
+| `POST /api/apps/catalog/{name}/restart` | Start or restart a dynamic app that has a launch command |
+| `POST /api/apps/catalog/{name}/stop` | Stop it and do not relaunch until Restart |
+| `DELETE /api/apps/catalog/{name}` | Deregister and stop the process |
 
-Apps live under `<HOME>/.cursor-api-proxy/apps/` (override with `CURSOR_BRIDGE_APPS_DIR`). Each app folder must include `index.html`. Dashboard **Apps** link and `/apps` require no bridge API key.
+Apps live under `<HOME>/.cursor-api-proxy/apps/` (override with `CURSOR_BRIDGE_APPS_DIR`). A static app folder must include `index.html`. A catalog proxy is a JSON file under `apps/.catalog/` and is reverse-proxied to localhost; the listener must answer `GET /__bridge/catalog-prove`. When registration includes `launch` (`command`, optional `args` and `cwd`), the bridge starts that process on listen and keeps it alive. Stop survives a bridge restart and a later register or heartbeat. Dashboard **Apps** and `/apps` expose Restart, Stop, and Delete and require no bridge API key. Registering a new local process does not require a bridge code change.
 
 Example (from project root after building a site under `public/aigc-course/`):
 
