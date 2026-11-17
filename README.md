@@ -89,9 +89,10 @@ The bundle is a directory (`manifest.json`, `chat-store.partial.json`, and
 `cursor/` files under your Cursor config dir). Web threads merge by id; use
 `--no-merge` to overwrite newer on-disk Cursor files when importing.
 
-**ACP sessions in Web Chat:** The `/chat` sidebar lists Cursor ACP sessions
-(read-only) but does not load their transcripts from `store.db`. To browse a
-long agent-mode conversation in Web Chat, import it into `chat-store.json`:
+**ACP sessions in Web Chat:** Cursor ACP sessions keep their transcript in
+`store.db`. Web Chat does not read that file, so those sessions are left out
+of the `/chat` sidebar (opening one would show no messages). To browse a
+conversation in Web Chat, import it into `chat-store.json`:
 
 ```bash
 # Path is the ACP session directory (contains store.db and meta.json), e.g.

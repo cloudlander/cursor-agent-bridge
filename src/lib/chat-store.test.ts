@@ -556,4 +556,89 @@ describe("per-workspace chat stores", () => {
     expect(def.sessions.some((s) => s.source === "api" && s.cwd?.endsWith("sub"))).toBe(true);
     expect(other.sessions.some((s) => s.source === "api")).toBe(false);
   });
+
+  it("lists host CLI history when the adopted account dir has no sessions", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "chat-host-cli-"));
+    tmpDirs.push(home);
+    const prevHome = process.env.HOME;
+    const prevXdg = process.env.XDG_CONFIG_HOME;
+    const prevConfigDir = process.env.CURSOR_CONFIG_DIR;
+    process.env.HOME = home;
+    delete process.env.XDG_CONFIG_HOME;
+    delete process.env.CURSOR_CONFIG_DIR;
+    try {
+      const account = path.join(home, ".cursor-api-proxy", "accounts", "adopted");
+      fs.mkdirSync(account, { recursive: true });
+      const cursor = path.join(home, ".cursor");
+      const transcriptId = "11111111-1111-1111-1111-111111111111";
+      const transcriptDir = path.join(
+        cursor,
+        "projects",
+        "home-proj",
+        "agent-transcripts",
+        transcriptId,
+      );
+      fs.mkdirSync(transcriptDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(transcriptDir, `${transcriptId}.jsonl`),
+        `${JSON.stringify({
+          role: "user",
+          message: {
+            content: [{ type: "text", text: "<user_query>\nfrom cli\n</user_query>" }],
+          },
+        })}\n`,
+      );
+
+      const acpId = "22222222-2222-2222-2222-222222222222";
+      const acpDir = path.join(cursor, "acp-sessions", acpId);
+      fs.mkdirSync(acpDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(acpDir, "meta.json"),
+        JSON.stringify({ cwd: "/work", title: "ACP title" }),
+      );
+      fs.writeFileSync(path.join(acpDir, "store.db"), "");
+
+      const emptyId = "44444444-4444-4444-4444-444444444444";
+      const emptyDir = path.join(cursor, "acp-sessions", emptyId);
+      fs.mkdirSync(emptyDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(emptyDir, "meta.json"),
+        JSON.stringify({ cwd: "/work" }),
+      );
+
+      const cliId = "33333333-3333-3333-3333-333333333333";
+      const chatDir = path.join(cursor, "chats", "abcd", cliId);
+      fs.mkdirSync(chatDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(chatDir, "meta.json"),
+        JSON.stringify({
+          cwd: "/work",
+          title: "CLI title",
+          hasConversation: true,
+          createdAtMs: 10,
+          updatedAtMs: 20,
+        }),
+      );
+
+      const config = {
+        ...testConfig(path.join(home, "state")),
+        configDirs: [account],
+      };
+      const { sessions } = await listChatSessions(config);
+      expect(sessions.map((s) => s.id).sort()).toEqual([cliId, transcriptId].sort());
+      expect(sessions.find((s) => s.id === cliId)?.source).toBe("cli");
+      expect(sessions.find((s) => s.id === cliId)?.title).toBe("CLI title");
+      expect(sessions.find((s) => s.id === transcriptId)?.source).toBe("cli");
+      // ACP store.db is not loaded into Web Chat, so the row would open empty.
+      expect(sessions.find((s) => s.id === acpId)).toBeUndefined();
+      expect(sessions.find((s) => s.id === emptyId)).toBeUndefined();
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      if (prevXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = prevXdg;
+      if (prevConfigDir === undefined) delete process.env.CURSOR_CONFIG_DIR;
+      else process.env.CURSOR_CONFIG_DIR = prevConfigDir;
+    }
+  });
 });

@@ -2,8 +2,8 @@
 /**
  * Import a Cursor ACP session (store.db) into a new Web Chat thread in chat-store.json.
  *
- * Web Chat lists ACP sessions in the sidebar but does not load transcripts from store.db;
- * use this for read-only recovery in /chat.
+ * Web Chat does not list ACP sessions or load transcripts from store.db
+ * (an open thread would have no messages). Use this to import one into /chat.
  *
  * Usage:
  *   node scripts/restore-acp-to-web.mjs <acp-session-dir> [chat-store.json] [title]

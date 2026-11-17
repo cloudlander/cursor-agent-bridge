@@ -169,10 +169,11 @@ Install the launcher to `~/.local/bin/cursor-api-proxy` (see [install](#install-
 
 Stats are parsed from **`sessions.log`** lines in the form logged by the proxy (`ISO8601 METHOD PATH REMOTE STATUS`). If the log path was overridden (`CURSOR_BRIDGE_SESSIONS_LOG`), the dashboard reads that file instead.
 
-**Web Chat: ACP session in the sidebar but empty in the middle**
+**Web Chat: open an ACP session**
 
-ACP threads are catalog-only in `/chat` (messages stay in
-`…/acp-sessions/<id>/store.db`). Import for read-only browsing:
+ACP transcripts stay in `…/acp-sessions/<id>/store.db`. Web Chat does not
+read that file, so those sessions are not listed in `/chat`. Import one to
+browse it:
 
 ```bash
 npm run restore-acp-to-web -- ~/.cursor-api-proxy/accounts/<account>/acp-sessions/<session-id>

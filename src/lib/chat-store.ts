@@ -534,7 +534,56 @@ type DiscoveredSession = ChatSessionSummary & {
 };
 
 function cursorRoots(config: BridgeConfig): string[] {
-  return configDirsForAccountUsage(config.configDirs);
+  const roots = configDirsForAccountUsage(config.configDirs).map((dir) =>
+    path.resolve(dir),
+  );
+  const seen = new Set(roots);
+  // Adopted accounts are credential copies under ~/.cursor-api-proxy/accounts.
+  // Interactive CLI history stays in the host Cursor dir (~/.cursor chats,
+  // projects, acp-sessions). Keep scanning that dir after an account exists.
+  for (const dir of hostCursorDataDirs()) {
+    const resolved = path.resolve(dir);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    roots.push(resolved);
+  }
+  return roots;
+}
+
+function isAccountPoolPath(dir: string): boolean {
+  return dir.includes(`${path.sep}.cursor-api-proxy${path.sep}`);
+}
+
+/** Host Cursor data dirs that hold interactive CLI sessions. */
+function hostCursorDataDirs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const home = env.HOME?.trim() || env.USERPROFILE?.trim() || os.homedir();
+  const candidates: string[] = [];
+  const push = (dir: string | undefined) => {
+    if (!dir?.trim()) return;
+    const resolved = path.resolve(dir);
+    if (isAccountPoolPath(resolved)) return;
+    if (candidates.some((existing) => path.resolve(existing) === resolved)) return;
+    candidates.push(resolved);
+  };
+  push(path.join(home, ".cursor"));
+  const xdg = env.XDG_CONFIG_HOME?.trim();
+  if (xdg && !isAccountPoolPath(path.resolve(xdg))) {
+    push(path.join(xdg, "cursor"));
+  }
+  push(path.join(home, ".config", "cursor"));
+  const explicit = env.CURSOR_CONFIG_DIR?.trim();
+  if (explicit) push(explicit);
+  return candidates.filter((dir) => {
+    try {
+      return fs.existsSync(dir);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function sessionStoreExists(sessionDir: string): boolean {
+  return fs.existsSync(path.join(sessionDir, "store.db"));
 }
 
 type DiscoverAgentOptions = {
@@ -624,46 +673,63 @@ async function discoverAgentTranscripts(
   return out;
 }
 
-function discoverAcpSessions(config: BridgeConfig): DiscoveredSession[] {
+/** Plain `agent` chats: `chats/<workspace-hash>/<id>/meta.json`. */
+function discoverCliChats(config: BridgeConfig): DiscoveredSession[] {
   const out: DiscoveredSession[] = [];
   const seen = new Set<string>();
 
   for (const root of cursorRoots(config)) {
-    const acpDir = path.join(root, "acp-sessions");
-    if (!fs.existsSync(acpDir)) continue;
-    let sessionDirs: string[];
+    const chatsDir = path.join(root, "chats");
+    if (!fs.existsSync(chatsDir)) continue;
+    let projects: string[];
     try {
-      sessionDirs = fs.readdirSync(acpDir);
+      projects = fs.readdirSync(chatsDir);
     } catch {
       continue;
     }
-    for (const sessionId of sessionDirs) {
-      if (seen.has(sessionId)) continue;
-      const sessionDir = path.join(acpDir, sessionId);
-      const metaPath = path.join(sessionDir, "meta.json");
-      if (!fs.existsSync(metaPath)) continue;
-      seen.add(sessionId);
-      let stat: fs.Stats;
-      let meta: { title?: string; cwd?: string };
+    for (const project of projects) {
+      const projectDir = path.join(chatsDir, project);
+      let sessionIds: string[];
       try {
-        stat = fs.statSync(metaPath);
-        meta = JSON.parse(fs.readFileSync(metaPath, "utf8")) as {
-          title?: string;
-          cwd?: string;
-        };
+        sessionIds = fs.readdirSync(projectDir);
       } catch {
         continue;
       }
-      out.push({
-        id: sessionId,
-        source: "acp",
-        title: meta.title?.trim() || sessionId.slice(0, 8),
-        createdAt: stat.birthtimeMs || stat.mtimeMs,
-        updatedAt: stat.mtimeMs,
-        messageCount: 0,
-        readOnly: true,
-        cwd: meta.cwd,
-      });
+      for (const sessionId of sessionIds) {
+        if (seen.has(sessionId)) continue;
+        const sessionDir = path.join(projectDir, sessionId);
+        const metaPath = path.join(sessionDir, "meta.json");
+        if (!fs.existsSync(metaPath)) continue;
+        let meta: {
+          title?: string;
+          cwd?: string;
+          createdAtMs?: number;
+          updatedAtMs?: number;
+          hasConversation?: boolean;
+        };
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(metaPath);
+          meta = JSON.parse(fs.readFileSync(metaPath, "utf8")) as typeof meta;
+        } catch {
+          continue;
+        }
+        if (meta.hasConversation !== true && !sessionStoreExists(sessionDir)) {
+          continue;
+        }
+        seen.add(sessionId);
+        const title = meta.title?.trim() || sessionId.slice(0, 8);
+        out.push({
+          id: sessionId,
+          source: "cli",
+          title,
+          createdAt: meta.createdAtMs || stat.birthtimeMs || stat.mtimeMs,
+          updatedAt: meta.updatedAtMs || stat.mtimeMs,
+          messageCount: 1,
+          readOnly: true,
+          cwd: meta.cwd,
+        });
+      }
     }
   }
   return out;
@@ -718,9 +784,11 @@ export async function listChatSessions(
   const webSummaries = store.threads.map(webThreadSummary);
   const webIds = new Set(webSummaries.map((s) => s.id));
 
+  // ACP sessions keep their transcript in store.db, which this list does not
+  // read. Including them puts empty threads in the sidebar.
   const discovered = mergeDiscoveredSessions([
     ...(await discoverAgentTranscripts(config, { summariesOnly: true })),
-    ...discoverAcpSessions(config),
+    ...discoverCliChats(config),
   ]).filter((session) => {
     if (webIds.has(session.id)) return false;
     return workspaceIdForAgentCwd(config, session.cwd, records) === workspaceId;
@@ -780,7 +848,7 @@ export async function getChatSession(
 
   const discovered = mergeDiscoveredSessions([
     ...(await discoverAgentTranscripts(config)),
-    ...discoverAcpSessions(config),
+    ...discoverCliChats(config),
   ]);
   const hit = discovered.find((s) => s.id === id) ?? null;
   if (!hit?.messages?.length || hit.contextWindowUsage?.source === "acp") {
