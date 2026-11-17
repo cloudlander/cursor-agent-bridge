@@ -450,11 +450,16 @@ export function runAcpSync(
       }
       killProcessTree(child, "SIGKILL");
       const reasoning = accumulatedThought.trim();
-      resolve({
-        code,
-        stdout: accumulated.trim(),
-        stderr: stderr.trim(),
-        ...(reasoning ? { reasoning } : {}),
+      // Permission logs are written to the stderr pipe just before the stdout
+      // line that completes the prompt. Publish after this poll so the data
+      // listener has appended them.
+      setImmediate(() => {
+        resolve({
+          code,
+          stdout: accumulated.trim(),
+          stderr: stderr.trim(),
+          ...(reasoning ? { reasoning } : {}),
+        });
       });
     };
 
