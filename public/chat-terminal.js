@@ -4,6 +4,7 @@
   const PANEL_OPEN_KEY = 'cursor-bridge-chat-right-panel';
   const PANEL_WIDTH_KEY = 'cursor-bridge-chat-right-panel-width';
   const PANEL_TAB_KEY = 'cursor-bridge-chat-right-panel-tab';
+  const PANEL_APP_KEY = 'cursor-bridge-chat-right-panel-app';
   const PANEL_WIDTH_MIN = 280;
   const PANEL_WIDTH_DEFAULT = 420;
 
@@ -25,6 +26,8 @@
   let socket = null;
   let enabled = false;
   let activeTab = 'terminal';
+  let apps = [];
+  let appsLoaded = false;
 
   function setStatus(text, kind) {
     const el = $('chat-terminal-status');
@@ -52,7 +55,7 @@
   let fitRaf = 0;
 
   function fitTerminal() {
-    if (!term || !panelOpen()) return;
+    if (!term || !panelOpen() || activeTab !== 'terminal') return;
     fitAddon?.fit();
     sendResize();
   }
@@ -185,6 +188,7 @@
     toggle?.classList.toggle('active', open);
     toggle?.setAttribute('aria-pressed', open ? 'true' : 'false');
     refreshConnection();
+    if (open) showActiveTab();
   }
 
   function togglePanel() {
@@ -301,26 +305,153 @@
     });
   }
 
+  function fetchApi(path) {
+    const url = typeof bridgePath === 'function' ? bridgePath(path) : path;
+    return fetch(url);
+  }
+
+  function appUrl(app) {
+    return app?.shortUrl || app?.url || '';
+  }
+
+  function appOptionLabel(app) {
+    const name = app.title || app.name;
+    if (app.kind !== 'proxy') return `${name} · static`;
+    if (app.desired === 'stopped') return `${name} · stopped`;
+    if (app.online === false) return `${name} · offline`;
+    return `${name} · online`;
+  }
+
+  function readSavedApp() {
+    try {
+      return localStorage.getItem(PANEL_APP_KEY) || '';
+    } catch {
+      return '';
+    }
+  }
+
+  function setAppsMessage(text, show) {
+    const empty = $('chat-apps-empty');
+    if (!empty) return;
+    empty.hidden = !show;
+    empty.textContent = text;
+  }
+
+  function showAppFrame(name, force) {
+    const frame = $('chat-apps-frame');
+    const open = $('chat-apps-open');
+    const select = $('chat-apps-select');
+    const app = apps.find(item => item.name === name);
+    const url = appUrl(app);
+    if (!url) {
+      frame?.setAttribute('hidden', '');
+      frame?.removeAttribute('src');
+      if (open) {
+        open.hidden = true;
+        open.removeAttribute('href');
+      }
+      setAppsMessage(appsLoaded ? 'No apps deployed yet.' : 'Loading apps…', true);
+      return;
+    }
+    try {
+      localStorage.setItem(PANEL_APP_KEY, name);
+    } catch {
+      /* ignore */
+    }
+    if (select && select.value !== name) select.value = name;
+    setAppsMessage('', false);
+    if (frame) {
+      frame.hidden = false;
+      if (force || frame.getAttribute('src') !== url) frame.src = url;
+    }
+    if (open) {
+      open.hidden = false;
+      open.href = url;
+    }
+  }
+
+  function renderAppSelect(preferred, force) {
+    const select = $('chat-apps-select');
+    if (!select) return;
+    const current = preferred || select.value || readSavedApp();
+    select.replaceChildren();
+    if (apps.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No apps';
+      select.appendChild(opt);
+      select.disabled = true;
+      showAppFrame('');
+      return;
+    }
+    select.disabled = false;
+    for (const app of apps) {
+      const opt = document.createElement('option');
+      opt.value = app.name;
+      opt.textContent = appOptionLabel(app);
+      select.appendChild(opt);
+    }
+    const pick = apps.some(app => app.name === current) ? current : apps[0].name;
+    select.value = pick;
+    showAppFrame(pick, force);
+  }
+
+  let appsRequest = 0;
+
+  async function loadApps(forceReload) {
+    const ticket = ++appsRequest;
+    const res = await fetchApi('/api/apps');
+    if (ticket !== appsRequest) return;
+    if (!res.ok) throw new Error(String(res.status));
+    const body = await res.json();
+    if (ticket !== appsRequest) return;
+    apps = Array.isArray(body.apps) ? body.apps : [];
+    appsLoaded = true;
+    renderAppSelect(undefined, forceReload);
+  }
+
+  function showActiveTab() {
+    if (activeTab === 'apps' && panelOpen()) {
+      loadApps(false).catch(err => {
+        appsLoaded = false;
+        setAppsMessage(`Could not load apps: ${err.message}`, true);
+      });
+    }
+  }
+
+  function syncTabChrome() {
+    const appsOn = activeTab === 'apps';
+    $('chat-terminal-host')?.toggleAttribute('hidden', appsOn);
+    $('chat-apps-pane')?.toggleAttribute('hidden', !appsOn);
+    for (const el of document.querySelectorAll('.chat-terminal-tools')) {
+      el.toggleAttribute('hidden', appsOn);
+    }
+    const termTab = $('chat-right-tab-terminal');
+    const appsTab = $('chat-right-tab-apps');
+    termTab?.setAttribute('aria-selected', activeTab === 'terminal' ? 'true' : 'false');
+    appsTab?.setAttribute('aria-selected', appsOn ? 'true' : 'false');
+    termTab?.toggleAttribute('focusgroupstart', activeTab === 'terminal');
+    appsTab?.toggleAttribute('focusgroupstart', appsOn);
+  }
+
   function setActiveTab(tab) {
-    activeTab = tab === 'terminal' ? 'terminal' : 'terminal';
-    const tabBtn = $('chat-right-tab-terminal');
-    tabBtn?.classList.toggle('active', activeTab === 'terminal');
-    tabBtn?.setAttribute('aria-selected', activeTab === 'terminal' ? 'true' : 'false');
+    if (tab === 'apps') activeTab = 'apps';
+    else if (tab === 'terminal' && enabled) activeTab = 'terminal';
+    else if (!enabled) activeTab = 'apps';
+    else activeTab = 'terminal';
+    syncTabChrome();
     try {
       localStorage.setItem(PANEL_TAB_KEY, activeTab);
     } catch {
       /* ignore */
     }
+    showActiveTab();
     refreshConnection();
   }
 
   async function loadStatus() {
     try {
-      const fetchFn =
-        typeof apiFetch === 'function'
-          ? apiFetch
-          : (p, init) => fetch(typeof bridgePath === 'function' ? bridgePath(p) : p, init);
-      const res = await fetchFn('/api/terminal/status');
+      const res = await fetchApi('/api/terminal/status');
       if (!res.ok) throw new Error(String(res.status));
       const body = await res.json();
       enabled = !!body.enabled;
@@ -337,15 +468,15 @@
     }
     if (toolbarBtn) {
       toolbarBtn.title = enabled
-        ? 'Tools panel (Terminal)'
-        : 'Tools panel — terminal disabled on server';
+        ? 'Tools panel (Terminal or apps)'
+        : 'Tools panel (apps; terminal disabled on server)';
     }
   }
 
   function readSavedTab() {
     try {
       const v = localStorage.getItem(PANEL_TAB_KEY);
-      if (v === 'terminal') return v;
+      if (v === 'terminal' || v === 'apps') return v;
     } catch {
       /* ignore */
     }
@@ -362,7 +493,20 @@
       setActiveTab('terminal');
       if (!panelOpen()) setPanelOpen(true);
     });
+    $('chat-right-tab-apps')?.addEventListener('click', () => {
+      setActiveTab('apps');
+      if (!panelOpen()) setPanelOpen(true);
+    });
     $('chat-terminal-reconnect')?.addEventListener('click', () => connect());
+    $('chat-apps-select')?.addEventListener('change', event => {
+      showAppFrame(event.target.value);
+    });
+    $('chat-apps-reload')?.addEventListener('click', () => {
+      loadApps(true).catch(err => {
+        appsLoaded = false;
+        setAppsMessage(`Could not load apps: ${err.message}`, true);
+      });
+    });
   }
 
   async function init() {
@@ -371,9 +515,11 @@
     bindPanelResize();
     bindPanelWidthObserver();
     bind();
-    setActiveTab(readSavedTab());
+    let tab = readSavedTab();
+    if (tab === 'terminal' && !enabled) tab = 'apps';
+    setActiveTab(tab);
     setPanelOpen(resolvePanelOpen());
-    if (panelOpen()) ensureTerm();
+    if (panelOpen() && activeTab === 'terminal') ensureTerm();
   }
 
   window.ChatTerminal = {

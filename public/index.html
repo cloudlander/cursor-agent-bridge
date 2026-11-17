@@ -87,8 +87,9 @@
         <div class="empty">Loading…</div>
       </div>
       <p class="muted-text" style="margin: 0 16px 14px; font-size: 11px;">
-        Static sites under <span class="mono">/apps/{name}/</span> or <span class="mono">/{name}/</span>. Hot-deploy with
-        <span class="mono">POST /api/apps/deploy</span> — no bridge restart required.
+        Static sites and dynamic apps under <span class="mono">/apps/{name}/</span> or <span class="mono">/{name}/</span>.
+        A dynamic app that registers a launch command starts with the bridge and is restarted if it exits.
+        Restart, Stop, and Delete are on this card and on <a href="/apps">/apps</a>.
       </p>
     </section>
 

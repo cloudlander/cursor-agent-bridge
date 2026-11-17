@@ -217,6 +217,42 @@
     $('status-body').replaceChildren(kv, ...publicBlock, healthRow);
   }
 
+  function proxyStatusLabel(app) {
+    if (app.desired === 'stopped') return 'proxy stopped';
+    const state = app.online === false ? 'proxy offline' : 'proxy';
+    return app.managed === false ? `${state} · no launch command` : state;
+  }
+
+  async function controlDynamicApp(button) {
+    const action = button.getAttribute('data-app-action');
+    const name = button.getAttribute('data-app-name');
+    if (!action || !name) return;
+    const prompts = {
+      stop: `Stop ${name}? It stays stopped until you restart it.`,
+      delete: `Deregister ${name} and stop its process?`,
+      restart: `Restart ${name}?`,
+    };
+    if (prompts[action] && !(await confirmPopup(prompts[action], action !== 'restart'))) return;
+    const method = action === 'delete' ? 'DELETE' : 'POST';
+    const path = action === 'delete'
+      ? `/api/apps/catalog/${encodeURIComponent(name)}`
+      : `/api/apps/catalog/${encodeURIComponent(name)}/${action}`;
+    button.disabled = true;
+    try {
+      const url = typeof bridgePath === 'function' ? bridgePath(path) : path;
+      const res = await fetch(url, { method });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+      toast(`${action} ${name}`, 'ok');
+      await refreshApps();
+    } catch (e) {
+      toast(`${action} failed: ${e.message}`, 'err');
+      await alertPopup(`${action} failed: ${e.message}`);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function renderApps(data) {
     const body = $('apps-body');
     if (!body) return;
@@ -227,20 +263,52 @@
     if (data.apps.length === 0) {
       body.replaceChildren(
         el('div', { class: 'empty' },
-          'No apps deployed yet. POST to ',
+          'No apps yet. POST a static site to ',
           el('code', {}, '/api/apps/deploy'),
-          ' with ',
-          el('code', {}, '{ "name": "my-app", "sourceDir": "public/my-app" }'),
+          ', or register a local process with ',
+          el('code', {}, 'POST /api/apps/catalog'),
           '.',
         ),
       );
       return;
     }
-    const list = el('ul', { style: 'margin: 0; padding-left: 1.2rem; line-height: 1.8;' });
+    const list = el('ul', { style: 'margin: 0; padding-left: 0; list-style: none; line-height: 1.8;' });
     for (const app of data.apps) {
-      const link = el('a', { href: app.shortUrl || app.url, target: '_blank', rel: 'noopener' }, app.name);
-      const meta = el('span', { class: 'dim-text mono', style: 'font-size: 11px; margin-left: 6px;' }, app.shortUrl || app.url);
-      list.appendChild(el('li', {}, link, meta));
+      const link = el('a', { href: app.shortUrl || app.url, target: '_blank', rel: 'noopener' }, app.title || app.name);
+      const kind = app.kind === 'proxy' ? proxyStatusLabel(app) : 'static';
+      const meta = el(
+        'span',
+        { class: 'dim-text mono', style: 'font-size: 11px; margin-left: 6px;' },
+        `${app.name} · ${kind} · ${app.shortUrl || app.url}`,
+      );
+      const main = el('span', {}, link, meta);
+      if (app.kind !== 'proxy') {
+        list.appendChild(el('li', {}, main));
+        continue;
+      }
+      const restartAttrs = {
+        type: 'button',
+        class: 'btn small',
+        'data-app-action': 'restart',
+        'data-app-name': app.name,
+      };
+      const stopAttrs = { type: 'button', class: 'btn small', 'data-app-action': 'stop', 'data-app-name': app.name };
+      if (app.managed === false) {
+        if (app.desired !== 'stopped') {
+          restartAttrs.disabled = 'disabled';
+          restartAttrs.title = 'No launch command registered';
+        }
+        stopAttrs.disabled = 'disabled';
+        stopAttrs.title = 'No launch command registered';
+      }
+      const actions = el('span', { style: 'display: inline-flex; gap: 6px; margin-left: 8px;' },
+        el('button', restartAttrs, 'Restart'),
+        el('button', stopAttrs, 'Stop'),
+        el('button', { type: 'button', class: 'btn small danger', 'data-app-action': 'delete', 'data-app-name': app.name }, 'Delete'),
+      );
+      list.appendChild(el('li', {
+        style: 'display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between;',
+      }, main, actions));
     }
     const dir = el('p', { class: 'muted-text mono', style: 'font-size: 11px; margin: 10px 0 0; word-break: break-all;' },
       data.appsDir || '',
@@ -823,6 +891,14 @@
 
   function bind() {
     $('refresh-btn').addEventListener('click', refreshAll);
+    const appsBody = $('apps-body');
+    if (appsBody) {
+      appsBody.addEventListener('click', (event) => {
+        const button = event.target.closest('[data-app-action]');
+        if (!button) return;
+        void controlDynamicApp(button);
+      });
+    }
     $('pause-btn').addEventListener('click', () => {
       state.paused = !state.paused;
       $('pause-btn').textContent = state.paused ? 'Resume' : 'Pause';

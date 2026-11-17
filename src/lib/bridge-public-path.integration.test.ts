@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
+import * as os from "node:os";
 import * as path from "node:path";
+import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 
 import { loadBridgeConfig } from "./config.js";
@@ -184,6 +186,83 @@ describe("public path routing", () => {
       expect(await res.text()).toContain("math");
     } finally {
       server.close();
+    }
+  });
+
+  it("proxies a catalog app under the public path without a bridge restart", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "catalog-public-"));
+    const sessionsLog = path.join(root, "sessions.log");
+    fs.writeFileSync(sessionsLog, "");
+    const seen: { prefix?: string; path?: string } = {};
+    const upstream = http.createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__bridge/catalog-prove") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            nonce: url.searchParams.get("nonce"),
+            name: url.searchParams.get("name"),
+          }),
+        );
+        return;
+      }
+      if (url.pathname === "/__bridge/catalog-health") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, name: "ccv" }));
+        return;
+      }
+      seen.prefix = req.headers["x-forwarded-prefix"] as string | undefined;
+      seen.path = url.pathname;
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("pong");
+    });
+    await new Promise<void>((resolve) => {
+      upstream.listen(0, "127.0.0.1", () => resolve());
+    });
+    const upstreamPort = (upstream.address() as AddressInfo).port;
+
+    const config = loadBridgeConfig({
+      env: {
+        CURSOR_BRIDGE_APP_SEGMENT: "cursor-agent",
+        CURSOR_BRIDGE_SESSIONS_LOG: sessionsLog,
+      },
+      cwd: process.cwd(),
+    });
+    const listener = createRequestListener(
+      { version: "test", config },
+      { toolSessions: new ToolSessionRegistry() },
+    );
+    const { server, port } = await listen(listener);
+    const base = `http://127.0.0.1:${port}/proxy/8100/cursor-agent`;
+    try {
+      const registered = await fetch(`${base}/api/apps/catalog`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: "ccv", port: upstreamPort, title: "CCV" }),
+      });
+      expect(registered.status).toBe(200);
+
+      const page = await fetch(`${base}/apps`);
+      expect(await page.text()).toContain("CCV");
+
+      const proxied = await fetch(`${base}/apps/ccv/api/auth-setup`, {
+        headers: {
+          "x-forwarded-host": "cai.example",
+          "x-forwarded-proto": "https",
+        },
+      });
+      expect(await proxied.text()).toBe("pong");
+      expect(seen.path).toBe("/api/auth-setup");
+      expect(seen.prefix).toBe("/proxy/8100/cursor-agent/apps/ccv");
+
+      const short = await fetch(`${base}/ccv/ping`);
+      expect(await short.text()).toBe("pong");
+      expect(seen.prefix).toBe("/proxy/8100/cursor-agent/ccv");
+    } finally {
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

@@ -13,7 +13,12 @@ import {
 } from "./auth-token-keepalive.js";
 import { killAllChildProcesses } from "./process.js";
 import { ToolSessionRegistry } from "./tool-session-registry.js";
+import { writeBridgeCatalogEndpoint } from "./app-catalog.js";
 import { appsDirOf, registerBridgeAppSegment } from "./dynamic-apps.js";
+import {
+  startDynamicAppSupervisor,
+  stopDynamicAppSupervisor,
+} from "./dynamic-app-supervisor.js";
 import { startUpstreamSyncScheduler } from "./upstream-sync.js";
 import { startPluginsUiBackgroundInit } from "./plugins/manager.js";
 import { attachTerminalWebSocket } from "./terminal-ws.js";
@@ -137,6 +142,7 @@ export async function shutdownBridge(
 ): Promise<void> {
   const exit = opts.exit ?? exitProcess;
   stopAuthTokenKeepalive();
+  stopDynamicAppSupervisor();
   const cleanups = servers.flatMap((server) => serverCleanup.get(server) ?? []);
 
   const sessionsClosed = Promise.all(
@@ -216,7 +222,9 @@ function logListenBanner(opts: BridgeServerOptions): void {
   console.log(`- Public app segment: /${config.appSegment}/`);
   console.log(`- ${formatInboundAuthStartupLog(process.env)}`);
   console.log(`- sessions log: ${config.sessionsLogPath}`);
-  console.log(`- user apps: ${appsDirOf(config)} (hot deploy at /apps/{name}/ and /{name}/)`);
+  console.log(
+    `- user apps: ${appsDirOf(config)} (static + catalog proxy at /apps/{name}/ and /{name}/; launch-backed dynamic apps are kept alive)`,
+  );
   console.log(
     `- chat-only workspace: ${config.chatOnlyWorkspace ? "yes (isolated temp dir)" : "no"}`,
   );
@@ -289,6 +297,7 @@ async function startSingleServer(opts: BridgeServerOptions): Promise<BridgeHttpS
 
   await new Promise<void>((resolve, reject) => {
     const onListen = () => {
+      writeBridgeCatalogEndpoint(config, appsDirOf(config));
       const scheme = useTls ? "https" : "http";
       console.log(
         `cursor-api-proxy listening on ${scheme}://${config.host}:${config.port}`,
@@ -297,6 +306,7 @@ async function startSingleServer(opts: BridgeServerOptions): Promise<BridgeHttpS
       setImmediate(() => {
         logListenBanner(opts);
         if (process.env.VITEST !== "true") {
+          startDynamicAppSupervisor(appsDirOf(config));
           startUpstreamSyncScheduler(config);
           startPluginsUiBackgroundInit(config);
         }
