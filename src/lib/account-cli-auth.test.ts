@@ -3,7 +3,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { applyAccountCliAuthEnv } from "./account-cli-auth.js";
+import {
+  applyAccountCliAuthEnv,
+  cliCredentialStoreEnv,
+} from "./account-cli-auth.js";
 import { accountAuthJsonPath, accountCliAuthRoot } from "./token-cache.js";
 
 describe("applyAccountCliAuthEnv", () => {
@@ -46,12 +49,22 @@ describe("applyAccountCliAuthEnv", () => {
       expect(env.APPDATA).toBe(accountCliAuthRoot(dir));
     } else if (process.platform === "darwin") {
       expect(env.HOME).toBe(accountCliAuthRoot(dir));
+      expect(env.AGENT_CLI_CREDENTIAL_STORE).toBe("file");
     } else {
       expect(env.XDG_CONFIG_HOME).toBe(accountCliAuthRoot(dir));
+      expect(env.AGENT_CLI_CREDENTIAL_STORE).toBeUndefined();
     }
     const stored = JSON.parse(
       fs.readFileSync(accountAuthJsonPath(dir), "utf-8"),
     ) as { accessToken: string };
     expect(stored.accessToken).toBe(tokenA);
+  });
+
+  it("forces the file credential store on macOS only", () => {
+    expect(cliCredentialStoreEnv("darwin")).toEqual({
+      AGENT_CLI_CREDENTIAL_STORE: "file",
+    });
+    expect(cliCredentialStoreEnv("linux")).toEqual({});
+    expect(cliCredentialStoreEnv("win32")).toEqual({});
   });
 });
