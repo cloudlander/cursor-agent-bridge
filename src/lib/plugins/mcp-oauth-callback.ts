@@ -3,11 +3,37 @@ import type * as httpTypes from "node:http";
 
 const HTML = "text/html; charset=utf-8";
 
+let rememberedListenPort: number | undefined;
+
 export function mcpOAuthLoopbackPort(): number {
   const raw = process.env.CURSOR_BRIDGE_MCP_OAUTH_LOOPBACK_PORT?.trim();
   if (!raw) return 8787;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : 8787;
+}
+
+/** CLI listen port taken from the login URL's loopback redirect_uri. */
+export function trackMcpOAuthCallbackTarget(callbackUrl: string | undefined): void {
+  if (!callbackUrl) return;
+  try {
+    const u = new URL(callbackUrl);
+    const host = u.hostname.toLowerCase();
+    if (host !== "localhost" && host !== "127.0.0.1" && host !== "::1") return;
+    const port = Number(u.port);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) {
+      rememberedListenPort = port;
+    }
+  } catch {
+    return;
+  }
+}
+
+export function resetMcpOAuthListenPort(): void {
+  rememberedListenPort = undefined;
+}
+
+function mcpOAuthForwardPort(): number {
+  return rememberedListenPort ?? mcpOAuthLoopbackPort();
 }
 
 export function mcpOAuthCallbackMatches(req: httpTypes.IncomingMessage): boolean {
@@ -21,7 +47,7 @@ export function handleMcpOAuthCallback(
   res: httpTypes.ServerResponse,
   reqUrl: URL,
 ): void {
-  const port = mcpOAuthLoopbackPort();
+  const port = mcpOAuthForwardPort();
   const path = `${reqUrl.pathname}${reqUrl.search}`;
   const target = new URL(path, `http://127.0.0.1:${port}`);
 

@@ -31,8 +31,42 @@ function esc(s) {
     .replace(/"/g, "&quot;");
 }
 
+const PLUGIN_RPC_SPINNER_DELAY_MS = 5000;
+let pluginRpcSlowCount = 0;
+
+function syncPluginRpcSpinner() {
+  const node = $("plugin-rpc-overlay");
+  if (!node) return;
+  const show = pluginRpcSlowCount > 0;
+  node.hidden = !show;
+  node.setAttribute("aria-busy", show ? "true" : "false");
+  node.setAttribute("aria-hidden", show ? "false" : "true");
+}
+
+function trackSlowPluginRpc(promise) {
+  let slow = false;
+  const timer = setTimeout(() => {
+    slow = true;
+    pluginRpcSlowCount += 1;
+    syncPluginRpcSpinner();
+  }, PLUGIN_RPC_SPINNER_DELAY_MS);
+  const done = () => {
+    clearTimeout(timer);
+    if (!slow) return;
+    pluginRpcSlowCount = Math.max(0, pluginRpcSlowCount - 1);
+    syncPluginRpcSpinner();
+  };
+  Promise.resolve(promise).then(done, done);
+}
+
 let currentConfigPluginId = null;
 let currentConfigPayload = null;
+let oauthWatchPluginId = null;
+let oauthPopup = null;
+let oauthLoginWindow = null;
+let oauthPoll = null;
+let configAuthHold = false;
+const OAUTH_TIMEOUT_DEFAULT_MS = 5 * 60 * 1000;
 let firstPageLoad = true;
 let catalogPage = 1;
 let catalogPageSize = 5;
@@ -387,11 +421,13 @@ async function loadInstalled() {
 }
 
 async function installPlugin(marketplaceId, name) {
+  const pending = api("/api/plugins/install", {
+    method: "POST",
+    body: JSON.stringify({ marketplaceId, name }),
+  });
+  trackSlowPluginRpc(pending);
   try {
-    await api("/api/plugins/install", {
-      method: "POST",
-      body: JSON.stringify({ marketplaceId, name }),
-    });
+    await pending;
     await refreshAll();
   } catch (e) {
     alert(e.message);
@@ -424,10 +460,12 @@ async function togglePlugin(id, enable) {
 
 async function uninstallPlugin(id) {
   if (!confirm(`Uninstall ${id}?`)) return;
+  const pending = api(`/api/plugins/installed/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  trackSlowPluginRpc(pending);
   try {
-    await api(`/api/plugins/installed/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
+    await pending;
     await refreshAll();
   } catch (e) {
     alert(e.message);
@@ -460,8 +498,20 @@ async function openConfig(id) {
     <p class="muted-text" style="font-size:11px;">Per-server overrides (JSON, merged on save):</p>
     <textarea id="servers-json" class="mono" rows="8" style="width:100%; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px;">${esc(JSON.stringify(detail.plugin.config.servers || {}, null, 2))}</textarea>
     <div style="margin-top: 12px;">
-      <button type="button" class="btn small" id="mcp-login-btn">Start MCP OAuth login (best effort)</button>
+      <button type="button" class="btn small" id="mcp-login-btn">Start MCP OAuth login</button>
+      <p class="muted-text" style="font-size: 11px; margin: 8px 0 0;">After sign-in, paste the localhost callback address into the login dialog. This page opens it on this app so the server can finish login. The login window closes when authentication finishes, or after 5 minutes. Configuration is saved only after success.</p>
+      <p id="mcp-auth-status" class="mcp-auth-status" role="status" aria-live="polite" hidden></p>
     </div>`;
+  if (oauthPoll && oauthPoll.pluginId === id) {
+    setConfigAuthHold(true);
+    showAuthStatus(
+      $("mcp-auth-status"),
+      "pending",
+      `Waiting for authentication. The login window closes when authentication finishes, or after ${formatWait(oauthPoll.waitMs)}. Configuration is saved only after success.`,
+    );
+  } else {
+    setConfigAuthHold(false);
+  }
   $("add-env").onclick = () => $("env-rows").insertAdjacentHTML("beforeend", envRow("env", "", ""));
   $("add-hdr").onclick = () => $("hdr-rows").insertAdjacentHTML("beforeend", envRow("headers", "", ""));
   $("mcp-login-btn").onclick = () => mcpLogin(id, servers[0]);
@@ -485,14 +535,170 @@ function collectMap(container, kind) {
   return out;
 }
 
-async function saveConfig() {
-  if (!currentConfigPluginId) return;
+function formatWait(ms) {
+  const n = Number(ms);
+  const value = Number.isFinite(n) && n > 0 ? n : OAUTH_TIMEOUT_DEFAULT_MS;
+  if (value % 60000 === 0) {
+    const minutes = value / 60000;
+    return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+  }
+  const seconds = Math.max(1, Math.round(value / 1000));
+  return seconds === 1 ? "1 second" : `${seconds} seconds`;
+}
+
+function showAuthStatus(el, kind, text) {
+  if (!el) return;
+  if (!text) {
+    el.hidden = true;
+    el.textContent = "";
+    delete el.dataset.kind;
+    return;
+  }
+  el.hidden = false;
+  el.dataset.kind = kind;
+  el.textContent = text;
+}
+
+function setConfigAuthHold(hold) {
+  configAuthHold = hold;
+  const btn = $("config-save");
+  if (btn) btn.disabled = hold;
+}
+
+function configAuthTarget(pluginId) {
+  return !!(
+    pluginId &&
+    $("config-dialog")?.open &&
+    currentConfigPluginId === pluginId &&
+    $("mcp-auth-status")
+  );
+}
+
+function closeOwnedWindow(win) {
+  if (!win || win.closed) return;
+  try {
+    win.close();
+  } catch {
+    /* ignore */
+  }
+}
+
+function closeOAuthWindow() {
+  closeOwnedWindow(oauthPopup);
+  closeOwnedWindow(oauthLoginWindow);
+  oauthPopup = null;
+  oauthLoginWindow = null;
+  const dialog = $("oauth-dialog");
+  if (dialog?.open) dialog.close();
+}
+
+function openOAuthLoginWindow(url) {
+  const opened = window.open(url, "_blank");
+  oauthLoginWindow = opened || null;
+  if (opened) {
+    try {
+      opened.opener = null;
+    } catch {
+      /* ignore */
+    }
+  }
+  return opened;
+}
+
+function stopOAuthPoll() {
+  if (!oauthPoll) return;
+  clearInterval(oauthPoll.timer);
+  oauthPoll = null;
+}
+
+async function finishOAuthWatch(phase, message, pluginId) {
+  stopOAuthPoll();
+  closeOAuthWindow();
+  const ok = phase === "succeeded";
+  if (configAuthTarget(pluginId)) {
+    if (ok) {
+      setConfigAuthHold(false);
+      showAuthStatus($("mcp-auth-status"), "ok", "Authentication succeeded. Saving configuration…");
+      const saved = await saveConfig({ keepOpen: true, quiet: true });
+      showAuthStatus(
+        $("mcp-auth-status"),
+        saved.ok ? "ok" : "error",
+        saved.ok
+          ? "Authentication succeeded. Configuration saved."
+          : `Authentication succeeded, but the configuration was not saved: ${saved.error}`,
+      );
+    } else {
+      showAuthStatus($("mcp-auth-status"), "error", `${message} Configuration was not saved.`);
+      setConfigAuthHold(true);
+    }
+    showAuthStatus($("mcp-auth-page-status"), "", "");
+  } else {
+    showAuthStatus($("mcp-auth-page-status"), ok ? "ok" : "error", message);
+    setConfigAuthHold(false);
+  }
+  oauthWatchPluginId = null;
+}
+
+function startOAuthWatch(loginId, timeoutMs, pluginId) {
+  stopOAuthPoll();
+  const waitMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : OAUTH_TIMEOUT_DEFAULT_MS;
+  const state = {
+    timer: 0,
+    pluginId,
+    loginId,
+    deadline: Date.now() + waitMs + 3000,
+    waitMs,
+  };
+  oauthPoll = state;
+  if (configAuthTarget(pluginId)) {
+    showAuthStatus(
+      $("mcp-auth-status"),
+      "pending",
+      `Waiting for authentication. The login window closes when authentication finishes, or after ${formatWait(waitMs)}. Configuration is saved only after success.`,
+    );
+    setConfigAuthHold(true);
+    showAuthStatus($("mcp-auth-page-status"), "", "");
+  }
+  const tick = async () => {
+    if (oauthPoll !== state) return;
+    if (Date.now() > state.deadline) {
+      await finishOAuthWatch(
+        "timed_out",
+        `Authentication timed out after ${formatWait(state.waitMs)}.`,
+        state.pluginId,
+      );
+      return;
+    }
+    try {
+      const st = await api(
+        `/api/plugins/mcp-login-status?id=${encodeURIComponent(state.loginId)}`,
+      );
+      if (oauthPoll !== state) return;
+      if (!st || st.phase === "pending") return;
+      await finishOAuthWatch(st.phase, st.message || "Authentication failed.", state.pluginId);
+    } catch (e) {
+      if (oauthPoll !== state) return;
+      if (String(e.message || "").toLowerCase().includes("not found")) {
+        finishOAuthWatch("failed", "Authentication failed.", state.pluginId);
+      }
+    }
+  };
+  state.timer = setInterval(() => {
+    tick().catch(() => {});
+  }, 1000);
+  tick().catch(() => {});
+}
+
+async function saveConfig(opts) {
+  const options = opts || {};
+  if (configAuthHold) return { ok: false, error: "Authentication has not succeeded." };
+  if (!currentConfigPluginId) return { ok: false, error: "No plugin is open." };
   let servers = {};
   try {
     servers = JSON.parse($("servers-json").value || "{}");
   } catch {
-    alert("Invalid servers JSON");
-    return;
+    if (!options.quiet) alert("Invalid servers JSON");
+    return { ok: false, error: "Invalid servers JSON" };
   }
   const config = {
     env: collectMap($("config-body"), "env"),
@@ -504,10 +710,99 @@ async function saveConfig() {
       method: "PUT",
       body: JSON.stringify({ config }),
     });
-    $("config-dialog").close();
-    await refreshAll();
+    if (!options.keepOpen) $("config-dialog").close();
   } catch (e) {
-    alert(e.message);
+    if (!options.quiet) alert(e.message);
+    return { ok: false, error: e.message };
+  }
+  try {
+    await refreshAll();
+  } catch {
+    /* the configuration is already stored */
+  }
+  return { ok: true };
+}
+
+function appCallbackUrl() {
+  const path = typeof bridgePath === "function" ? bridgePath("/callback") : "/callback";
+  return new URL(path, location.origin).href;
+}
+
+function codeText(text) {
+  const el = document.createElement("code");
+  el.textContent = text;
+  return el;
+}
+
+function resetOAuthRewrite() {
+  const form = $("oauth-rewrite-form");
+  const input = $("oauth-pasted");
+  const err = $("oauth-rewrite-error");
+  const link = $("oauth-rewrite-link");
+  form.hidden = true;
+  input.value = "";
+  input.setCustomValidity("");
+  input.removeAttribute("aria-invalid");
+  err.hidden = true;
+  err.textContent = "";
+  link.hidden = true;
+  link.removeAttribute("href");
+  link.textContent = "";
+  $("oauth-rewrite-help").replaceChildren();
+  $("oauth-rewrite-status").textContent = "";
+  $("oauth-tunnel").hidden = true;
+  $("oauth-tunnel").textContent = "";
+}
+
+function showOAuthRewrite(callbackUrl) {
+  const form = $("oauth-rewrite-form");
+  const input = $("oauth-pasted");
+  form.hidden = false;
+  input.placeholder = `${callbackUrl || "http://localhost:8787/callback"}?code=…&state=…`;
+  const help = $("oauth-rewrite-help");
+  help.replaceChildren(
+    "After sign-in, copy the full address from the browser bar (",
+    codeText(`${callbackUrl || "http://localhost:8787/callback"}?code=…&state=…`),
+    "). Paste it here. Open callback loads the same code and state on ",
+    codeText(appCallbackUrl()),
+    ".",
+  );
+}
+
+function previewOAuthRewrite() {
+  const input = $("oauth-pasted");
+  const link = $("oauth-rewrite-link");
+  const err = $("oauth-rewrite-error");
+  input.setCustomValidity("");
+  input.removeAttribute("aria-invalid");
+  err.hidden = true;
+  err.textContent = "";
+  $("oauth-rewrite-status").textContent = "";
+  const raw = input.value.trim();
+  if (!raw) {
+    link.hidden = true;
+    link.removeAttribute("href");
+    link.textContent = "";
+    return;
+  }
+  try {
+    const url = rewriteLoopbackOAuthCallback(raw, appCallbackUrl());
+    link.href = url;
+    link.textContent = url;
+    link.hidden = false;
+  } catch {
+    link.hidden = true;
+    link.removeAttribute("href");
+    link.textContent = "";
+  }
+}
+
+function isLoopbackCallback(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host === "localhost" || host === "127.0.0.1" || host === "::1";
+  } catch {
+    return false;
   }
 }
 
@@ -515,12 +810,27 @@ function showMcpLoginResult(r) {
   $("oauth-hint").textContent = r.hint || "OAuth login started.";
   const cb = r.callbackUrl || "";
   const cbNote = $("oauth-callback-note");
-  if (r.tunnelHint) {
-    cbNote.innerHTML = `<strong>Port forwarding:</strong> ${esc(r.tunnelHint)}`;
-  } else if (cb && r.callbackViaWeb) {
-    cbNote.innerHTML = `After sign-in, OAuth redirects to <code>${esc(cb)}</code> (this app forwards the callback to Cursor CLI on the server).`;
+  resetOAuthRewrite();
+  const rewrite =
+    !!r.loginUrl && !r.callbackViaWeb && (r.callbackHostRewrite || isLoopbackCallback(cb));
+  if (r.callbackViaWeb && cb) {
+    cbNote.replaceChildren(
+      "After sign-in, OAuth redirects to ",
+      codeText(cb),
+      ". This app forwards the callback to Cursor CLI on the server.",
+    );
+  } else if (rewrite) {
+    $("oauth-hint").textContent =
+      "Open the login URL below. After sign-in, paste the localhost callback address into Complete callback. This app forwards code and state to the login process.";
+    cbNote.textContent =
+      "The provider still redirects to localhost. If that page does not open, paste the address below.";
+    showOAuthRewrite(cb);
+    if (r.tunnelHint) {
+      $("oauth-tunnel").hidden = false;
+      $("oauth-tunnel").textContent = r.tunnelHint;
+    }
   } else if (cb) {
-    cbNote.innerHTML = `After sign-in, OAuth redirects to <code>${esc(cb)}</code> on <em>your computer</em> (not this app URL).`;
+    cbNote.replaceChildren("After sign-in, OAuth redirects to ", codeText(cb), ".");
   } else {
     cbNote.textContent = "";
   }
@@ -531,7 +841,10 @@ function showMcpLoginResult(r) {
     const link = $("oauth-url-link");
     link.href = url;
     link.textContent = url;
-    $("oauth-open").onclick = () => window.open(url, "_blank", "noopener");
+    link.onclick = (event) => {
+      if (openOAuthLoginWindow(url)) event.preventDefault();
+    };
+    $("oauth-open").onclick = () => openOAuthLoginWindow(url);
     $("oauth-copy").onclick = async () => {
       try {
         await navigator.clipboard.writeText(url);
@@ -546,23 +859,67 @@ function showMcpLoginResult(r) {
   $("oauth-manual").textContent = r.manualCommand
     ? `Terminal fallback:\n${r.manualCommand}`
     : "";
-  $("oauth-dialog").showModal();
+  const watchNote = $("oauth-watch-note");
+  if (r.loginId) {
+    const wait = formatWait(r.timeoutMs || OAUTH_TIMEOUT_DEFAULT_MS);
+    const where = configAuthTarget(oauthWatchPluginId)
+      ? "The configuration window shows success or failure. Configuration is saved only after success."
+      : "The result appears on this page.";
+    watchNote.hidden = false;
+    watchNote.textContent = `This window closes when authentication finishes, or after ${wait}. ${where}`;
+    startOAuthWatch(r.loginId, r.timeoutMs, oauthWatchPluginId);
+  } else {
+    watchNote.hidden = true;
+    watchNote.textContent = "";
+    if (configAuthTarget(oauthWatchPluginId)) {
+      showAuthStatus($("mcp-auth-status"), "", "");
+      setConfigAuthHold(false);
+    }
+    oauthWatchPluginId = null;
+  }
+  if (!$("oauth-dialog").open) $("oauth-dialog").showModal();
+}
+
+function beginMcpLoginDialog() {
+  stopOAuthPoll();
+  $("oauth-hint").textContent = "Starting OAuth login…";
+  $("oauth-url-wrap").style.display = "none";
+  $("oauth-callback-note").textContent = "";
+  $("oauth-manual").textContent = "";
+  showAuthStatus($("oauth-watch-note"), "", "");
+  resetOAuthRewrite();
+  if (configAuthTarget(oauthWatchPluginId)) {
+    showAuthStatus(
+      $("mcp-auth-status"),
+      "pending",
+      "Starting authentication. The login window closes when authentication finishes, or after 5 minutes. Configuration is saved only after success.",
+    );
+    setConfigAuthHold(true);
+  }
+  if (!$("oauth-dialog").open) $("oauth-dialog").showModal();
+}
+
+function clearOAuthLoginStart(message) {
+  stopOAuthPoll();
+  setConfigAuthHold(false);
+  showAuthStatus($("mcp-auth-status"), "", "");
+  oauthWatchPluginId = null;
+  const dialog = $("oauth-dialog");
+  if (dialog?.open) dialog.close();
+  if (message) alert(message);
 }
 
 async function catalogMcpLogin(marketplaceId, name) {
   try {
-    $("oauth-hint").textContent = "Starting OAuth login…";
-    $("oauth-url-wrap").style.display = "none";
-    $("oauth-manual").textContent = "";
-    $("oauth-dialog").showModal();
+    oauthWatchPluginId = null;
+    beginMcpLoginDialog();
     const r = await api("/api/plugins/mcp-login", {
       method: "POST",
       body: JSON.stringify({ marketplaceId, name }),
     });
     showMcpLoginResult(r);
   } catch (e) {
-    $("oauth-dialog").close();
-    alert(e.message);
+    clearOAuthLoginStart(e.message);
   }
 }
 
@@ -572,18 +929,15 @@ async function mcpLogin(id, server) {
     return;
   }
   try {
-    $("oauth-hint").textContent = "Starting OAuth login…";
-    $("oauth-url-wrap").style.display = "none";
-    $("oauth-manual").textContent = "";
-    $("oauth-dialog").showModal();
+    oauthWatchPluginId = id;
+    beginMcpLoginDialog();
     const r = await api(
       `/api/plugins/installed/${encodeURIComponent(id)}/mcp-login`,
       { method: "POST", body: JSON.stringify({ server }) },
     );
     showMcpLoginResult(r);
   } catch (e) {
-    $("oauth-dialog").close();
-    alert(e.message);
+    clearOAuthLoginStart(e.message);
   }
 }
 
@@ -705,6 +1059,49 @@ $("add-mp-btn").onclick = async () => {
 $("config-save").onclick = () => saveConfig();
 $("config-cancel").onclick = () => $("config-dialog").close();
 $("oauth-close").onclick = () => $("oauth-dialog").close();
+$("oauth-pasted").addEventListener("input", () => previewOAuthRewrite());
+$("oauth-rewrite-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const input = $("oauth-pasted");
+  const err = $("oauth-rewrite-error");
+  let url;
+  try {
+    url = rewriteLoopbackOAuthCallback(input.value, appCallbackUrl());
+  } catch (rewriteError) {
+    input.setAttribute("aria-invalid", "true");
+    input.setCustomValidity(rewriteError.message || "Paste the localhost callback address.");
+    err.hidden = false;
+    err.textContent = rewriteError.message || "Paste the localhost callback address.";
+    input.focus();
+    return;
+  }
+  input.setCustomValidity("");
+  input.removeAttribute("aria-invalid");
+  const link = $("oauth-rewrite-link");
+  link.href = url;
+  link.textContent = url;
+  link.hidden = false;
+  if (oauthPopup && !oauthPopup.closed) {
+    try {
+      oauthPopup.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  const opened = window.open(url, "_blank");
+  oauthPopup = opened;
+  if (opened) {
+    try {
+      opened.opener = null;
+    } catch {
+      /* ignore */
+    }
+    $("oauth-rewrite-status").textContent =
+      "Opened the callback in a new tab. This window closes when authentication finishes.";
+  } else {
+    $("oauth-rewrite-status").textContent = "The browser blocked the new tab. Use the link above.";
+  }
+});
 
 loadStatus();
 refreshAll().catch((e) => {

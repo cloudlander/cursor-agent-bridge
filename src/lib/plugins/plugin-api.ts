@@ -25,6 +25,7 @@ import {
   uninstallPlugin,
   updatePlugin,
 } from "./manager.js";
+import { getMcpLoginSession } from "./mcp-login-session.js";
 const MAX_BODY = 1024 * 1024;
 const INSTALLED_PREFIX = "/api/plugins/installed/";
 
@@ -256,6 +257,14 @@ export async function handlePluginApi(
         const plugin = await patchPluginConfig(config, id, cfgBody);
         return json(res, 200, getPluginDetail(config, id));
       }
+    }
+
+    if (req.method === "GET" && pathname === "/api/plugins/mcp-login-status") {
+      const id = (q.id ?? "").trim();
+      if (!id) throw new ApiError(400, "id required");
+      const session = getMcpLoginSession(id);
+      if (!session) throw new ApiError(404, "login session not found");
+      return json(res, 200, session);
     }
 
     if (req.method === "POST" && pathname === "/api/plugins/mcp-login") {

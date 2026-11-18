@@ -333,6 +333,7 @@ prepare_worker_env() {
   export CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE="${CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE:-false}"
   export CURSOR_BRIDGE_MODE="${CURSOR_BRIDGE_MODE:-agent}"
   export CURSOR_BRIDGE_FORCE="${CURSOR_BRIDGE_FORCE:-true}"
+  export CURSOR_BRIDGE_APPROVE_MCPS="${CURSOR_BRIDGE_APPROVE_MCPS:-true}"
   export CURSOR_BRIDGE_TIMEOUT_MS="${CURSOR_BRIDGE_TIMEOUT_MS:-1800000}"
   # Engine sshd is pubkey-only on 2222. Process default is 22.
   export CURSOR_BRIDGE_TERMINAL_SSH_PORT="${CURSOR_BRIDGE_TERMINAL_SSH_PORT:-2222}"
@@ -373,6 +374,7 @@ prepare_worker_env() {
   log "  node: ${NODE_BIN}"
   log "  agent: ${CURSOR_AGENT_BIN}"
   log "  bridge timeout: ${CURSOR_BRIDGE_TIMEOUT_MS} ms"
+  log "  approve mcps: ${CURSOR_BRIDGE_APPROVE_MCPS}"
 }
 
 log_bridge_ready_urls() {

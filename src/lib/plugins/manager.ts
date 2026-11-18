@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { BridgeConfig } from "../config.js";
 import { runMcpLoginSpawn, type McpLoginResult } from "./mcp-login.js";
 import { analyzePlugin } from "./manifest.js";
+import { ensureRemoteMcpClients } from "./bridge-mcp-url.js";
 import {
   deployInstalledPlugin,
   deployInstalledPluginAsync,
@@ -674,6 +675,22 @@ export async function startMcpLogin(
   const reg = readRegistry(config);
   const plugin = reg.plugins.find((p) => p.id === pluginIdStr);
   if (!plugin) throw new ApiError(404, "plugin not installed");
+  const root = installDir(config, pluginIdStr);
+  if (plugin.enabled && fs.existsSync(root)) {
+    const ensured = await ensureRemoteMcpClients(
+      config,
+      Object.values(analyzePlugin(root).mcpServers),
+    );
+    if (ensured.registered.length) {
+      await withRegistryLock(async () => {
+        const fresh = readRegistry(config);
+        const p = fresh.plugins.find((x) => x.id === pluginIdStr);
+        if (!p?.enabled) return;
+        p.deployed = deployInstalledPlugin(p, config);
+        writeRegistry(config, fresh);
+      });
+    }
+  }
   return runMcpLoginSpawn(config, mcpKey(plugin.name, serverName), configDir, {
     publicOrigin,
   });

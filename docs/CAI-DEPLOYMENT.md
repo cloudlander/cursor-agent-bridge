@@ -25,6 +25,7 @@ On application start, `app.sh`:
 - Copies existing `auth.json` from project or user home when present; otherwise logs a warning and still starts
 - Sets `CURSOR_AGENT_BIN` and bundled Node via `CURSOR_API_PROXY_NODE`
 - Sets `CURSOR_BRIDGE_TERMINAL_SSH_PORT=2222` unless already set (Cloudera AI sshd; the process default is 22)
+- Sets `CURSOR_BRIDGE_APPROVE_MCPS=true` unless already set, so agent runs pass `--approve-mcps`
 - Runs Node on `dist/cli.js` as a child until it exits (`app.sh` / `app.sh start`). **`app.py`** runs `app.sh keepalive` so Dashboard **Restart proxy** (`app.sh stop`) can kill the CLI and the worker brings it back without a full application restart.
 - Plugin registry init (CLI cache import + redeploy) runs on **first** visit to `/plugins` or `/api/plugins/*`, not at listen time — dashboard, chat, and `/v1` start as soon as the port is up.
 - Logs loopback dashboard URLs in `.cai/startup.log` only after `/healthz` responds (default wait up to **120s**, override with `CURSOR_BRIDGE_STARTUP_WAIT_SEC`). Earlier log lines show the chosen port while bootstrap or Node startup is still running.
@@ -91,7 +92,7 @@ Then open `https://model-gateway.${CDSW_DOMAIN}/aigc-course/` (or loopback on th
 ## Plugins and MCP on CAI
 
 - UI: `/plugins` on the same port (no bridge key).
-- MCP OAuth callbacks bind `localhost:8787` on the **engine host** — use SSH/port-forward from a laptop to complete OAuth when needed.
+- MCP OAuth callbacks bind `localhost:8787` on the **engine host**. From Plugins → OAuth login, paste the localhost callback address the browser lands on. The page rewrites the host to this application’s `/callback`, which forwards `code` and `state` to the CLI. SSH `-L 8787:127.0.0.1:8787` still opens that localhost address directly. The login window closes when authentication finishes, or after 5 minutes (`CURSOR_BRIDGE_MCP_OAUTH_TIMEOUT_MS`). The configuration window shows success or failure, and the configuration is saved only after success.
 - Installed plugins deploy into Cursor config dirs; chat-only sandboxes copy a runtime tree per request (see README).
 
 ## Upstream auto-sync (optional)
