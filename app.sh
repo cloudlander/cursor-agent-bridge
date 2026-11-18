@@ -334,6 +334,8 @@ prepare_worker_env() {
   export CURSOR_BRIDGE_MODE="${CURSOR_BRIDGE_MODE:-agent}"
   export CURSOR_BRIDGE_FORCE="${CURSOR_BRIDGE_FORCE:-true}"
   export CURSOR_BRIDGE_TIMEOUT_MS="${CURSOR_BRIDGE_TIMEOUT_MS:-1800000}"
+  # Engine sshd is pubkey-only on 2222. Process default is 22.
+  export CURSOR_BRIDGE_TERMINAL_SSH_PORT="${CURSOR_BRIDGE_TERMINAL_SSH_PORT:-2222}"
 
   (
     while true; do

@@ -80,7 +80,7 @@ function resolvePrivateKey(env: EnvSource): string | undefined {
 export function loadTerminalSshConfig(
   env: EnvSource = process.env,
 ): TerminalSshConfig {
-  const port = envPort(env, ["CURSOR_BRIDGE_TERMINAL_SSH_PORT"], 2222);
+  const port = envPort(env, ["CURSOR_BRIDGE_TERMINAL_SSH_PORT"], 22);
   const enabled = envBool(env, ["CURSOR_BRIDGE_TERMINAL"], port > 0);
   const host =
     envString(env, ["CURSOR_BRIDGE_TERMINAL_SSH_HOST"]) ?? "127.0.0.1";

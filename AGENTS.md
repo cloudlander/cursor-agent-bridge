@@ -234,6 +234,7 @@ Optional deploy path; same codebase runs on any Node 22+ host.
 - `CURSOR_BRIDGE_USE_ACP=true` (legacy: `CURSOR_BRIDGE_USE_ACP=false`)
 - `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` on CAI engine
 - `CURSOR_BRIDGE_TIMEOUT_MS=900000`
+- `CURSOR_BRIDGE_TERMINAL_SSH_PORT=2222` (engine sshd; process default is 22)
 - `/v1` auth: **`CDSW_API_KEY`** unless `CURSOR_BRIDGE_DISABLE_CDSW_INBOUND_KEY=1`
 - Startup stdout logs: `LLM /v1 auth: CDSW_API_KEY=…`
 

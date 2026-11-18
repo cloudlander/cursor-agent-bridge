@@ -25,14 +25,14 @@ function tempAgentSocket(): string {
 }
 
 describe("loadTerminalSshConfig", () => {
-  it("defaults to localhost:2222 when enabled", () => {
+  it("defaults to localhost:22 when enabled", () => {
     const cfg = loadTerminalSshConfig({
       CURSOR_BRIDGE_TERMINAL: "1",
       USER: "cdsw",
     });
     expect(cfg.enabled).toBe(true);
     expect(cfg.host).toBe("127.0.0.1");
-    expect(cfg.port).toBe(2222);
+    expect(cfg.port).toBe(22);
     expect(cfg.username).toBe("cdsw");
   });
 

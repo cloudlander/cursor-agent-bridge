@@ -455,7 +455,7 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 | `CURSOR_BRIDGE_MAX_UPLOAD_BYTES` | `20971520` (20 MiB) | Max size for Web Chat file uploads (`POST /api/chat/upload`). JSON base64 uploads remain supported for older clients; the dashboard uses `multipart/form-data`. User files go to `{workspace}/.cursor-api-proxy/uploads/`; long-lived agent artifacts should use `{workspace}/.cursor-api-proxy/outputs/`. Both dirs are pruned on upload and thread save (7-day TTL, ~500MB combined quota); paths still referenced in saved chat threads are kept until unreferenced. |
 | `CURSOR_BRIDGE_TERMINAL` | `true` (when SSH port &gt; 0) | Enable the Web Chat **Terminal** tab (`/chat`): browser WebSocket to `GET /api/terminal/ws` → SSH shell. Set `0` to disable. The same right-hand panel’s **Apps** tab embeds a deployed app in an iframe and does not depend on this setting. |
 | `CURSOR_BRIDGE_TERMINAL_SSH_HOST` | `127.0.0.1` | SSH host for the terminal bridge. |
-| `CURSOR_BRIDGE_TERMINAL_SSH_PORT` | `2222` | SSH port for the terminal bridge. |
+| `CURSOR_BRIDGE_TERMINAL_SSH_PORT` | `22` | SSH port for the terminal bridge. CAI `app.sh` sets `2222` (engine sshd) unless this is already set. |
 | `CURSOR_BRIDGE_TERMINAL_SSH_USER` | `$USER` | SSH username. |
 | `CURSOR_BRIDGE_TERMINAL_SSH_KEY` | `~/.ssh/id_ed25519` or `id_rsa` | Path to private key (first existing default). |
 | `CURSOR_BRIDGE_TERMINAL_SSH_PASSWORD` | — | Optional SSH password (prefer keys). |
