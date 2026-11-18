@@ -132,6 +132,9 @@
         </div>
         <span class="mono muted-text chat-terminal-status chat-terminal-tools" id="chat-terminal-status">…</span>
         <button type="button" class="btn small chat-terminal-tools" id="chat-terminal-reconnect" title="Reconnect">Reconnect</button>
+        <input type="search" id="chat-apps-search" class="chat-apps-search chat-apps-tools" placeholder="Search apps" aria-label="Search apps by name" autocomplete="off" hidden>
+        <button type="button" class="btn small chat-apps-deploy chat-apps-tools" id="chat-apps-deploy" title="Deploy an app zip" hidden>Deploy</button>
+        <input type="file" id="chat-apps-deploy-file" accept=".zip,application/zip" hidden aria-label="App zip to deploy">
         <button type="button" class="chat-right-panel-collapse btn small" id="chat-right-panel-collapse" title="Collapse panel" aria-label="Collapse panel">›</button>
       </header>
       <div class="chat-right-panel-body" id="chat-right-panel-body">
@@ -140,8 +143,11 @@
           <div class="chat-apps-toolbar">
             <select id="chat-apps-select" class="chat-mode-select chat-apps-select" aria-label="Deployed app"></select>
             <button type="button" class="btn small" id="chat-apps-reload" title="Reload the list and the app">Reload</button>
+            <button type="button" class="btn small" id="chat-apps-export" title="Download this app as a zip" hidden>Export</button>
+            <button type="button" class="btn small" id="chat-apps-restart" title="Restart this dynamic app" hidden>Restart</button>
             <a class="btn small chat-apps-open" id="chat-apps-open" target="_blank" rel="noopener" hidden>Open</a>
           </div>
+          <p class="chat-apps-status muted-text" id="chat-apps-status" role="status" hidden></p>
           <p class="chat-apps-empty muted-text" id="chat-apps-empty">Loading apps…</p>
           <iframe id="chat-apps-frame" class="chat-apps-frame" title="Deployed app" hidden></iframe>
         </div>

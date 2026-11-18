@@ -134,23 +134,72 @@ The **Plugins** page lets you browse and search the official Cursor marketplace 
 
 **Storage (default):** `<dirname(CURSOR_BRIDGE_SESSIONS_LOG)>/plugins/` (`registry.json`, cloned marketplaces, installed plugin trees). Override with `CURSOR_BRIDGE_PLUGINS_DIR`.
 
-### User apps (static sites and catalog proxies)
+### User apps (static sites and dynamic apps)
 
-Deploy static web apps (HTML/CSS/JS) under **`/apps/{name}/`** or the short alias **`/{name}/`** without restarting the bridge. Each app is a folder with an `index.html` under `<sessions-log-dir>/apps/` (override with `CURSOR_BRIDGE_APPS_DIR`). Assets are served from the same folder; legacy **`/static/{name}/…`** URLs also resolve when that app exists. List deployed apps at **`/apps`** or **`GET /api/apps`**. Hot-deploy from the workspace with **`POST /api/apps/deploy`** — body `{ "name": "my-app", "sourceDir": "public/my-app" }` ( `sourceDir` must stay under `CURSOR_BRIDGE_WORKSPACE` ).
+User apps are served at **`/apps/{name}/`** and the short alias **`/{name}/`** without restarting the bridge. Manage them in the dashboard **Deployed apps** card (search by name, 5 per page) or with `GET /api/apps`. `/apps` redirects to that card. Files live under `<sessions-log-dir>/apps/` (override with `CURSOR_BRIDGE_APPS_DIR`). Legacy **`/static/{name}/…`** URLs also resolve when that app exists.
 
-**Catalog proxies** (local MCP or other dynamic apps) register themselves and show up on the same `/apps` list. The process listens on `127.0.0.1` and a random port, proves it owns that port (`GET /__bridge/catalog-prove`), then:
+**The zip bundle is the standard deploy package** for both static and dynamic apps. An app with no launch command is static. An app with a launch command is dynamic. Both kinds use the same routes. **`POST /api/apps/deploy` is the only deployment API.**
 
-| Method | Path | Body |
-|--------|------|------|
-| `POST` | `/api/apps/catalog` | `{ "name", "port", "title?", "description?", "ttlSec?", "pid?", "launch?" }` |
-| `POST` | `/api/apps/catalog/{name}/heartbeat` | `{ "pid?", "launch?" }` optional |
-| `POST` | `/api/apps/catalog/{name}/restart` | — |
-| `POST` | `/api/apps/catalog/{name}/stop` | — |
-| `DELETE` | `/api/apps/catalog/{name}` | deregister and stop the process |
+| Method | Path | Static | Dynamic |
+|--------|------|--------|---------|
+| `GET` | `/api/apps` | listed with `kind: "static"` | listed with `kind: "dynamic"`, `online`, `desired`, `managed` |
+| `POST` | `/api/apps/deploy` | zip, or JSON `{ "name", "sourceDir" }` | zip, or JSON for a running process (below) |
+| `GET` | `/api/apps/{name}/export` | `{name}.zip` of its files | `{name}.zip` with `launch` |
+| `POST` | `/api/apps/{name}/restart` | 400, no process | start or restart it |
+| `POST` | `/api/apps/{name}/stop` | 400, no process | stop it; stays down until Restart |
+| `DELETE` | `/api/apps/{name}` | remove the copied directory | stop it and remove its registration and installed files |
 
-`launch` is `{ "command", "args"?, "cwd"? }`. `command` is an executable name or an absolute path. The bridge accepts it only from a loopback caller that has proved the port. On startup the bridge starts every registered dynamic app that has a launch command and `desired` is not `stopped`, and restarts it if the health check fails. Stop keeps it down across bridge restarts; a later register or heartbeat does not clear it. Delete removes the registration and stops the process. The apps page and the dashboard apps card expose Restart, Stop, and Delete.
+Deploy replaces an app of the same name. A static app (no `launch`) is copied into the apps directory and served immediately. A dynamic app (`launch` and `port`) is registered; the supervisor starts it and keeps it running. These routes are unauthenticated, same as the dashboard. The zip must be at most 128MB.
 
-The bridge stores the registration under `<apps-dir>/.catalog/{name}.json` and reverse-proxies `/apps/{name}/…` and `/{name}/…` to `http://127.0.0.1:{port}/…`. Only loopback ports that answer the prove request are accepted. On listen the bridge writes `<apps-dir>/.catalog/bridge.json` so a local process can discover the catalog URL. Adding or removing a registration does not require a bridge code change or restart. Heartbeats older than `ttlSec` (default 45) are shown offline. Entries with no heartbeat for an hour are dropped, except launch-backed apps and apps explicitly stopped — those stay until Delete.
+JSON `{ "name", "sourceDir" }` is the static folder form of the same API (`sourceDir` must stay under `CURSOR_BRIDGE_WORKSPACE`). It uses that same copy and does not start a process.
+
+The archive is format `cursor-bridge-app`, version `1`:
+
+```text
+manifest.json
+payload/<files>
+```
+
+| Field | Static | Dynamic |
+|-------|--------|---------|
+| `format` | `"cursor-bridge-app"` | same |
+| `version` | `1` | same |
+| `name` | app name | same |
+| `title`, `description` | optional | optional |
+| `launch` | omit | required |
+| `port` | omit | required, 1–65535 |
+| `ttlMs` | omit | optional milliseconds (default 45000) |
+| `kind` | optional `"static"` | optional `"dynamic"` |
+
+`kind` may be omitted. Deploy treats a manifest with no `launch` as static and a manifest with `launch` as dynamic. When `kind` is set, it must match that rule. A static payload must include `payload/index.html`. An app with no launch command is exported as a static bundle from its files.
+
+A dynamic payload is the launch working directory, or the nearest package directory when that working directory is a home directory or a git checkout. `launch` inside the zip is portable:
+
+```json
+{ "runtime": "node", "args": ["server.js"], "cwd": "." }
+```
+
+`command` may be an executable name on `PATH` (`"python3"`) or a relative path inside `payload/`. On deploy, `runtime: "node"` becomes this process’s Node, and relative paths are rewritten into the installed directory.
+
+```bash
+curl -s -o my-app.zip http://127.0.0.1:8765/api/apps/my-app/export
+curl -s -X POST http://127.0.0.1:8765/api/apps/deploy \
+  -H "content-type: application/zip" \
+  --data-binary @my-app.zip
+curl -s -X POST http://127.0.0.1:8765/api/apps/deploy \
+  -H "content-type: application/json" \
+  -d '{"name":"my-app","sourceDir":"public/my-app"}'
+curl -s -X POST http://127.0.0.1:8765/api/apps/my-app/restart   # dynamic only
+curl -s -X DELETE http://127.0.0.1:8765/api/apps/my-app
+```
+
+**Deploying a running process.** A process already listening on `127.0.0.1` deploys itself with JSON `POST /api/apps/deploy` `{ "name", "port", "title?", "description?", "ttlSec?", "pid?", "launch?" }`. The bridge first checks ownership with `GET /__bridge/catalog-prove` on that port. `launch` is `{ "command", "args"?, "cwd"? }` with `command` an executable name or an absolute path, and is accepted only from a loopback caller. Deploying again refreshes the registration.
+
+On startup the bridge starts every dynamic app that has a launch command and is not stopped. It probes `GET /__bridge/catalog-health` on each dynamic app's port and restarts launch-backed apps whose probe fails. Stop survives a bridge restart and a later deploy of the same running process. The bridge cannot start a dynamic app that has no launch command: Stop returns 400 for it, and Restart only clears an earlier Stop.
+
+Registrations are stored under `<apps-dir>/.catalog/{name}.json`. The bridge reverse-proxies `/apps/{name}/…` and `/{name}/…` to `http://127.0.0.1:{port}/…`. On listen it writes `<apps-dir>/.catalog/bridge.json` (`deployPath`) so a local process can find the deploy URL. An app whose last successful probe is older than `ttlSec` (default 45) is shown offline. Entries with no successful probe for an hour are dropped, except launch-backed apps and stopped apps, which stay until Delete.
+
+**Chat panel.** The Apps tab in the chat right panel previews an app and has Reload, Export, Restart (dynamic only), Open, and Deploy.
 
 **Security:** The Plugins page and `/api/plugins/*` work **without** any bridge API key (same as the dashboard and `/chat`). When `CURSOR_BRIDGE_API_KEY` is set, it applies only to **`/v1/*`** and **`/health`**. On Cloudera AI, `/v1` auth uses **`CDSW_API_KEY` automatically** — you do not need to set `CURSOR_BRIDGE_API_KEY` for plugins. Do not expose the service on untrusted networks without TLS and appropriate edge auth.
 
@@ -402,7 +451,7 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 | `CURSOR_BRIDGE_UPSTREAM_SYNC_FIRST_DELAY_MS` | `120000` | Delay before the first scheduled check after server start. |
 | `CURSOR_BRIDGE_UPSTREAM_SYNC_REPO` | `https://github.com/anyrobert/cursor-api-proxy.git` | Upstream git URL for tag discovery and clone. |
 | `CURSOR_BRIDGE_PLUGINS_DIR` | `<sessions-log-dir>/plugins` | Root for plugin marketplace data (registry, marketplace clones, installed trees, runtime materialization). |
-| `CURSOR_BRIDGE_APPS_DIR` | `<sessions-log-dir>/apps` | Root for user-deployed static web apps and the `.catalog/` proxy registry, served at `/apps/{name}/` (hot; no restart). |
+| `CURSOR_BRIDGE_APPS_DIR` | `<sessions-log-dir>/apps` | Root for user-deployed static apps, installed dynamic app bundles, and the `.catalog/` registry, served at `/apps/{name}/` (hot; no restart). |
 | `CURSOR_BRIDGE_MAX_UPLOAD_BYTES` | `20971520` (20 MiB) | Max size for Web Chat file uploads (`POST /api/chat/upload`). JSON base64 uploads remain supported for older clients; the dashboard uses `multipart/form-data`. User files go to `{workspace}/.cursor-api-proxy/uploads/`; long-lived agent artifacts should use `{workspace}/.cursor-api-proxy/outputs/`. Both dirs are pruned on upload and thread save (7-day TTL, ~500MB combined quota); paths still referenced in saved chat threads are kept until unreferenced. |
 | `CURSOR_BRIDGE_TERMINAL` | `true` (when SSH port &gt; 0) | Enable the Web Chat **Terminal** tab (`/chat`): browser WebSocket to `GET /api/terminal/ws` → SSH shell. Set `0` to disable. The same right-hand panel’s **Apps** tab embeds a deployed app in an iframe and does not depend on this setting. |
 | `CURSOR_BRIDGE_TERMINAL_SSH_HOST` | `127.0.0.1` | SSH host for the terminal bridge. |

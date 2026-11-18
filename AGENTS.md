@@ -122,12 +122,49 @@ Optional: `scripts/start-local.sh`, `scripts/env.local.sh`, `.env.example` (neve
 | Bridge preamble | `src/lib/bridge-context-preamble.ts` | |
 | Plugin marketplace & deploy | `src/lib/plugins/*` | |
 | Admin UI & web chat | `src/lib/admin-dashboard.ts`, `chat-api.ts`, `public/` | Mobile layout: `public/chat*.css/js` |
-| Dynamic user apps | `src/lib/dynamic-apps.ts`, `src/lib/app-catalog.ts`, `src/lib/dynamic-app-supervisor.ts` | Static sites and localhost catalog proxies together at `/apps/{name}/` and `/{name}/`; `POST /api/apps/deploy`; `POST /api/apps/catalog`; launch-backed apps start on listen and stay up; Restart/Stop/Delete on `/apps`; storage `<sessions-log-dir>/apps/` |
+| Dynamic user apps | `src/lib/dynamic-apps.ts`, `src/lib/app-catalog.ts`, `src/lib/dynamic-app-supervisor.ts`, `src/lib/app-bundle.ts` | Standard package is the zip bundle below. Served at `/apps/{name}/` and `/{name}/`. One route set for static and dynamic apps under `/api/apps`; `POST /api/apps/deploy` is the only deployment API. Managed in the dashboard Deployed apps card (`public/app.js`) and the chat panel Apps tab (`public/chat-terminal.js`); `/apps` redirects to the dashboard. Storage `<sessions-log-dir>/apps/` |
 | CLI entry | `src/cli.ts`, `src/cli/*`, `src/lib/adopt-host-login.ts` | Published bin: `cursor-api-proxy`. Startup adopts an existing host CLI login into the account pool. |
 | SDK consumer | `src/client.ts` | npm export `"."` |
 | CAI deploy | `app.py`, `app.sh`, `scripts/bootstrap-cai-application.sh`, `docs/CAI-DEPLOYMENT.md` | Not required for generic Node deploy |
 | ACP → Web Chat import | `scripts/restore-acp-to-web.mjs` | `npm run restore-acp-to-web -- <acp-session-dir>`; Node 22+ (`node:sqlite`) |
 | Tests | `src/**/*.test.ts` | Vitest; colocated with modules |
+
+---
+
+## User app bundle
+
+The standard package for a static or dynamic user app is a `cursor-bridge-app` version `1` zip (`src/lib/app-bundle.ts`). A static app has no launch command. A dynamic app has one.
+
+```text
+manifest.json
+payload/<files>
+```
+
+| Field | Static | Dynamic |
+|-------|--------|---------|
+| `format` | `"cursor-bridge-app"` | same |
+| `version` | `1` | same |
+| `name` | app name | same |
+| `title`, `description` | optional | optional |
+| `launch` | omit | required |
+| `port` | omit | required, 1–65535 |
+| `ttlMs` | omit | optional milliseconds (default 45000) |
+| `kind` | optional `"static"` | optional `"dynamic"` |
+
+`kind` may be omitted. Deploy classifies the bundle by `launch`: no `launch` is static, `launch` present is dynamic. When `kind` is set it must match. A static payload must include `payload/index.html`. An app with no launch command is static and can be exported from its files.
+
+| Method | Path | Static | Dynamic |
+|--------|------|--------|---------|
+| `GET` | `/api/apps` | `kind: "static"` | `kind: "dynamic"` with `online`, `desired`, `managed` |
+| `POST` | `/api/apps/deploy` | zip, or JSON `{ "name", "sourceDir" }` (workspace folder copy) | zip, or JSON `{ "name", "port", "title?", "description?", "ttlSec?", "pid?", "launch?" }` for a process already listening on loopback |
+| `GET` | `/api/apps/{name}/export` | `{name}.zip` of its files | `{name}.zip` with `launch` |
+| `POST` | `/api/apps/{name}/restart` | 400 | start or restart |
+| `POST` | `/api/apps/{name}/stop` | 400 | stop; stays down until Restart, across bridge restarts |
+| `DELETE` | `/api/apps/{name}` | remove the copied directory | stop, remove the registration and `.bundles/{name}` |
+
+There is no separate catalog API. All routes are unauthenticated, same as the dashboard. Zip limit is 128MB. Deploy replaces an app of the same name. A static zip copies `payload/` into the apps directory. A dynamic zip extracts to `.bundles/{name}/` and is registered; the supervisor starts it. `launch` in a zip is `{ "runtime": "node", "args", "cwd" }`, or `{ "command", "args", "cwd" }` with `command` an executable name or a relative path inside `payload/`. `runtime: "node"` becomes this process’s Node. Relative paths are rewritten into the install directory. A dynamic app is packed from its launch working directory, or from the nearest package directory when that directory is a home directory or a git checkout.
+
+JSON dynamic deploy requires the listener to answer `GET /__bridge/catalog-prove`, and `launch` there is accepted only from loopback. Liveness comes from the supervisor probing `GET /__bridge/catalog-health`; a dynamic process does not heartbeat. Registrations are stored in `.catalog/{name}.json`, and `.catalog/bridge.json` publishes `deployPath` for local processes.
 
 ---
 

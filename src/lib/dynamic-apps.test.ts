@@ -9,6 +9,7 @@ import type { BridgeConfig } from "./config.js";
 import {
   appsDirOf,
   deployAppFromSource,
+  dynamicAppsMatches,
   handleDynamicApps,
   listApps,
 } from "./dynamic-apps.js";
@@ -177,7 +178,7 @@ describe("dynamic-apps", () => {
     expect(handled).toBe(false);
   });
 
-  it("registers a localhost catalog app and proxies it beside static apps", async () => {
+  it("deploys a running localhost process and proxies it beside static apps", async () => {
     const seen: { prefix?: string; host?: string; proto?: string; body?: string } = {};
     const upstream = http.createServer((req, res) => {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
@@ -230,7 +231,7 @@ describe("dynamic-apps", () => {
       fs.mkdirSync(path.join(appsDir, "demo"), { recursive: true });
       fs.writeFileSync(path.join(appsDir, "demo", "index.html"), "<h1>Demo</h1>");
 
-      const registered = await fetch(`${base}/api/apps/catalog`, {
+      const registered = await fetch(`${base}/api/apps/deploy`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -242,14 +243,14 @@ describe("dynamic-apps", () => {
       });
       expect(registered.status).toBe(200);
 
-      const denied = await fetch(`${base}/api/apps/catalog`, {
+      const denied = await fetch(`${base}/api/apps/deploy`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: "chat", port }),
       });
       expect(denied.status).toBe(400);
 
-      const unproved = await fetch(`${base}/api/apps/catalog`, {
+      const unproved = await fetch(`${base}/api/apps/deploy`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: "other", port: 1 }),
@@ -261,20 +262,14 @@ describe("dynamic-apps", () => {
         apps: { name: string; kind: string; online?: boolean }[];
       };
       expect(data.apps.map((a) => `${a.name}:${a.kind}`).sort()).toEqual([
-        "ccv:proxy",
+        "ccv:dynamic",
         "demo:static",
       ]);
       expect(data.apps.find((a) => a.name === "ccv")?.online).toBe(true);
 
-      const page = await fetch(`${base}/apps`);
-      const html = await page.text();
-      expect(html).toContain("demo");
-      expect(html).toContain("CCV");
-      expect(html).toContain("proxy · online");
-      expect(html).toContain('data-app-action="restart"');
-      expect(html).toContain('data-app-name="ccv" disabled');
-      expect(html).toMatch(/data-app-action="stop" data-app-name="ccv" disabled/);
-      expect(html).toContain('data-app-action="delete"');
+      const page = await fetch(`${base}/apps`, { redirect: "manual" });
+      expect(page.status).toBe(302);
+      expect(page.headers.get("location")).toBe("/#apps");
 
       const proxied = await fetch(`${base}/apps/ccv/ping`, {
         headers: {
@@ -298,12 +293,17 @@ describe("dynamic-apps", () => {
       expect(posted.status).toBe(200);
       expect(seen.body).toContain("a.b.c");
 
-      const beat = await fetch(`${base}/api/apps/catalog/ccv/heartbeat`, {
+      const catalogGone = await fetch(`${base}/api/apps/catalog/ccv/heartbeat`, {
         method: "POST",
       });
-      expect(beat.status).toBe(200);
+      expect(catalogGone.status).toBe(404);
 
-      const stopped = await fetch(`${base}/api/apps/catalog/ccv/stop`, { method: "POST" });
+      const staticStop = await fetch(`${base}/api/apps/demo/stop`, { method: "POST" });
+      expect(staticStop.status).toBe(400);
+      const staticRestart = await fetch(`${base}/api/apps/demo/restart`, { method: "POST" });
+      expect(staticRestart.status).toBe(400);
+
+      const stopped = await fetch(`${base}/api/apps/ccv/stop`, { method: "POST" });
       expect(stopped.status).toBe(400);
       const stillRunning = (await (await fetch(`${base}/api/apps`)).json()) as {
         apps: { name: string; desired?: string }[];
@@ -314,7 +314,7 @@ describe("dynamic-apps", () => {
       const down = await fetch(`${base}/apps/ccv/ping`);
       expect(down.status).toBe(502);
 
-      const removed = await fetch(`${base}/api/apps/catalog/ccv`, { method: "DELETE" });
+      const removed = await fetch(`${base}/api/apps/ccv`, { method: "DELETE" });
       expect(removed.status).toBe(200);
       const after = (await (await fetch(`${base}/api/apps`)).json()) as {
         apps: { name: string }[];
@@ -326,7 +326,7 @@ describe("dynamic-apps", () => {
     }
   });
 
-  it("shows stale catalog proxies as offline and drops ancient ones", () => {
+  it("shows stale dynamic apps as offline and drops ancient ones", () => {
     const appsDir = appsDirOf(config);
     const dir = path.join(appsDir, ".catalog");
     fs.mkdirSync(dir, { recursive: true });
@@ -368,18 +368,18 @@ describe("dynamic-apps", () => {
 
     const apps = listApps(appsDir);
     expect(apps.find((a) => a.name === "fresh")).toMatchObject({
-      kind: "proxy",
+      kind: "dynamic",
       online: false,
     });
     expect(apps.find((a) => a.name === "gone")).toBeUndefined();
     expect(apps.find((a) => a.name === "kept")).toMatchObject({
-      kind: "proxy",
+      kind: "dynamic",
       online: false,
       managed: true,
       desired: "running",
     });
     expect(apps.find((a) => a.name === "paused")).toMatchObject({
-      kind: "proxy",
+      kind: "dynamic",
       desired: "stopped",
       online: false,
     });
@@ -403,18 +403,13 @@ describe("dynamic-apps", () => {
       }),
     );
 
-    const page = await invoke("/apps", config);
-    expect(page.status).toBe(200);
-    expect(page.body).toContain('data-app-action="restart"');
-    expect(page.body).toContain("demo-dyn");
-
-    const stopped = await invoke("/api/apps/catalog/demo-dyn/stop", config, "POST");
+    const stopped = await invoke("/api/apps/demo-dyn/stop", config, "POST");
     expect(stopped.status).toBe(200);
     const listed = JSON.parse((await invoke("/api/apps", config)).body) as {
       apps: { name: string; desired?: string; managed?: boolean; kind: string }[];
     };
     expect(listed.apps.find((a) => a.name === "demo-dyn")).toMatchObject({
-      kind: "proxy",
+      kind: "dynamic",
       desired: "stopped",
       managed: true,
     });
@@ -430,15 +425,107 @@ describe("dynamic-apps", () => {
         desired: "running",
       }),
     );
-    const rejected = await invoke("/api/apps/catalog/nolaunch/restart", config, "POST");
+    const rejected = await invoke("/api/apps/nolaunch/restart", config, "POST");
     expect(rejected.status).toBe(400);
 
-    const removed = await invoke("/api/apps/catalog/demo-dyn", config, "DELETE");
+    const removed = await invoke("/api/apps/demo-dyn", config, "DELETE");
     expect(removed.status).toBe(200);
     const after = JSON.parse((await invoke("/api/apps", config)).body) as {
       apps: { name: string }[];
     };
     expect(after.apps.find((a) => a.name === "demo-dyn")).toBeUndefined();
+  });
+
+  it("exports and imports a static app over HTTP", async () => {
+    expect(dynamicAppsMatches(mockReq("/api/apps/site/export"), config)).toBe(true);
+    expect(dynamicAppsMatches(mockReq("/api/apps/deploy", "POST"), config)).toBe(true);
+    expect(dynamicAppsMatches(mockReq("/api/apps/site", "DELETE"), config)).toBe(true);
+    expect(dynamicAppsMatches(mockReq("/api/apps/site/restart", "POST"), config)).toBe(true);
+    expect(dynamicAppsMatches(mockReq("/api/apps/site/stop", "POST"), config)).toBe(true);
+    expect(dynamicAppsMatches(mockReq("/api/apps/import", "POST"), config)).toBe(false);
+    expect(dynamicAppsMatches(mockReq("/api/apps/catalog", "POST"), config)).toBe(false);
+
+    const bridge = http.createServer((req, res) => {
+      if (!handleDynamicApps(req, res, config)) {
+        res.writeHead(404);
+        res.end("unhandled");
+      }
+    });
+    await listen(bridge);
+    const base = baseUrl(bridge);
+    try {
+      const appsDir = appsDirOf(config);
+      const site = path.join(appsDir, "site");
+      fs.mkdirSync(path.join(site, "notes"), { recursive: true });
+      fs.writeFileSync(path.join(site, "index.html"), "<h1>Zip</h1>");
+      fs.writeFileSync(path.join(site, "notes", "说明.txt"), "hello");
+
+      const exported = await fetch(`${base}/api/apps/site/export`);
+      expect(exported.status).toBe(200);
+      expect(exported.headers.get("content-type")).toContain("application/zip");
+      expect(exported.headers.get("content-disposition")).toContain("site.zip");
+      const zip = Buffer.from(await exported.arrayBuffer());
+
+      fs.rmSync(site, { recursive: true, force: true });
+      const imported = await fetch(`${base}/api/apps/deploy`, {
+        method: "POST",
+        headers: { "content-type": "application/zip" },
+        body: zip,
+      });
+      expect(imported.status).toBe(200);
+      const body = (await imported.json()) as { name: string; started: boolean; kind: string };
+      expect(body).toMatchObject({ name: "site", kind: "static", started: false });
+      expect(fs.readFileSync(path.join(site, "notes", "说明.txt"), "utf8")).toBe("hello");
+      const page = await fetch(`${base}/apps/site/`);
+      expect(await page.text()).toContain("Zip");
+
+      const removed = await fetch(`${base}/api/apps/site`, { method: "DELETE" });
+      expect(removed.status).toBe(200);
+      expect(fs.existsSync(site)).toBe(false);
+      const gone = await fetch(`${base}/apps/site/`);
+      expect(gone.status).toBe(404);
+      const listed = (await (await fetch(`${base}/api/apps`)).json()) as {
+        apps: { name: string }[];
+      };
+      expect(listed.apps.find((app) => app.name === "site")).toBeUndefined();
+    } finally {
+      await closeServer(bridge);
+    }
+  });
+
+  it("deletes a dynamic app and its installed bundle through the same route", async () => {
+    const appsDir = appsDirOf(config);
+    const site = path.join(appsDir, "site");
+    fs.mkdirSync(site, { recursive: true });
+    fs.writeFileSync(path.join(site, "index.html"), "stay");
+    const now = new Date().toISOString();
+    fs.mkdirSync(path.join(appsDir, ".catalog"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appsDir, ".catalog", "site.json"),
+      JSON.stringify({
+        name: "site",
+        port: 9,
+        ttlMs: 45_000,
+        registeredAt: now,
+        heartbeatAt: now,
+        desired: "running",
+        launch: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+      }),
+    );
+
+    const missing = await invoke("/api/apps/missing", config, "DELETE");
+    expect(missing.status).toBe(404);
+
+    const bundle = path.join(appsDir, ".bundles", "site");
+    fs.mkdirSync(bundle, { recursive: true });
+    fs.writeFileSync(path.join(bundle, "server.js"), "");
+
+    const removed = await invoke("/api/apps/site", config, "DELETE");
+    expect(removed.status).toBe(200);
+    expect(JSON.parse(removed.body)).toMatchObject({ name: "site", kind: "dynamic" });
+    expect(fs.existsSync(path.join(appsDir, ".catalog", "site.json"))).toBe(false);
+    expect(fs.existsSync(bundle)).toBe(false);
+    expect(fs.existsSync(site)).toBe(false);
   });
 });
 

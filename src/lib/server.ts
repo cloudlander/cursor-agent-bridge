@@ -223,7 +223,7 @@ function logListenBanner(opts: BridgeServerOptions): void {
   console.log(`- ${formatInboundAuthStartupLog(process.env)}`);
   console.log(`- sessions log: ${config.sessionsLogPath}`);
   console.log(
-    `- user apps: ${appsDirOf(config)} (static + catalog proxy at /apps/{name}/ and /{name}/; launch-backed dynamic apps are kept alive)`,
+    `- user apps: ${appsDirOf(config)} (static + dynamic at /apps/{name}/ and /{name}/; manage in the dashboard; launch-backed dynamic apps are kept alive)`,
   );
   console.log(
     `- chat-only workspace: ${config.chatOnlyWorkspace ? "yes (isolated temp dir)" : "no"}`,

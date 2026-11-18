@@ -10,6 +10,7 @@ import {
   listCatalogEntries,
   probeCatalogHealth,
   readCatalogEntry,
+  touchCatalogEntry,
   writeCatalogEntry,
   type AppLaunchSpec,
   type CatalogEntry,
@@ -41,6 +42,7 @@ const tails = new Map<string, Promise<void>>();
 let timer: ReturnType<typeof setInterval> | undefined;
 let appsDirActive: string | undefined;
 let ticking = false;
+let rerun = false;
 let startupGraceMs = DEFAULT_STARTUP_GRACE_MS;
 
 function slotFor(name: string): Slot {
@@ -195,6 +197,7 @@ async function ensureRunning(appsDir: string, entry: CatalogEntry): Promise<void
   const healthy = await probeCatalogHealth(current.port, current.name);
   if (healthy) {
     slot.failures = 0;
+    touchCatalogEntry(appsDir, current.name);
     return;
   }
   const pid = knownPid(slot, current);
@@ -204,17 +207,30 @@ async function ensureRunning(appsDir: string, entry: CatalogEntry): Promise<void
   spawnLaunch(appsDir, current);
 }
 
+/** A process that deployed itself without a launch command is only probed, never started. */
+async function refreshUnmanaged(appsDir: string, entry: CatalogEntry): Promise<void> {
+  if (await probeCatalogHealth(entry.port, entry.name)) touchCatalogEntry(appsDir, entry.name);
+}
+
 async function tick(): Promise<void> {
   const appsDir = appsDirActive;
-  if (!appsDir || ticking) return;
+  if (!appsDir) return;
+  if (ticking) {
+    rerun = true;
+    return;
+  }
   ticking = true;
   try {
     for (const entry of listCatalogEntries(appsDir)) {
+      if (appsDirActive !== appsDir) return;
       if (entry.desired === "stopped") {
         await withAppLock(entry.name, () => ensureStopped(appsDir, entry));
         continue;
       }
-      if (!entry.launch) continue;
+      if (!entry.launch) {
+        await withAppLock(entry.name, () => refreshUnmanaged(appsDir, entry));
+        continue;
+      }
       await withAppLock(entry.name, () => ensureRunning(appsDir, entry));
     }
   } catch (err) {
@@ -222,7 +238,16 @@ async function tick(): Promise<void> {
     console.error(`[dynamic-apps] supervisor: ${message}`);
   } finally {
     ticking = false;
+    if (rerun) {
+      rerun = false;
+      if (appsDirActive) void tick();
+    }
   }
+}
+
+/** Ask a running supervisor to reconcile catalog entries, including one just deployed. */
+export function kickDynamicAppSupervisor(): void {
+  void tick();
 }
 
 export function startDynamicAppSupervisor(appsDir: string, opts: SupervisorOptions = {}): void {

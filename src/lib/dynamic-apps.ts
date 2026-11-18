@@ -4,18 +4,30 @@ import * as path from "node:path";
 
 import {
   catalogEntryOnline,
-  handleCatalogApi,
   listCatalogEntries,
-  matchCatalogApi,
   proxyCatalogApp,
   readCatalogEntry,
+  registerRunningApp,
   type CatalogEntry,
+  type RunningAppBody,
 } from "./app-catalog.js";
 import type { BridgeConfig } from "./config.js";
 import { getBridgePublicContext } from "./bridge-request-context.js";
-import { handleDynamicAppControl } from "./dynamic-app-supervisor.js";
+import {
+  bundleDir,
+  copyStaticAppFiles,
+  exportAppZip,
+  importAppZip,
+  MAX_APP_ZIP_BYTES,
+} from "./app-bundle.js";
+import {
+  deleteDynamicApp,
+  kickDynamicAppSupervisor,
+  restartDynamicApp,
+  stopDynamicApp,
+} from "./dynamic-app-supervisor.js";
 import { publicPath } from "./http-public-path.js";
-import { json } from "./http.js";
+import { BodyTooLargeError, json } from "./http.js";
 
 /** Safe app directory name (alphanumeric, dot, dash, underscore). */
 export const APP_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -118,14 +130,14 @@ export type AppSummary = {
   shortUrl: string;
   hasIndex: boolean;
   updatedAt?: string;
-  /** `static` is a folder with files; `proxy` is a process registered in the catalog. */
-  kind: "static" | "proxy";
+  /** `static` is a folder of files; `dynamic` is a process the bridge proxies to. */
+  kind: "static" | "dynamic";
   title?: string;
   online?: boolean;
   description?: string;
-  /** Proxy only. `stopped` means the supervisor will not relaunch it. */
+  /** Dynamic only. `stopped` means the supervisor will not relaunch it. */
   desired?: "running" | "stopped";
-  /** Proxy published a launch command the bridge can start. */
+  /** Dynamic app has a launch command the bridge can start. */
   managed?: boolean;
   pid?: number;
 };
@@ -189,7 +201,7 @@ function catalogSummary(entry: CatalogEntry, hasIndex: boolean): AppSummary {
     shortUrl: `/${entry.name}/`,
     hasIndex,
     updatedAt: entry.heartbeatAt,
-    kind: "proxy",
+    kind: "dynamic",
     title: entry.title,
     online: entry.desired === "stopped" ? false : catalogEntryOnline(entry),
     description: entry.description,
@@ -246,9 +258,7 @@ export function dynamicAppsMatches(
 ): boolean {
   const method = req.method ?? "GET";
   const pathname = pathnameOf(req);
-  if (pathname === "/api/apps") return method === "GET";
-  if (pathname === "/api/apps/deploy") return method === "POST";
-  if (matchCatalogApi(method, pathname)) return true;
+  if (matchAppsApi(method, pathname)) return true;
   if (config && catalogOwns(appsDirOf(config), pathname)) return true;
   if (method !== "GET" && method !== "HEAD") return false;
   if (pathname === "/apps" || pathname.startsWith("/apps/")) return true;
@@ -257,6 +267,26 @@ export function dynamicAppsMatches(
   if (short === null) return false;
   if (!config) return false;
   return isRegisteredAppName(appsDirOf(config), short.name);
+}
+
+type AppsApiMatch =
+  | { op: "list" }
+  | { op: "deploy" }
+  | { op: "export" | "restart" | "stop" | "delete"; name: string };
+
+function matchAppsApi(method: string, pathname: string): AppsApiMatch | null {
+  if (pathname === "/api/apps") return method === "GET" ? { op: "list" } : null;
+  if (pathname === "/api/apps/deploy" && method === "POST") return { op: "deploy" };
+  const action = pathname.match(/^\/api\/apps\/([^/]+)\/(export|restart|stop)$/);
+  if (action) {
+    const op = action[2] as "export" | "restart" | "stop";
+    if ((op === "export") !== (method === "GET")) return null;
+    if (op !== "export" && method !== "POST") return null;
+    return { op, name: decodeURIComponent(action[1] ?? "") };
+  }
+  const del = pathname.match(/^\/api\/apps\/([^/]+)$/);
+  if (del && method === "DELETE") return { op: "delete", name: decodeURIComponent(del[1] ?? "") };
+  return null;
 }
 
 function catalogOwns(appsDir: string, pathname: string): boolean {
@@ -362,17 +392,8 @@ export function deployAppFromSource(
   } catch {
     return { ok: false, error: "source not found" };
   }
-  const indexPath = path.join(sourceNorm, "index.html");
-  try {
-    if (!fs.statSync(indexPath).isFile()) {
-      return { ok: false, error: "source must contain index.html" };
-    }
-  } catch {
-    return { ok: false, error: "source must contain index.html" };
-  }
-  ensureAppsDir(appsDir);
-  const dest = path.join(appsDir, name);
-  fs.cpSync(sourceNorm, dest, { recursive: true, force: true });
+  const copied = copyStaticAppFiles(appsDir, name, sourceNorm);
+  if (!copied.ok) return { ok: false, error: copied.error };
   return {
     ok: true,
     name,
@@ -382,111 +403,236 @@ export function deployAppFromSource(
   };
 }
 
-function appKindLabel(app: AppSummary): string {
-  if (app.kind === "proxy") {
-    if (app.desired === "stopped") return "proxy · stopped";
-    const state = app.online === false ? "proxy · offline" : "proxy · online";
-    return app.managed === false ? `${state} · no launch command` : state;
+export type AppControlResult =
+  | { ok: true; name: string; kind: "static" | "dynamic"; desired?: "running" | "stopped" }
+  | { ok: false; status: number; error: string };
+
+function staticAppDir(appsDir: string, name: string): string | null {
+  const root = path.resolve(appsDir);
+  const dest = path.resolve(root, name);
+  if (dest !== path.join(root, name)) return null;
+  try {
+    return fs.lstatSync(dest).isDirectory() ? dest : null;
+  } catch {
+    return null;
   }
-  return app.hasIndex ? "static" : "static · missing index.html";
 }
 
-function proxyActions(app: AppSummary): string {
-  if (app.kind !== "proxy") return "";
-  const name = escapeHtml(app.name);
-  const unmanaged = app.managed === false;
-  const restartDisabled =
-    unmanaged && app.desired !== "stopped"
-      ? ' disabled title="No launch command registered"'
-      : "";
-  const stopDisabled = unmanaged ? ' disabled title="No launch command registered"' : "";
-  return `<span class="actions">
-    <button type="button" data-app-action="restart" data-app-name="${name}"${restartDisabled}>Restart</button>
-    <button type="button" data-app-action="stop" data-app-name="${name}"${stopDisabled}>Stop</button>
-    <button type="button" class="danger" data-app-action="delete" data-app-name="${name}">Delete</button>
-  </span>`;
+/** Delete a static or dynamic app. A dynamic app is stopped and its installed bundle removed. */
+export async function deleteApp(appsDir: string, name: string): Promise<AppControlResult> {
+  if (!APP_NAME_PATTERN.test(name)) {
+    return { ok: false, status: 400, error: "invalid app name" };
+  }
+  const dir = staticAppDir(appsDir, name);
+  if (readCatalogEntry(appsDir, name)) {
+    await deleteDynamicApp(appsDir, name);
+    fs.rmSync(bundleDir(appsDir, name), { recursive: true, force: true });
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    return { ok: true, name, kind: "dynamic", desired: "stopped" };
+  }
+  if (!dir) return { ok: false, status: 404, error: "app not found" };
+  fs.rmSync(dir, { recursive: true, force: true });
+  return { ok: true, name, kind: "static" };
 }
 
-function renderAppsIndexHtml(apps: AppSummary[], catalogApi: string): string {
-  const rows =
-    apps.length === 0
-      ? "<p class=\"empty\">No apps yet. Add a static folder with <code>index.html</code>, or register a local process with <code>POST /api/apps/catalog</code>.</p>"
-      : `<ul>${apps
-          .map(
-            (a) =>
-              `<li><div><a href="${a.shortUrl}">${escapeHtml(a.title || a.name)}</a> <span class="muted">${escapeHtml(a.name)} · ${escapeHtml(appKindLabel(a))}${a.pid ? ` · pid ${a.pid}` : ""} · ${escapeHtml(a.url)}</span></div>${proxyActions(a)}</li>`,
-          )
-          .join("")}</ul>`;
-  const api = JSON.stringify(catalogApi);
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>User apps</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.25rem; }
-    ul { list-style: none; padding: 0; margin: 0; }
-    li { display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; border-top: 1px solid #e6e6e6; padding: 0.65rem 0; }
-    .muted { color: #666; font-size: 0.9em; }
-    .empty { color: #555; }
-    .actions { display: flex; gap: 0.35rem; flex-shrink: 0; }
-    button { font: inherit; font-size: 0.8rem; padding: 0.2rem 0.55rem; cursor: pointer; }
-    button.danger { color: #a40000; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    code { background: #f4f4f4; padding: 0.1em 0.35em; border-radius: 3px; }
-    #app-action-status { min-height: 1.2em; color: #a40000; }
-  </style>
-</head>
-<body>
-  <h1>Deployed apps</h1>
-  <p>Static sites and dynamic apps are listed together. A dynamic app that registers a launch command is started with the bridge and restarted if it exits. Restart, Stop, and Delete apply to dynamic apps.</p>
-  ${rows}
-  <p id="app-action-status" role="status"></p>
-  <script>
-    const catalogApi = ${api};
-    const status = document.getElementById("app-action-status");
-    document.body.addEventListener("click", async (event) => {
-      const button = event.target instanceof Element ? event.target.closest("[data-app-action]") : null;
-      if (!(button instanceof HTMLButtonElement)) return;
-      const action = button.getAttribute("data-app-action");
-      const name = button.getAttribute("data-app-name");
-      if (!action || !name) return;
-      if (action === "stop" && !confirm("Stop " + name + "? It stays stopped until you restart it.")) return;
-      if (action === "delete" && !confirm("Deregister " + name + " and stop its process?")) return;
-      if (action === "restart" && !confirm("Restart " + name + "?")) return;
-      button.disabled = true;
-      status.textContent = "";
-      const method = action === "delete" ? "DELETE" : "POST";
-      const path = action === "delete"
-        ? catalogApi + "/" + encodeURIComponent(name)
-        : catalogApi + "/" + encodeURIComponent(name) + "/" + action;
-      try {
-        const res = await fetch(path, { method });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || res.statusText || String(res.status));
-        location.reload();
-      } catch (err) {
-        status.textContent = err instanceof Error ? err.message : String(err);
-        button.disabled = false;
+/** Restart or stop a dynamic app. A static app has no process. */
+export async function controlApp(
+  appsDir: string,
+  name: string,
+  op: "restart" | "stop",
+): Promise<AppControlResult> {
+  if (!APP_NAME_PATTERN.test(name)) {
+    return { ok: false, status: 400, error: "invalid app name" };
+  }
+  if (!readCatalogEntry(appsDir, name)) {
+    return staticAppDir(appsDir, name)
+      ? { ok: false, status: 400, error: `static app has no process to ${op}` }
+      : { ok: false, status: 404, error: "app not found" };
+  }
+  const result =
+    op === "restart" ? await restartDynamicApp(appsDir, name) : await stopDynamicApp(appsDir, name);
+  if (!result.ok) return result;
+  return { ok: true, name, kind: "dynamic", desired: result.desired };
+}
+
+async function readRequestBuffer(
+  req: http.IncomingMessage,
+  maxBytes: number,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const raw of req) {
+    const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+    total += chunk.length;
+    if (total > maxBytes) {
+      req.destroy();
+      throw new BodyTooLargeError("zip is too large");
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+function handleAppExport(res: http.ServerResponse, appsDir: string, name: string): void {
+  let result: ReturnType<typeof exportAppZip>;
+  try {
+    result = exportAppZip(appsDir, name);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    json(res, 500, { error: message });
+    return;
+  }
+  if (!result.ok) {
+    json(res, result.status, { error: result.error });
+    return;
+  }
+  res.writeHead(200, {
+    "content-type": "application/zip",
+    "content-length": result.zip.length,
+    "content-disposition": `attachment; filename="${result.name}.zip"`,
+    "cache-control": "no-store",
+  });
+  res.end(result.zip);
+}
+
+const JSON_DEPLOY_MAX_BYTES = 1024 * 1024;
+
+function isZipContentType(req: http.IncomingMessage): boolean {
+  const type = String(req.headers["content-type"] ?? "").toLowerCase();
+  return type.includes("application/zip") || type.includes("application/x-zip");
+}
+
+function handleAppDeploy(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  appsDir: string,
+  config: BridgeConfig,
+): void {
+  const zipBody = isZipContentType(req);
+  void (async () => {
+    try {
+      const raw = await readRequestBuffer(req, zipBody ? MAX_APP_ZIP_BYTES : JSON_DEPLOY_MAX_BYTES);
+      if (res.headersSent) return;
+      const ctx = getBridgePublicContext(req);
+      const mount = ctx?.mount ?? "";
+      if (zipBody) {
+        const result = await importAppZip(appsDir, raw, {
+          reservedNames: RESERVED_APP_SEGMENTS,
+        });
+        if (res.headersSent) return;
+        if (!result.ok) {
+          json(res, result.status, { error: result.error });
+          return;
+        }
+        json(res, 200, {
+          ok: true,
+          name: result.name,
+          kind: result.kind,
+          url: publicPath(result.url, mount, config.appSegment),
+          shortUrl: publicPath(result.shortUrl, mount, config.appSegment),
+          started: result.started,
+        });
+        return;
       }
-    });
-  </script>
-</body>
-</html>`;
+      let body: RunningAppBody & { sourceDir?: unknown } = {};
+      try {
+        body = JSON.parse(raw.length === 0 ? "{}" : raw.toString("utf8")) as typeof body;
+      } catch {
+        json(res, 400, { error: "invalid json" });
+        return;
+      }
+      if (body.port !== undefined || body.launch !== undefined) {
+        const result = await registerRunningApp(req, body, {
+          appsDir,
+          reservedNames: RESERVED_APP_SEGMENTS,
+        });
+        if (res.headersSent) return;
+        if (!result.ok) {
+          json(res, result.status, { error: result.error });
+          return;
+        }
+        kickDynamicAppSupervisor();
+        json(res, 200, {
+          ok: true,
+          name: result.name,
+          kind: "dynamic",
+          port: result.port,
+          ttlMs: result.ttlMs,
+          url: publicPath(`/apps/${result.name}/`, mount, config.appSegment),
+          shortUrl: publicPath(`/${result.name}/`, mount, config.appSegment),
+          started: false,
+        });
+        return;
+      }
+      const name = String(body.name ?? "").trim();
+      const sourceDir = String(body.sourceDir ?? "").trim();
+      if (!name || !sourceDir) {
+        json(res, 400, { error: "name and sourceDir are required" });
+        return;
+      }
+      const result = deployAppFromSource(appsDir, name, sourceDir, config.workspace);
+      if (!result.ok) {
+        json(res, 400, { error: result.error });
+        return;
+      }
+      json(res, 200, {
+        ...result,
+        kind: "static",
+        url: publicPath(result.url, mount, config.appSegment),
+        shortUrl: publicPath(result.shortUrl, mount, config.appSegment),
+      });
+    } catch (err) {
+      if (res.headersSent) return;
+      if (err instanceof BodyTooLargeError) {
+        json(res, 413, { error: zipBody ? "zip is too large" : "request body is too large" });
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      json(res, 500, { error: message });
+    }
+  })();
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function handleAppsApi(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  appsDir: string,
+  config: BridgeConfig,
+  api: AppsApiMatch,
+): void {
+  if (api.op === "list") {
+    json(res, 200, { appsDir, apps: mapAppsPublic(listApps(appsDir), req, config) });
+    return;
+  }
+  if (api.op === "deploy") {
+    handleAppDeploy(req, res, appsDir, config);
+    return;
+  }
+  if (api.op === "export") {
+    handleAppExport(res, appsDir, api.name);
+    return;
+  }
+  const op = api.op;
+  const name = api.name;
+  void (async () => {
+    try {
+      const result = op === "delete" ? await deleteApp(appsDir, name) : await controlApp(appsDir, name, op);
+      if (res.headersSent) return;
+      if (!result.ok) {
+        json(res, result.status, { error: result.error });
+        return;
+      }
+      json(res, 200, { ...result });
+    } catch (err) {
+      if (res.headersSent) return;
+      const message = err instanceof Error ? err.message : String(err);
+      json(res, 500, { error: message });
+    }
+  })();
 }
 
 /**
- * Serve user-deployed static sites. Returns true when the request was handled
+ * Apps API, static app files, and the proxy to dynamic apps. Returns true when the request was handled
  * (including 404 for unknown app names under /apps/).
  */
 export function handleDynamicApps(
@@ -496,31 +642,9 @@ export function handleDynamicApps(
 ): boolean {
   const pathname = pathnameOf(req);
   const appsDir = appsDirOf(config);
-  const catalogMatch = matchCatalogApi(req.method ?? "GET", pathname);
-  if (
-    catalogMatch &&
-    (catalogMatch.op === "stop" ||
-      catalogMatch.op === "restart" ||
-      catalogMatch.op === "delete")
-  ) {
-    handleDynamicAppControl(req, res, appsDir, catalogMatch);
-    return true;
-  }
-
-  if (req.method === "GET" && pathname === "/api/apps") {
-    json(res, 200, {
-      appsDir,
-      apps: mapAppsPublic(listApps(appsDir), req, config),
-    });
-    return true;
-  }
-
-  if (
-    handleCatalogApi(req, res, {
-      appsDir,
-      reservedNames: RESERVED_APP_SEGMENTS,
-    })
-  ) {
+  const api = matchAppsApi(req.method ?? "GET", pathname);
+  if (api) {
+    handleAppsApi(req, res, appsDir, config, api);
     return true;
   }
 
@@ -529,26 +653,12 @@ export function handleDynamicApps(
   if (appsRoute) {
     if (appsRoute.kind === "list") {
       if (req.method !== "GET" && req.method !== "HEAD") return false;
-      if (req.method === "HEAD") {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        res.end();
-        return true;
-      }
       const ctx = getBridgePublicContext(req);
-      const catalogApi = publicPath(
-        "/api/apps/catalog",
-        ctx?.mount ?? "",
-        config.appSegment,
-      );
-      const html = renderAppsIndexHtml(
-        mapAppsPublic(listApps(appsDir), req, config),
-        catalogApi,
-      );
-      res.writeHead(200, {
-        "content-type": "text/html; charset=utf-8",
+      res.writeHead(302, {
+        location: `${ctx ? publicPath("/", ctx.mount, config.appSegment) : "/"}#apps`,
         "cache-control": "no-store",
       });
-      res.end(html);
+      res.end();
       return true;
     }
 
