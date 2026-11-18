@@ -155,6 +155,21 @@ a:hover { text-decoration: underline; }
 }
 .chat-rpc-spinner[hidden] { display: none !important; }
 
+.plugin-rpc-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+}
+.plugin-rpc-overlay[hidden] { display: none !important; }
+.plugin-rpc-overlay progress.loading-spinner:indeterminate {
+  --size: 40px;
+  --thickness: 3px;
+}
+
 progress.loading-spinner:indeterminate::-webkit-progress-bar,
 progress.loading-spinner:indeterminate::-webkit-progress-value,
 progress.loading-spinner:indeterminate::-moz-progress-bar,
@@ -410,6 +425,10 @@ progress.loading-spinner:indeterminate {
 .badge.yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
 .badge.blue { background: rgba(88,166,255,0.15); color: var(--blue); }
 .badge.muted { background: rgba(139,148,158,0.15); color: var(--muted); }
+.mcp-auth-status { font-size: 13px; margin: 12px 0 0; }
+.mcp-auth-status[data-kind="pending"] { color: var(--muted); }
+.mcp-auth-status[data-kind="ok"] { color: var(--green); }
+.mcp-auth-status[data-kind="error"] { color: var(--red); }
 
 .catalog-category {
   margin: 16px 0 8px;
@@ -631,6 +650,15 @@ table.mapping td.model { font-family: var(--mono); color: var(--text); }
 
 .login-gate-card {
   width: min(480px, 100%);
+}
+
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 .oauth-dialog {

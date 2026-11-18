@@ -230,7 +230,7 @@ Optional deploy path; same codebase runs on any Node 22+ host.
 **`app.sh` defaults (override with env):**
 
 - `CURSOR_BRIDGE_HOST=127.0.0.1`; `CURSOR_BRIDGE_PORT` = first bindable among `CDSW_APP_PORT`, `CDSW_PUBLIC_PORT`, `CDSW_READONLY_PORT`, explicit `CURSOR_BRIDGE_PORT` (startup fails if none bind)
-- `CURSOR_BRIDGE_MODE=agent`, `CURSOR_BRIDGE_FORCE=true`
+- `CURSOR_BRIDGE_MODE=agent`, `CURSOR_BRIDGE_FORCE=true`, `CURSOR_BRIDGE_APPROVE_MCPS=true`
 - `CURSOR_BRIDGE_USE_ACP=true` (legacy: `CURSOR_BRIDGE_USE_ACP=false`)
 - `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` on CAI engine
 - `CURSOR_BRIDGE_TIMEOUT_MS=900000`

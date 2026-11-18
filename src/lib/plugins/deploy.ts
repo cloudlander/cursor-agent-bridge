@@ -3,7 +3,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { BridgeConfig } from "../config.js";
-import { rewriteBridgeRemoteMcpUrl } from "./bridge-mcp-url.js";
+import {
+  applyRemoteMcpDirect,
+  ensureRemoteMcpClients,
+  readRemoteMcpClients,
+  type RemoteMcpClients,
+} from "./bridge-mcp-url.js";
 import {
   approveMcpKeysAfterDeploy,
   approveMcpKeysAfterDeployAsync,
@@ -120,17 +125,16 @@ function buildMcpEntry(
   serverName: string,
   def: McpServerDef,
   ov?: ServerOverride,
+  remoteClients: RemoteMcpClients = {},
 ): McpServerDef | null {
   if (ov?.disabled) return null;
-  const merged = substituteDeep(
+  let merged = substituteDeep(
     JSON.parse(JSON.stringify(def)),
     pluginRoot,
     plugin.config,
   ) as McpServerDef;
   if (ov?.url && typeof merged.url === "string") merged.url = ov.url;
-  if (typeof merged.url === "string" && !ov?.url) {
-    merged.url = rewriteBridgeRemoteMcpUrl(merged.url);
-  }
+  else merged = applyRemoteMcpDirect(merged, remoteClients);
   if (merged.command && typeof merged.command === "string") {
     merged.command = substituteValue(String(merged.command), pluginRoot, plugin.config);
   }
@@ -245,6 +249,7 @@ function deployMcp(
   contents: PluginContents,
   pluginRoot: string,
   configDir: string,
+  remoteClients: RemoteMcpClients,
 ): string[] {
   const existing = readMcpJson(configDir);
   const keys: string[] = [];
@@ -256,6 +261,7 @@ function deployMcp(
       name,
       def,
       plugin.config.servers[name],
+      remoteClients,
     );
     if (!built) continue;
     existing[key] = built;
@@ -307,6 +313,7 @@ export function deployPluginToTarget(
   pluginRoot: string,
   contents: PluginContents,
   configDir: string,
+  remoteClients: RemoteMcpClients = {},
 ): DeployedItems {
   const warnings: string[] = [];
   if (contents.hasHooks) {
@@ -316,7 +323,7 @@ export function deployPluginToTarget(
   const skills = deploySkills(plugin, contents, configDir, warnings);
   const commands = deployFlatFiles(plugin, contents.commands, "commands", configDir, warnings);
   const agents = deployFlatFiles(plugin, contents.agents, "agents", configDir, warnings);
-  const mcpServers = deployMcp(plugin, contents, pluginRoot, configDir);
+  const mcpServers = deployMcp(plugin, contents, pluginRoot, configDir, remoteClients);
   return { skills, commands, agents, mcpServers, warnings };
 }
 
@@ -337,6 +344,7 @@ export function deployInstalledPlugin(
     throw new ApiError(404, `installed files missing for ${plugin.id}`);
   }
   const contents = analyzePlugin(pluginRoot);
+  const remoteClients = readRemoteMcpClients(config);
   const merged: DeployedItems = {
     skills: [],
     commands: [],
@@ -346,7 +354,7 @@ export function deployInstalledPlugin(
   };
   for (const dir of resolveDeployTargets(config)) {
     fs.mkdirSync(dir, { recursive: true });
-    const part = deployPluginToTarget(plugin, pluginRoot, contents, dir);
+    const part = deployPluginToTarget(plugin, pluginRoot, contents, dir, remoteClients);
     merged.skills = [...new Set([...merged.skills, ...part.skills])];
     merged.commands = [...new Set([...merged.commands, ...part.commands])];
     merged.agents = [...new Set([...merged.agents, ...part.agents])];
@@ -371,17 +379,19 @@ export async function deployInstalledPluginAsync(
   }
   await yieldToEventLoop();
   const contents = analyzePlugin(pluginRoot);
+  const ensured = await ensureRemoteMcpClients(config, Object.values(contents.mcpServers));
+  const remoteClients = readRemoteMcpClients(config);
   const merged: DeployedItems = {
     skills: [],
     commands: [],
     agents: [],
     mcpServers: [],
-    warnings: [],
+    warnings: [...ensured.errors],
   };
   for (const dir of resolveDeployTargets(config)) {
     await yieldToEventLoop();
     fs.mkdirSync(dir, { recursive: true });
-    const part = deployPluginToTarget(plugin, pluginRoot, contents, dir);
+    const part = deployPluginToTarget(plugin, pluginRoot, contents, dir, remoteClients);
     merged.skills = [...new Set([...merged.skills, ...part.skills])];
     merged.commands = [...new Set([...merged.commands, ...part.commands])];
     merged.agents = [...new Set([...merged.agents, ...part.agents])];

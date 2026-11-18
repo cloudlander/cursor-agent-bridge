@@ -25,6 +25,7 @@
     <p class="muted-text" style="margin: 0 0 14px; font-size: 13px;">
       Browse, import, and configure plugins here — no <code>CURSOR_BRIDGE_API_KEY</code> or dashboard API key. The catalog merges the git <code>cursor/plugins</code> index with the same <strong>cursor.com marketplace</strong> listings as Cursor IDE Customize (e.g. search <strong>browserbase</strong>). Marketplace git sync runs in the background when the bridge starts; the catalog below refreshes automatically when sync finishes.
     </p>
+    <p id="mcp-auth-page-status" class="mcp-auth-status" role="status" aria-live="polite" hidden></p>
     <div class="grid cols-2" style="margin-bottom: 16px;">
       <section class="card">
         <div class="card-head">
@@ -97,13 +98,14 @@
     </form>
   </dialog>
 
-  <dialog id="oauth-dialog" style="background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; max-width: 720px; width: 92vw; padding: 0;">
+  <dialog id="oauth-dialog" aria-labelledby="oauth-title" style="background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; max-width: 720px; width: 92vw; padding: 0;">
     <div class="card-head" style="padding: 14px 16px;">
-      <span>MCP OAuth login</span>
+      <span id="oauth-title">MCP OAuth login</span>
       <button type="button" class="btn small" id="oauth-close">Close</button>
     </div>
-    <div class="card-body" style="padding: 14px 16px;">
+    <div class="card-body" style="padding: 14px 16px; max-height: 70vh; overflow: auto;">
       <p id="oauth-hint" class="muted-text"></p>
+      <p class="muted-text" style="font-size: 12px;" id="oauth-watch-note" hidden></p>
       <p class="muted-text" style="font-size: 12px;" id="oauth-callback-note"></p>
       <div id="oauth-url-wrap" style="margin-top: 12px; display: none;">
         <a id="oauth-url-link" class="mono" href="#" target="_blank" rel="noopener" style="word-break: break-all;"></a>
@@ -112,10 +114,30 @@
           <button type="button" class="btn small" id="oauth-copy">Copy URL</button>
         </div>
       </div>
+      <form id="oauth-rewrite-form" method="post" action="" hidden style="margin-top: 16px;">
+        <p id="oauth-rewrite-title" style="font-weight: 600; margin: 0 0 8px;">Complete callback</p>
+        <div style="display: flex; flex-direction: column; align-items: stretch; gap: 0.25rem;">
+          <label for="oauth-pasted">Localhost callback address</label>
+          <input id="oauth-pasted" name="pasted" type="url" required autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" enterkeyhint="done" aria-describedby="oauth-rewrite-help oauth-rewrite-error" placeholder="http://localhost:8787/callback?code=…&amp;state=…" style="width: 100%; box-sizing: border-box; min-height: 48px; font: inherit; font-size: max(1rem, 1em); padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text);" />
+        </div>
+        <p id="oauth-rewrite-help" class="muted-text" style="font-size: 12px; margin: 8px 0 0;"></p>
+        <p id="oauth-rewrite-error" role="alert" hidden style="color: var(--red); font-size: 12px; margin: 8px 0 0;"></p>
+        <p style="margin: 8px 0 0;">
+          <a id="oauth-rewrite-link" class="mono" href="#" target="_blank" rel="noopener" hidden style="word-break: break-all; font-size: 11px;"></a>
+        </p>
+        <p id="oauth-rewrite-status" role="status" class="muted-text" style="font-size: 12px; margin: 8px 0 0;"></p>
+        <button type="submit" class="btn small primary" id="oauth-rewrite-open" style="margin-top: 10px; min-height: 48px;">Open callback on this app</button>
+      </form>
+      <p id="oauth-tunnel" class="muted-text" hidden style="font-size: 12px; margin-top: 12px;"></p>
       <pre id="oauth-manual" class="mono muted-text" style="margin-top: 12px; white-space: pre-wrap; font-size: 11px;"></pre>
     </div>
   </dialog>
 
+  <div id="plugin-rpc-overlay" class="plugin-rpc-overlay" hidden aria-hidden="true">
+    <progress class="loading-spinner" aria-label="Plugin request in progress"></progress>
+  </div>
+
+  <script src="/static/oauth-callback-rewrite.js"></script>
   <script src="/static/plugins-app.js"></script>
 </body>
 </html>

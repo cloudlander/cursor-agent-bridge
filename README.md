@@ -209,7 +209,7 @@ Registrations are stored under `<apps-dir>/.catalog/{name}.json`. The bridge rev
 - For CLI-only MCP (e.g. Atlassian already in your local `mcp.json`), use **OAuth login** on the catalog row or `POST /api/plugins/mcp-login` — no Import and no bridge API key.
 - Set `CURSOR_BRIDGE_CHAT_ONLY_WORKSPACE=false` and point `CURSOR_BRIDGE_WORKSPACE` at your vault/repo if you also want **project** `.cursor/skills` in addition to proxy-deployed plugins.
 - Use **Redeploy all** after changing account pool dirs or moving the plugin store.
-- MCP OAuth **Start login** runs `agent mcp enable` then `agent mcp login` (CLI requires approval before OAuth), waits for the authorize URL, and shows it in the Plugins UI (also logged as `[cursor-api-proxy] MCP OAuth URL`). OAuth callback uses `http://localhost:8787/callback` on the machine running the proxy — port-forward from your laptop when the app runs on Cloudera AI.
+- MCP OAuth **Start login** runs `agent mcp enable` then `agent mcp login` (CLI requires approval before OAuth), waits for the authorize URL, and shows it in the Plugins UI (also logged as `[cursor-api-proxy] MCP OAuth URL`). The IdP redirects to `http://localhost:8787/callback` on the engine (that redirect stays as registered). If the browser cannot open localhost, paste that full address into **Complete callback** on the login dialog. The page opens the same `code` and `state` on this app’s `/callback`, and the bridge forwards them to the CLI listener. SSH `-L 8787:127.0.0.1:8787` still opens the localhost address directly. The login window closes when the CLI finishes authentication or after `CURSOR_BRIDGE_MCP_OAUTH_TIMEOUT_MS` (default 5 minutes). The plugin configuration window shows success or failure, and the configuration is saved only after success.
 
 REST API (same auth rules): `/api/plugins/marketplaces`, `/api/plugins/catalog?q=…`, `/api/plugins/install`, `/api/plugins/installed/:id`, etc.
 
@@ -440,8 +440,9 @@ One module resolves aliases, defaults, path resolution, platform fallbacks, and 
 | `CURSOR_BRIDGE_DEFAULT_MODEL` | `auto` | Default model when request omits one |
 | `CURSOR_BRIDGE_STRICT_MODEL` | `true` | Reject a requested model when Cursor's CLI/ACP catalogs cannot match it instead of silently selecting the ACP session default. |
 | `CURSOR_BRIDGE_FORCE` | `false` | Pass `--force` to Cursor CLI |
-| `CURSOR_BRIDGE_APPROVE_MCPS` | `false` | Pass `--approve-mcps` on agent runs; also runs `agent mcp enable` for plugin MCP keys after deploy |
+| `CURSOR_BRIDGE_APPROVE_MCPS` | `false` (CAI `app.sh` defaults to `true`) | Pass `--approve-mcps` on agent runs; also runs `agent mcp enable` for plugin MCP keys after deploy |
 | `CURSOR_BRIDGE_TIMEOUT_MS` | `300000` | Timeout per completion and idle TTL for a parked client-tool turn (ms). Raise above wall-clock for long Codex/agent turns, otherwise `cursor-agent` is SIGKILLed mid-stream. |
+| `CURSOR_BRIDGE_MCP_OAUTH_TIMEOUT_MS` | `300000` | How long an MCP OAuth login may wait after the authorize URL is shown. The Plugins login window closes on success, failure, or this timeout. Plugin configuration is saved only after success. |
 | `CURSOR_BRIDGE_TLS_CERT` | — | Path to TLS certificate file (e.g. Tailscale cert). Use with `CURSOR_BRIDGE_TLS_KEY` for HTTPS. |
 | `CURSOR_BRIDGE_TLS_KEY` | — | Path to TLS private key file. Use with `CURSOR_BRIDGE_TLS_CERT` for HTTPS. |
 | `CURSOR_BRIDGE_SESSIONS_LOG` | `~/.cursor-api-proxy/sessions.log` | Path to log file; each request is appended as a line (timestamp, method, path, IP, status). |

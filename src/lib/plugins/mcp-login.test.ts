@@ -4,6 +4,7 @@ import {
   applyPublicOAuthCallback,
   extractMcpLoginUrl,
   isLoopbackOnlyMcpOAuthLogin,
+  loopbackRedirectTarget,
   rewriteOAuthRedirectUri,
   webOAuthCallbackEnabled,
 } from "./mcp-login.js";
@@ -72,17 +73,30 @@ describe("isLoopbackOnlyMcpOAuthLogin", () => {
   });
 });
 
+describe("loopbackRedirectTarget", () => {
+  it("reads the localhost redirect registered with the IdP", () => {
+    const login =
+      "https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=http%3A%2F%2Flocalhost%3A8787%2Fcallback&state=abc";
+    expect(loopbackRedirectTarget(login)).toEqual({
+      callbackUrl: "http://localhost:8787/callback",
+      port: 8787,
+    });
+  });
+});
+
 describe("applyPublicOAuthCallback", () => {
   it("keeps loopback by default even with public origin", () => {
     const login = "https://auth.example.com/o?redirect_uri=http%3A%2F%2F127.0.0.1%3A8787%2Fcallback";
     const prev = process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK;
     delete process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK;
-    const { loginUrl, callbackUrl, callbackViaWeb } = applyPublicOAuthCallback(
-      login,
-      "https://cai.example.com",
-    );
+    const { loginUrl, callbackUrl, callbackViaWeb, callbackHostRewrite, publicCallbackUrl } =
+      applyPublicOAuthCallback(login, "https://cai.example.com/proxy/8100/agent-1");
     expect(callbackViaWeb).toBe(false);
+    expect(callbackHostRewrite).toBe(true);
     expect(callbackUrl).toBe("http://127.0.0.1:8787/callback");
+    expect(publicCallbackUrl).toBe(
+      "https://cai.example.com/proxy/8100/agent-1/callback",
+    );
     expect(loginUrl).toBe(login);
     if (prev === undefined) delete process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK;
     else process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK = prev;
@@ -93,11 +107,10 @@ describe("applyPublicOAuthCallback", () => {
       "https://auth.example.com/o?client_id=x&redirect_uri=https%3A%2F%2Fapp.example%2Fcb";
     const prev = process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK;
     process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK = "1";
-    const { loginUrl, callbackUrl, callbackViaWeb } = applyPublicOAuthCallback(
-      login,
-      "https://cai.example.com",
-    );
+    const { loginUrl, callbackUrl, callbackViaWeb, callbackHostRewrite } =
+      applyPublicOAuthCallback(login, "https://cai.example.com");
     expect(callbackViaWeb).toBe(true);
+    expect(callbackHostRewrite).toBe(false);
     expect(callbackUrl).toBe("https://cai.example.com/callback");
     expect(loginUrl).toContain("redirect_uri=");
     expect(decodeURIComponent(new URL(loginUrl!).searchParams.get("redirect_uri")!)).toBe(
@@ -112,11 +125,12 @@ describe("applyPublicOAuthCallback", () => {
       "https://auth.atlassian.com/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A8787%2Fcallback";
     const prev = process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK;
     process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK = "1";
-    const { loginUrl, callbackViaWeb } = applyPublicOAuthCallback(
+    const { loginUrl, callbackViaWeb, callbackHostRewrite } = applyPublicOAuthCallback(
       login,
       "https://cai.example.com",
     );
     expect(callbackViaWeb).toBe(false);
+    expect(callbackHostRewrite).toBe(true);
     expect(loginUrl).toBe(login);
     if (prev === undefined) delete process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK;
     else process.env.CURSOR_BRIDGE_MCP_OAUTH_WEB_CALLBACK = prev;
