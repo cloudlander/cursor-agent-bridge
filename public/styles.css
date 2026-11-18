@@ -2357,6 +2357,35 @@ body.chat-right-panel-dragging * {
 }
 
 /* ───── theme + hljs ───── */
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/vendor/fonts/plus-jakarta-sans-latin-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/static/vendor/fonts/plus-jakarta-sans-latin-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/vendor/fonts/plus-jakarta-sans-latin-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/vendor/fonts/plus-jakarta-sans-latin-700.woff2") format("woff2");
+}
+
 :root[data-theme="light"] {
   --bg: #ffffff; --panel: #f6f8fa; --panel-2: #eaeef2; --border: #d0d7de; --border-soft: #d8dee4;
   --text: #1f2328; --muted: #59636e; --dim: #818b98; --blue: #0969da; --red: #cf222e; --green: #1a7f37;
@@ -2367,6 +2396,127 @@ body.chat-right-panel-dragging * {
 :root[data-theme="light"] .btn { background: var(--panel-2); color: var(--text); }
 :root[data-theme="light"] .btn:hover { background: #dde3ea; }
 :root[data-theme="light"] .btn.primary { color: var(--blue); }
+
+/* Cloudera Anywhere Cloud tokens, scoped to chat chrome.
+   Source: www.cloudera.com/products/anywhere-cloud.html clientlib-all
+   (twilight #120046, orange #ff550d, blue nova #5555f9 / #413cc3, pewter #f5f8fa). */
+:root[data-theme="cloudera"] {
+  color-scheme: light;
+  accent-color: #ff550d;
+  scrollbar-color: #4a6270 #f5f8fa;
+  --bg: #f5f8fa;
+  --panel: #ffffff;
+  --panel-2: #ebf1f4;
+  --border: #cedbe4;
+  --border-soft: #e3ebf0;
+  --text: #333333;
+  --muted: #305868;
+  --dim: #4a6270;
+  --green: #00828c;
+  --red: #b51810;
+  --yellow: #8a4b08;
+  --blue: #413cc3;
+  --purple: #5555f9;
+  --teal: #00a3af;
+  --orange: #ff550d;
+  --cyan: #0070cc;
+  --code-bg: #ffffff;
+  --hl-fg: #333e47; --hl-comment: #4a6270; --hl-keyword: #413cc3; --hl-string: #005983;
+  --hl-number: #00828c; --hl-title: #120046; --hl-built: #b51810; --hl-attr: #0070cc;
+  --sans: "Plus Jakarta Sans", Helvetica, Arial, sans-serif;
+}
+:root[data-theme="cloudera"] ::selection {
+  background: #5555f9;
+  color: #ffffff;
+}
+:root[data-theme="cloudera"] .chat-toolbar-title,
+:root[data-theme="cloudera"] .chat-brand-name,
+:root[data-theme="cloudera"] .chat-welcome h2 {
+  color: #120046;
+  font-weight: 600;
+}
+:root[data-theme="cloudera"] .btn {
+  background: #ffffff;
+  color: #120046;
+  border-color: #cedbe4;
+}
+:root[data-theme="cloudera"] .btn:hover {
+  background: #ebf1f4;
+  border-color: #413cc3;
+  color: #120046;
+}
+:root[data-theme="cloudera"] .btn.primary {
+  background: #ff550d;
+  border-color: #ff550d;
+  color: #120046;
+}
+:root[data-theme="cloudera"] .btn.primary:hover {
+  background: #e64d0c;
+  border-color: #e64d0c;
+  color: #120046;
+}
+:root[data-theme="cloudera"] .btn.danger {
+  background: color-mix(in srgb, #b51810 10%, #ffffff);
+  border-color: color-mix(in srgb, #b51810 45%, #ffffff);
+  color: #8f120c;
+}
+:root[data-theme="cloudera"] .btn.danger:hover {
+  background: color-mix(in srgb, #b51810 18%, #ffffff);
+  border-color: #b51810;
+  color: #8f120c;
+}
+:root[data-theme="cloudera"] .chat-thread-item.active,
+:root[data-theme="cloudera"] .chat-workspace-row.current {
+  background: color-mix(in srgb, #5555f9 12%, #ffffff);
+}
+:root[data-theme="cloudera"] .chat-suggestion:hover {
+  border-color: #413cc3;
+  background: color-mix(in srgb, #5555f9 8%, #ffffff);
+}
+:root[data-theme="cloudera"] .chat-msg.user .chat-avatar {
+  background: color-mix(in srgb, #5555f9 16%, #ffffff);
+  color: #413cc3;
+  border-color: color-mix(in srgb, #413cc3 32%, #ffffff);
+}
+:root[data-theme="cloudera"] .chat-msg.user .chat-bubble {
+  background: color-mix(in srgb, #5555f9 12%, #ffffff);
+  border-color: color-mix(in srgb, #413cc3 32%, #ffffff);
+  color: #120046;
+}
+:root[data-theme="cloudera"] .chat-welcome-logo {
+  color: #ff550d;
+  background: color-mix(in srgb, #ff550d 12%, #ffffff);
+  border-color: color-mix(in srgb, #ff550d 40%, #ffffff);
+}
+#chat-theme[data-next-theme="cloudera"] {
+  background: #ff550d;
+  border-color: #ff550d;
+  color: #120046;
+  font-weight: 700;
+  font-family: "Plus Jakarta Sans", Helvetica, Arial, sans-serif;
+}
+@media (forced-colors: active) {
+  :root[data-theme="cloudera"] {
+    --bg: Canvas;
+    --panel: Canvas;
+    --panel-2: Canvas;
+    --text: CanvasText;
+    --muted: GrayText;
+    --dim: GrayText;
+    --border: CanvasText;
+    --border-soft: CanvasText;
+    --blue: LinkText;
+    --red: CanvasText;
+    forced-color-adjust: auto;
+  }
+  :root[data-theme="cloudera"] .btn,
+  :root[data-theme="cloudera"] .btn.primary,
+  #chat-theme[data-next-theme="cloudera"] {
+    background: ButtonFace;
+    color: ButtonText;
+    border-color: ButtonText;
+  }
+}
 .hljs { color: var(--hl-fg); background: transparent; }
 .hljs-comment, .hljs-quote { color: var(--hl-comment); font-style: italic; }
 .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-type, .hljs-doctag { color: var(--hl-keyword); }

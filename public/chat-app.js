@@ -3702,14 +3702,36 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
+  const THEME_ORDER = ['dark', 'light', 'cloudera'];
+  const THEME_NEXT_UI = {
+    dark: { glyph: '☀️', name: 'Light' },
+    light: { glyph: 'C', name: 'Cloudera' },
+    cloudera: { glyph: '🌙', name: 'Dark' },
+  };
+
+  function nextTheme(theme) {
+    const i = THEME_ORDER.indexOf(theme);
+    return THEME_ORDER[i < 0 ? 0 : (i + 1) % THEME_ORDER.length];
+  }
+
   function applyTheme(theme) {
+    const resolved = THEME_ORDER.includes(theme) ? theme : 'dark';
     const prev = document.documentElement.getAttribute('data-theme');
-    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.theme = resolved;
     const hl = $('hljs-theme-note');
-    if (hl) hl.dataset.theme = theme;
+    if (hl) hl.dataset.theme = resolved;
     const btn = $('chat-theme');
-    if (btn) btn.textContent = theme === 'light' ? '🌙' : '☀️';
-    if (prev && prev !== theme) {
+    if (btn) {
+      const upcoming = nextTheme(resolved);
+      const ui = THEME_NEXT_UI[resolved];
+      btn.textContent = ui.glyph;
+      btn.dataset.nextTheme = upcoming;
+      const currentName = resolved === 'cloudera' ? 'Cloudera' : resolved[0].toUpperCase() + resolved.slice(1);
+      const label = `${currentName} theme — click for ${ui.name}`;
+      btn.title = label;
+      btn.setAttribute('aria-label', `Switch to ${ui.name} theme`);
+    }
+    if (prev && prev !== resolved) {
       void refreshMermaidDiagramsForTheme();
     }
   }
@@ -3717,14 +3739,16 @@
   function initTheme() {
     let theme = 'dark';
     try {
-      theme = localStorage.getItem(THEME_KEY)
-        || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      const saved = localStorage.getItem(THEME_KEY);
+      if (THEME_ORDER.includes(saved)) theme = saved;
+      else theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
     } catch { /* ignore */ }
     applyTheme(theme);
   }
 
   function toggleTheme() {
-    const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    const current = document.documentElement.dataset.theme;
+    const next = nextTheme(THEME_ORDER.includes(current) ? current : 'dark');
     applyTheme(next);
     try { localStorage.setItem(THEME_KEY, next); } catch { /* ignore */ }
   }
