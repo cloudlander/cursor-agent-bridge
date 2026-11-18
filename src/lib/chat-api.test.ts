@@ -168,6 +168,7 @@ describe("chat API", () => {
         attachment: { name: string; path: string; url: string };
       };
       expect(json.attachment.name).toBe("note.txt");
+      expect(json.attachment.path.endsWith("note.txt")).toBe(true);
       expect(fs.existsSync(json.attachment.path)).toBe(true);
       expect(json.attachment.url).toContain("/api/workspace-file");
     } finally {
@@ -248,6 +249,99 @@ describe("chat API", () => {
       if (prevMax === undefined) delete process.env.CURSOR_BRIDGE_MAX_UPLOAD_BYTES;
       else process.env.CURSOR_BRIDGE_MAX_UPLOAD_BYTES = prevMax;
       resetMaxUploadBytesCacheForTests();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("POST /api/chat/move relocates a chat and its uploads", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "chat-move-"));
+    tmpDirs.push(dir);
+    const isolatedHome = path.join(dir, "home");
+    fs.mkdirSync(isolatedHome, { recursive: true });
+    const prevHome = process.env.HOME;
+    process.env.HOME = isolatedHome;
+    const config = testConfig(dir);
+    const toolSessions = { closeAll: async () => undefined } as ToolSessionRegistry;
+    const server = http.createServer(
+      createRequestListener({ version: "test", config }, { toolSessions }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const port = (server.address() as { port: number }).port;
+    const post = (pathname: string, body: unknown) =>
+      fetchJson(port, pathname, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    try {
+      const uploads = path.join(dir, ".cursor-api-proxy", "uploads");
+      fs.mkdirSync(uploads, { recursive: true });
+      const oldPath = path.join(fs.realpathSync(uploads), "1-shot.png");
+      const sharedPath = path.join(fs.realpathSync(uploads), "2-shared.png");
+      fs.writeFileSync(oldPath, "img");
+      fs.writeFileSync(sharedPath, "shared");
+      const att = (p: string) => ({
+        name: path.basename(p),
+        mimeType: "image/png",
+        path: p,
+        url: `/api/workspace-file?path=${encodeURIComponent(p)}`,
+      });
+      const mk = (id: string, attachments: unknown[]) => ({
+        id,
+        source: "web",
+        title: null,
+        pinned: false,
+        createdAt: 1,
+        updatedAt: 2,
+        model: "",
+        mode: "agent",
+        messages: [{ role: "user", content: "see", attachments }],
+      });
+      await fetchJson(port, "/api/chat/threads", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          activeId: "t1",
+          threads: [mk("t1", [att(oldPath), att(sharedPath)]), mk("t2", [att(sharedPath)])],
+        }),
+      });
+      const ws = (await post("/api/workspaces", { name: "Target" })).body as {
+        workspace: { id: string };
+      };
+      const wsId = ws.workspace.id;
+
+      expect((await post("/api/chat/move", { threadId: "t1", fromWorkspaceId: "default", toWorkspaceId: "default" })).status).toBe(400);
+      expect((await post("/api/chat/move", { threadId: "nope", fromWorkspaceId: "default", toWorkspaceId: wsId })).status).toBe(404);
+
+      const moved = await post("/api/chat/move", {
+        threadId: "t1",
+        fromWorkspaceId: "default",
+        toWorkspaceId: wsId,
+      });
+      expect(moved.status).toBe(200);
+      expect((moved.body as { movedFiles: number }).movedFiles).toBe(2);
+
+      const src = (await fetchJson(port, "/api/chat/threads")).body as {
+        threads: Array<{ id: string }>;
+      };
+      expect(src.threads.map((t) => t.id)).toEqual(["t2"]);
+
+      const dest = (await fetchJson(port, `/api/chat/threads?workspaceId=${wsId}`)).body as {
+        activeId: string;
+        threads: Array<{ id: string; messages: Array<{ attachments: Array<{ path: string; url: string }> }> }>;
+      };
+      expect(dest.activeId).toBe("t1");
+      const [first, second] = dest.threads[0]!.messages[0]!.attachments;
+      expect(first!.path).toContain(wsId);
+      expect(first!.url).toContain(encodeURIComponent(first!.path));
+      expect(fs.readFileSync(first!.path, "utf8")).toBe("img");
+      expect(fs.existsSync(oldPath)).toBe(false);
+      // Still referenced by t2, so the original stays.
+      expect(fs.existsSync(sharedPath)).toBe(true);
+      expect(fs.readFileSync(second!.path, "utf8")).toBe("shared");
+    } finally {
+      process.env.HOME = prevHome;
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });

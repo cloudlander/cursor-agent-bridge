@@ -149,6 +149,8 @@
     /** Background poll handle for cross-client session sync. */
     sessionSyncTimer: null,
     sessionSyncBusy: false,
+    /** Count of open rename inputs (thread or workspace); background sync pauses while > 0. */
+    renameCount: 0,
     networkDown: false,
     networkFailStreak: 0,
     statusPollTimer: null,
@@ -1307,6 +1309,7 @@
   }
 
   async function refreshSessionCatalog() {
+    if (state.renameCount) return;
     try {
       const ids = state.loadedWorkspaces.size
         ? [...state.loadedWorkspaces]
@@ -1482,7 +1485,7 @@
   }
 
   async function pollSessionUpdates() {
-    if (state.sessionSyncBusy || document.hidden) return;
+    if (state.sessionSyncBusy || document.hidden || state.renameCount) return;
     state.sessionSyncBusy = true;
     let ok = false;
     try {
@@ -1511,8 +1514,11 @@
         if (id === state.currentWorkspaceId) currentData = data;
       }
 
-      if (catalogChanged || threadsChanged) renderThreadList();
-      if (currentData) await syncActiveSession(currentData, currentData.compact === true);
+      // A rename may have opened while this request was in flight; skip re-rendering so its input survives.
+      if (!state.renameCount) {
+        if (catalogChanged || threadsChanged) renderThreadList();
+        if (currentData) await syncActiveSession(currentData, currentData.compact === true);
+      }
       await reconnectActiveGenerations(activeGens);
       ok = true;
     } catch {
@@ -1783,6 +1789,19 @@
     renderThreadList();
   }
 
+  /** Push the finished rename now, then let background sync resume (otherwise it merges the old title back). */
+  async function endRename() {
+    if (state.persistTimer) {
+      clearTimeout(state.persistTimer);
+      state.persistTimer = null;
+    }
+    try {
+      await persistThreads();
+    } finally {
+      state.renameCount = Math.max(0, state.renameCount - 1);
+    }
+  }
+
   function startRename(id, titleNode) {
     const t = state.threads.find(x => x.id === id);
     if (!t) return;
@@ -1793,6 +1812,7 @@
       maxlength: '100',
     });
     let done = false;
+    state.renameCount++;
     const finish = save => {
       if (done) return;
       done = true;
@@ -1805,6 +1825,7 @@
       }
       renderThreadList();
       renderToolbar();
+      void endRename();
     };
     input.addEventListener('click', e => e.stopPropagation());
     input.addEventListener('keydown', e => {
@@ -2023,12 +2044,13 @@
       maxlength: '64',
     });
     let done = false;
+    state.renameCount++;
     const finish = async save => {
       if (done) return;
       done = true;
       const next = input.value.replace(/[\u0000-\u001F\u007F]/g, '').trim();
-      if (save && next && next !== ws.name) {
-        try {
+      try {
+        if (save && next && next !== ws.name) {
           const r = await apiFetch(`/api/workspaces/${encodeURIComponent(ws.id)}`, {
             method: 'PATCH',
             headers: { 'content-type': 'application/json' },
@@ -2037,9 +2059,11 @@
           const data = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error(data?.error?.message || 'Rename failed');
           ws.name = data.workspace?.name || next;
-        } catch (e) {
-          toast(e.message || 'Rename failed');
         }
+      } catch (e) {
+        toast(e.message || 'Rename failed');
+      } finally {
+        state.renameCount = Math.max(0, state.renameCount - 1);
       }
       renderThreadList();
     };
@@ -2103,6 +2127,142 @@
       await activateWorkspace(ws.id);
     } catch (e) {
       toast(e.message || 'Could not create workspace');
+    }
+  }
+
+  function showMoveProgress() {
+    const overlay = el('div', { class: 'page-load-overlay', role: 'alert', 'aria-live': 'polite', 'aria-busy': 'true' },
+      el('div', { class: 'page-load-card' },
+        el('p', { class: 'page-load-title' }, 'Moving chat…'),
+        el('p', { class: 'page-load-hint muted-text' }, 'Moving the conversation and its uploaded and downloaded files.'),
+        el('div', { class: 'page-load-bar', role: 'progressbar', 'aria-label': 'Moving chat' },
+          el('span', { class: 'page-load-bar-indeterminate' }),
+        ),
+      ),
+    );
+    document.body.appendChild(overlay);
+    return () => overlay.remove();
+  }
+
+  /** Modal listing every workspace except `fromId`; resolves to a workspace id, 'new', or null. */
+  function pickMoveTarget(fromId) {
+    return new Promise(resolve => {
+      const targets = state.workspaces.filter(w => w.id !== fromId);
+      let backdrop;
+      const finish = value => {
+        document.removeEventListener('keydown', onKey, true);
+        backdrop.remove();
+        resolve(value);
+      };
+      const onKey = e => {
+        if (e.key !== 'Escape') return;
+        e.stopPropagation();
+        finish(null);
+      };
+      const choice = (label, value, extra = '') => el('button', {
+        type: 'button',
+        class: `chat-move-choice${extra}`,
+        onclick: () => finish(value),
+      }, label);
+      backdrop = el('div', {
+        class: 'chat-move-backdrop',
+        onclick: e => { if (e.target === backdrop) finish(null); },
+      },
+        el('div', { class: 'chat-move-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Move chat to workspace' },
+          el('h2', { class: 'chat-move-title' }, 'Move chat to…'),
+          el('div', { class: 'chat-move-list' },
+            ...targets.map(w => choice(w.name, w.id)),
+            choice('+ New workspace', 'new', ' chat-move-choice-new'),
+          ),
+          el('div', { class: 'chat-move-foot' },
+            el('button', { type: 'button', class: 'btn small', onclick: () => finish(null) }, 'Cancel'),
+          ),
+        ),
+      );
+      document.addEventListener('keydown', onKey, true);
+      document.body.appendChild(backdrop);
+      backdrop.querySelector('.chat-move-choice')?.focus();
+    });
+  }
+
+  async function moveThread(id) {
+    const t = state.threads.find(x => x.id === id);
+    const entry = catalogEntry(id);
+    if (!t || entry?.readOnly) {
+      toast('External sessions are read-only');
+      return;
+    }
+    if (state.streams.has(id)) {
+      toast('Stop the running reply before moving this chat');
+      return;
+    }
+    const fromId = t.workspaceId || state.currentWorkspaceId || 'default';
+    const choiceId = await pickMoveTarget(fromId);
+    if (!choiceId) return;
+    let newName = '';
+    if (choiceId === 'new') {
+      const name = window.prompt('Workspace name');
+      if (name == null) return;
+      newName = name;
+    }
+
+    const hideProgress = showMoveProgress();
+    // Hold off background polling so a stale list cannot re-add the chat to the old workspace.
+    for (let i = 0; i < 100 && state.sessionSyncBusy; i++) await new Promise(r => setTimeout(r, 50));
+    state.sessionSyncBusy = true;
+    try {
+      let toId = choiceId;
+      if (choiceId === 'new') {
+        const r = await apiFetch('/api/workspaces', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: newName }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || !data.workspace?.id) throw new Error(data?.error?.message || 'Could not create workspace');
+        state.workspaces.push(data.workspace);
+        toId = data.workspace.id;
+        state.loadedWorkspaces.add(toId);
+        state.activeByWorkspace[toId] = null;
+      }
+
+      // The server must hold the latest metadata before the thread leaves its store.
+      if (state.persistTimer) {
+        clearTimeout(state.persistTimer);
+        state.persistTimer = null;
+      }
+      await persistThreads();
+      if (state.dirtyThreadIds.has(id)) throw new Error('Could not save the chat before moving');
+
+      const r = await apiFetch('/api/chat/move', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ threadId: id, fromWorkspaceId: fromId, toWorkspaceId: toId }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data?.error?.message || 'Move failed');
+
+      state.threads = state.threads.filter(x => x.id !== id);
+      state.sessionCatalog = state.sessionCatalog.filter(x => x.id !== id);
+      state.sessionSnapshots.delete(id);
+      state.dirtyThreadIds.delete(id);
+      if (state.activeByWorkspace[fromId] === id) {
+        state.activeByWorkspace[fromId] = state.sessionCatalog.find(s => s.workspaceId === fromId)?.id ?? null;
+      }
+
+      const pending = state.workspaceLoads.get(toId);
+      if (pending) await pending.catch(() => undefined);
+      await pullWorkspace(toId);
+      setWorkspaceCollapsed(toId, false);
+      state.activeByWorkspace[toId] = id;
+      await ensureExternalSessionLoaded(id);
+      selectThread(id);
+    } catch (e) {
+      toast(e.message || 'Move failed');
+      renderAll();
+    } finally {
+      state.sessionSyncBusy = false;
+      hideProgress();
     }
   }
 
@@ -2171,6 +2331,12 @@
           title: 'Rename',
           onclick: e => { e.stopPropagation(); startRename(s.id, title); },
         }, '✎'),
+        el('button', {
+          type: 'button',
+          class: 'chat-thread-btn',
+          title: 'Move to another workspace',
+          onclick: e => { e.stopPropagation(); void moveThread(s.id); },
+        }, '⇄'),
         el('button', {
           type: 'button',
           class: 'chat-thread-btn danger',

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -6,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import type { BridgeConfig } from "./config.js";
 import {
   classifyWorkspaceFile,
+  handleWorkspaceFile,
   isAllowedWorkspaceFile,
   resolveWorkspaceFilePath,
   workspaceFileUrlForPath,
@@ -143,5 +145,61 @@ describe("workspace-file", () => {
     fs.writeFileSync(svg, "<svg></svg>");
     const resolved = resolveWorkspaceFilePath(svg, config)!;
     expect(classifyWorkspaceFile(resolved, config)).toBe("inline-image");
+  });
+
+  const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
+
+  it("serves extensionless png uploads in a named workspace as image/png", async () => {
+    const uploads = path.join(
+      tmpDir,
+      "workspaces",
+      "ws_9f4eadce433e5277",
+      ".cursor-api-proxy",
+      "uploads",
+    );
+    fs.mkdirSync(uploads, { recursive: true });
+    const img = path.join(uploads, "1794965387901-0f341206-upload");
+    fs.writeFileSync(img, PNG);
+
+    const resolved = resolveWorkspaceFilePath(img, config)!;
+    expect(classifyWorkspaceFile(resolved, config)).toBe("inline-image");
+
+    const server = http.createServer((req, res) => handleWorkspaceFile(req, res, config));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const res = await fetch(
+        `http://127.0.0.1:${port}/api/workspace-file?path=${encodeURIComponent(img)}`,
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe("image/png");
+      expect(res.headers.get("content-disposition")).toBeNull();
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.subarray(0, 8)).toEqual(PNG.subarray(0, 8));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("does not serve an extensionless png outside uploads", () => {
+    const img = path.join(tmpDir, "loose-upload");
+    fs.writeFileSync(img, PNG);
+    const resolved = resolveWorkspaceFilePath(img, config)!;
+    expect(classifyWorkspaceFile(resolved, config)).toBeNull();
+  });
+
+  it("classifies extensionless non-images in named workspace uploads as download", () => {
+    const uploads = path.join(
+      tmpDir,
+      "workspaces",
+      "ws_9f4eadce433e5277",
+      ".cursor-api-proxy",
+      "uploads",
+    );
+    fs.mkdirSync(uploads, { recursive: true });
+    const doc = path.join(uploads, "1794965387901-0f341206-upload");
+    fs.writeFileSync(doc, "not an image");
+    const resolved = resolveWorkspaceFilePath(doc, config)!;
+    expect(classifyWorkspaceFile(resolved, config)).toBe("download");
   });
 });

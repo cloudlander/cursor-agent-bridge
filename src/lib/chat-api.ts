@@ -7,9 +7,11 @@ import {
   getMaxUploadBytes,
   maxJsonUploadBodyChars,
   pruneManagedStorage,
+  relocateStoredUpload,
   saveChatUpload,
   tempChatUploadPath,
 } from "./chat-attachments.js";
+import { ChatMoveError, moveChatToWorkspace } from "./chat-move.js";
 import {
   deleteWebThread,
   getChatSession,
@@ -252,8 +254,9 @@ export async function handleChatApi(
             : "upload";
         const dest = tempChatUploadPath(workspaceDir, hintName);
         const streamed = await saveMultipartFieldToFile(req, "file", dest, maxBytes);
+        const storedPath = relocateStoredUpload(dest, streamed.filename);
         saved = finalizeChatUpload(
-          dest,
+          storedPath,
           streamed.filename,
           streamed.mimeType,
           streamed.bytesWritten,
@@ -345,6 +348,40 @@ export async function handleChatApi(
       }
       const msg = e instanceof Error ? e.message : String(e);
       json(res, 500, { error: { message: msg, code: "upload_failed" } });
+    }
+    return;
+  }
+
+  if (req.method === "POST" && pathname === "/api/chat/move") {
+    let body: { threadId?: unknown; fromWorkspaceId?: unknown; toWorkspaceId?: unknown };
+    try {
+      body = JSON.parse(await readBody(req)) as typeof body;
+    } catch {
+      json(res, 400, { error: { message: "Invalid JSON", code: "invalid_json" } });
+      return;
+    }
+    const field = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+    const threadId = field(body.threadId);
+    const fromWorkspaceId = field(body.fromWorkspaceId);
+    const toWorkspaceId = field(body.toWorkspaceId);
+    if (!threadId || !fromWorkspaceId || !toWorkspaceId) {
+      json(res, 400, {
+        error: {
+          message: "threadId, fromWorkspaceId and toWorkspaceId required",
+          code: "invalid_request",
+        },
+      });
+      return;
+    }
+    try {
+      json(res, 200, await moveChatToWorkspace(config, { threadId, fromWorkspaceId, toWorkspaceId }));
+    } catch (e) {
+      if (e instanceof ChatMoveError) {
+        json(res, e.statusCode, { error: { message: e.message, code: e.code } });
+      } else {
+        const msg = e instanceof Error ? e.message : String(e);
+        json(res, 500, { error: { message: msg, code: "move_failed" } });
+      }
     }
     return;
   }

@@ -2604,6 +2604,25 @@ body.chat-right-panel-dragging * {
   margin: 4px 12px 8px;
   align-self: stretch;
 }
+.chat-move-backdrop {
+  position: fixed; inset: 0; z-index: 150; display: flex; align-items: center; justify-content: center;
+  padding: 24px; background: color-mix(in srgb, var(--bg) 60%, transparent); backdrop-filter: blur(2px);
+}
+.chat-move-dialog {
+  width: min(380px, 100%); max-height: min(80vh, 560px); display: flex; flex-direction: column; gap: 12px;
+  padding: 18px 20px; border-radius: 12px; border: 1px solid var(--border); background: var(--panel);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.chat-move-title { margin: 0; font-size: 15px; font-weight: 600; }
+.chat-move-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 0; }
+.chat-move-choice {
+  border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer;
+  font: inherit; font-size: 13px; text-align: left; padding: 8px 10px; border-radius: 8px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-move-choice:hover, .chat-move-choice:focus-visible { background: var(--panel-2); border-color: var(--blue); outline: none; }
+.chat-move-choice-new { color: var(--blue); border-style: dashed; }
+.chat-move-foot { display: flex; justify-content: flex-end; }
 .chat-thread-item { display: flex; align-items: center; gap: 6px; padding: 8px 8px 8px 10px; border-radius: 8px; cursor: pointer; }
 .chat-thread-item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .chat-thread-actions { display: none; gap: 2px; flex-shrink: 0; }

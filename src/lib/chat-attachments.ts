@@ -145,6 +145,33 @@ export function tempChatUploadPath(workspaceDir: string, filename: string): stri
   return newStoredUploadPath(workspaceDir, safeName);
 }
 
+/**
+ * Multipart saves land on a placeholder name (`…-upload`) before the part
+ * filename is known. Move the file so the stored basename keeps that name
+ * and its extension (`…-3.png`).
+ */
+export function relocateStoredUpload(filePath: string, filename: string): string {
+  const safe = sanitizeFilename(filename);
+  const dir = path.dirname(filePath);
+  const base = path.basename(filePath);
+  const idMatch = /^(\d+-[0-9a-f]{8})-(.+)$/.exec(base);
+  const nextBase = idMatch ? `${idMatch[1]}-${safe}` : `${base}-${safe}`;
+  if (nextBase === base) return filePath;
+  let dest = path.join(dir, nextBase);
+  if (fs.existsSync(dest)) {
+    const parsed = path.parse(nextBase);
+    for (let i = 1; ; i++) {
+      const candidate = path.join(dir, `${parsed.name}-${i}${parsed.ext}`);
+      if (!fs.existsSync(candidate)) {
+        dest = candidate;
+        break;
+      }
+    }
+  }
+  fs.renameSync(filePath, dest);
+  return dest;
+}
+
 export function finalizeChatUpload(
   filePath: string,
   filename: string,

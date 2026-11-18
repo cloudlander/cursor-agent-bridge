@@ -6,6 +6,7 @@ import * as path from "node:path";
 import type { BridgeConfig } from "./config.js";
 import { OUTPUTS_DIR, UPLOADS_DIR } from "./chat-attachments.js";
 import { json } from "./http.js";
+import { userWorkspacesRoot } from "./workspaces.js";
 
 const IMAGE_EXTENSIONS = new Set([
   ".png",
@@ -125,6 +126,68 @@ function isUnderManagedDir(resolvedPath: string, workspaceDir: string): boolean 
   );
 }
 
+const UPLOAD_SEGMENTS = UPLOADS_DIR.split("/");
+const OUTPUT_SEGMENTS = OUTPUTS_DIR.split("/");
+
+/** `workspaces/ws_…/.cursor-api-proxy/{uploads,outputs}` beside the sessions log. */
+function userWorkspaceManagedKind(
+  resolvedPath: string,
+  config: BridgeConfig,
+): "uploads" | "outputs" | null {
+  const rootReal = realRoot(userWorkspacesRoot(config));
+  const rel = path.relative(rootReal, resolvedPath);
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  const parts = rel.split(path.sep);
+  if (parts.length < 4) return null;
+  if (!/^ws_[0-9a-f]{16}$/.test(parts[0] ?? "")) return null;
+  const kind = parts[2];
+  const head = [parts[1], kind];
+  if (head[0] === UPLOAD_SEGMENTS[0] && kind === UPLOAD_SEGMENTS[1]) return "uploads";
+  if (head[0] === OUTPUT_SEGMENTS[0] && kind === OUTPUT_SEGMENTS[1]) return "outputs";
+  return null;
+}
+
+/** Chat uploads are often stored without an extension (`…-upload`). */
+function sniffImageMime(filePath: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(16);
+    const n = fs.readSync(fd, buf, 0, 16, 0);
+    const b = buf.subarray(0, n);
+    if (
+      b.length >= 8 &&
+      b[0] === 0x89 &&
+      b[1] === 0x50 &&
+      b[2] === 0x4e &&
+      b[3] === 0x47 &&
+      b[4] === 0x0d &&
+      b[5] === 0x0a &&
+      b[6] === 0x1a &&
+      b[7] === 0x0a
+    ) {
+      return "image/png";
+    }
+    if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+    if (b.length >= 6) {
+      const sig = b.subarray(0, 6).toString("ascii");
+      if (sig === "GIF87a" || sig === "GIF89a") return "image/gif";
+    }
+    if (
+      b.length >= 12 &&
+      b.subarray(0, 4).toString("ascii") === "RIFF" &&
+      b.subarray(8, 12).toString("ascii") === "WEBP"
+    ) {
+      return "image/webp";
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
 function isCursorProjectAsset(resolvedPath: string): boolean {
   const home = os.homedir();
   if (!isUnderRoot(resolvedPath, home)) return false;
@@ -176,22 +239,32 @@ export function classifyWorkspaceFile(
   }
   if (!stat.isFile() || stat.size > MAX_WORKSPACE_FILE_SERVE_BYTES) return null;
 
+  const userKind = userWorkspaceManagedKind(resolvedPath, config);
+  const managed =
+    isUnderManagedDir(resolvedPath, config.workspace) || userKind !== null;
+
   if (ext === ".svg") {
-    if (isUnderUploadsDir(resolvedPath, config.workspace)) return "download";
+    if (isUnderUploadsDir(resolvedPath, config.workspace) || userKind === "uploads") {
+      return "download";
+    }
     if (isUnderRoot(resolvedPath, config.workspace)) return "inline-image";
-    if (isUnderOutputsDir(resolvedPath, config.workspace)) return "inline-image";
+    if (isUnderOutputsDir(resolvedPath, config.workspace) || userKind === "outputs") {
+      return "inline-image";
+    }
     if (isCursorProjectAsset(resolvedPath)) return "inline-image";
     return null;
   }
 
   if (IMAGE_EXTENSIONS.has(ext)) {
     if (isUnderRoot(resolvedPath, config.workspace)) return "inline-image";
-    if (isUnderManagedDir(resolvedPath, config.workspace)) return "inline-image";
+    if (managed) return "inline-image";
     if (isCursorProjectAsset(resolvedPath)) return "inline-image";
     return null;
   }
 
-  if (isUnderManagedDir(resolvedPath, config.workspace)) return "download";
+  if (managed && !ext && sniffImageMime(resolvedPath)) return "inline-image";
+
+  if (managed) return "download";
   if (isCursorProjectAsset(resolvedPath)) return "download";
   if (isUnderRoot(resolvedPath, config.workspace) && DOWNLOAD_EXTENSIONS.has(ext)) {
     return "download";
@@ -220,7 +293,9 @@ export function workspaceFileMatches(req: http.IncomingMessage): boolean {
 
 function mimeForPath(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase();
-  return MIME[ext] ?? "application/octet-stream";
+  if (MIME[ext]) return MIME[ext];
+  if (!ext) return sniffImageMime(filePath) ?? "application/octet-stream";
+  return "application/octet-stream";
 }
 
 function serveFile(

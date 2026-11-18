@@ -1274,6 +1274,28 @@ export async function deleteWebThread(
   return false;
 }
 
+/**
+ * Move a web thread between workspace stores. Writes the destination first so a
+ * crash leaves a duplicate rather than losing the chat. The thread becomes the
+ * destination's active chat.
+ */
+export async function relocateWebThread(
+  config: BridgeConfig,
+  opts: { fromWorkspaceId: string; toWorkspaceId: string; thread: WebChatThread },
+): Promise<void> {
+  const { fromWorkspaceId, toWorkspaceId, thread } = opts;
+  await withWorkspaceStore(config, toWorkspaceId, (store, filePath) => {
+    store.threads = [thread, ...store.threads.filter((t) => t.id !== thread.id)];
+    store.activeId = thread.id;
+    writeJsonAtomic(filePath, store);
+  });
+  await withWorkspaceStore(config, fromWorkspaceId, (store, filePath) => {
+    store.threads = store.threads.filter((t) => t.id !== thread.id);
+    if (store.activeId === thread.id) store.activeId = store.threads[0]?.id ?? null;
+    writeJsonAtomic(filePath, store);
+  });
+}
+
 export async function migrateLocalThreads(
   config: BridgeConfig,
   imported: WebChatThread[],
