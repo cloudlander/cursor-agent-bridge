@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import type { BridgeConfig } from "./config.js";
@@ -14,10 +17,15 @@ vi.mock("./process.js", () => ({
   runStreaming: vi.fn().mockResolvedValue({ code: 0, stderr: "" }),
 }));
 
-vi.mock("./token-cache.js", () => ({
-  readKeychainToken: vi.fn().mockReturnValue(undefined),
-  writeCachedToken: vi.fn(),
-}));
+vi.mock("./token-cache.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./token-cache.js")>();
+  return {
+    ...actual,
+    readKeychainToken: vi.fn().mockReturnValue(undefined),
+    writeCachedToken: vi.fn(),
+    syncAccessTokenCacheForAuth: vi.fn(),
+  };
+});
 
 function config(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
   return {
@@ -92,5 +100,35 @@ describe("ACP requestTimeoutMs", () => {
       timeoutMs: 123_456,
       requestTimeoutMs: 123_456,
     });
+  });
+
+  it("does not write the API run into the account directory", async () => {
+    const account = fs.mkdtempSync(path.join(os.tmpdir(), "agent-run-account-"));
+    fs.writeFileSync(
+      path.join(account, "cli-config.json"),
+      JSON.stringify({ version: 1 }),
+    );
+    try {
+      await runAgentSync(
+        config(),
+        "/tmp/ws",
+        true,
+        ["--print", "--mode", "ask", "--model", "auto"],
+        undefined,
+        "hello",
+        account,
+      );
+      expect(fs.readdirSync(account)).toEqual(["cli-config.json"]);
+      const env = vi.mocked(runAcpSync).mock.calls.at(-1)?.[3].env ?? {};
+      const cursorConfig = env.CURSOR_CONFIG_DIR ?? "";
+      expect(cursorConfig).not.toBe("");
+      expect(path.resolve(cursorConfig)).not.toBe(path.resolve(account));
+      expect(fs.existsSync(cursorConfig)).toBe(false);
+      if (process.platform !== "win32" && process.platform !== "darwin") {
+        expect(env.XDG_CONFIG_HOME).toBe(path.join(account, "cli-auth"));
+      }
+    } finally {
+      fs.rmSync(account, { recursive: true, force: true });
+    }
   });
 });

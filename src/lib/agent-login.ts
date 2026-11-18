@@ -7,6 +7,7 @@ import type { BridgeConfig } from "./config.js";
 import { applyAccountCliAuthEnv } from "./account-cli-auth.js";
 import {
   accountNameAvailabilityError,
+  discoverAuthenticatedAccountDirs,
   registerAccountInBridge,
   resolveAccountsDir,
   sanitizeAccountName,
@@ -325,8 +326,17 @@ export function startAgentLoginSession(
     return Promise.resolve({ ok: false, error: nameError });
   }
 
+  const explicitName = sanitizeAccountName(accountName ?? "");
+  if (!explicitName && discoverAuthenticatedAccountDirs().length > 0) {
+    return Promise.resolve({
+      ok: false,
+      error:
+        "A Cursor account is already configured. API requests use that account; name another account only when you want a second login.",
+    });
+  }
+
   const name =
-    sanitizeAccountName(accountName ?? "") ??
+    explicitName ??
     `account-${Date.now().toString().slice(-4)}`;
   const accountsDir = resolveAccountsDir();
   const configDir = path.join(accountsDir, name);

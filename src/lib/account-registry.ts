@@ -2,7 +2,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import type { BridgeConfig } from "./config.js";
-import { readCursorCliAuth } from "./cursor-account-snapshot.js";
+import {
+  collapseDuplicateAccountDirs,
+  readCursorCliAuth,
+} from "./cursor-account-snapshot.js";
 import { initAccountPool } from "./account-pool.js";
 
 function homeDir(): string {
@@ -43,11 +46,12 @@ export function discoverAuthenticatedAccountDirs(): string[] {
 
   try {
     const entries = fs.readdirSync(accountsDir, { withFileTypes: true });
-    return entries
-      .filter((e) => e.isDirectory())
-      .map((e) => path.join(accountsDir, e.name))
-      .filter(isAuthenticatedAccountDir)
-      .map((d) => path.resolve(d));
+    return collapseDuplicateAccountDirs(
+      entries
+        .filter((e) => e.isDirectory())
+        .map((e) => path.join(accountsDir, e.name))
+        .filter(isAuthenticatedAccountDir),
+    ).map((d) => path.resolve(d));
   } catch {
     return [];
   }

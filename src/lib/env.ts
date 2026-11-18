@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { collapseDuplicateAccountDirs } from "./cursor-account-snapshot.js";
 import type { CursorExecutionMode } from "./execution-mode.js";
 import { tryParseExecutionModeEnv } from "./execution-mode.js";
 
@@ -343,10 +344,12 @@ function discoverAccountDirs(homeDir: string | undefined): string[] {
 
   try {
     const entries = fs.readdirSync(accountsDir, { withFileTypes: true });
-    return entries
-      .filter((e) => e.isDirectory())
-      .map((e) => path.join(accountsDir, e.name))
-      .filter(isAuthenticatedAccountDir);
+    return collapseDuplicateAccountDirs(
+      entries
+        .filter((e) => e.isDirectory())
+        .map((e) => path.join(accountsDir, e.name))
+        .filter(isAuthenticatedAccountDir),
+    );
   } catch {
     return [];
   }

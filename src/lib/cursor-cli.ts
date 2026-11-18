@@ -1,6 +1,7 @@
 import { tmpdir } from "node:os";
 
 import { run } from "./process.js";
+import { createRunConfigDir } from "./run-config-dir.js";
 
 export type CursorCliModel = { id: string; name: string };
 
@@ -44,15 +45,19 @@ export async function listCursorCliModels(args: {
     FORCE_COLOR: "0",
     TERM: "dumb",
   };
-  if (args.configDir) {
-    envOverrides.CURSOR_CONFIG_DIR = args.configDir;
+  const runConfig = args.configDir ? createRunConfigDir(args.configDir) : undefined;
+  if (runConfig) envOverrides.CURSOR_CONFIG_DIR = runConfig.dir;
+  let list;
+  try {
+    list = await run(args.agentBin, ["--list-models"], {
+      cwd: tmpdir(),
+      timeoutMs: args.timeoutMs,
+      envOverrides,
+      configDir: args.configDir,
+    });
+  } finally {
+    runConfig?.dispose();
   }
-  const list = await run(args.agentBin, ["--list-models"], {
-    cwd: tmpdir(),
-    timeoutMs: args.timeoutMs,
-    envOverrides,
-    configDir: args.configDir,
-  });
 
   if (list.code !== 0) {
     throw new Error(

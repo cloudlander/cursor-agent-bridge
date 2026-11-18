@@ -450,11 +450,11 @@ describe("discoverAccountDirs filtering", () => {
     return accountsDir;
   }
 
-  function writeCliConfig(dir: string, withAuth: boolean) {
+  function writeCliConfig(dir: string, withAuth: boolean, email = "test@example.com") {
     fs.mkdirSync(dir, { recursive: true });
     const cfg = withAuth
       ? {
-          authInfo: { email: "test@example.com", displayName: "Test" },
+          authInfo: { email, displayName: "Test" },
           version: 1,
         }
       : { version: 1, permissions: {} };
@@ -503,15 +503,24 @@ describe("discoverAccountDirs filtering", () => {
 
   it("discovers multiple authenticated accounts and preserves filesystem order", () => {
     const accountsDir = makeTmpAccounts();
-    writeCliConfig(path.join(accountsDir, "a-account"), true);
-    writeCliConfig(path.join(accountsDir, "b-account"), true);
-    writeCliConfig(path.join(accountsDir, "c-account"), true);
+    writeCliConfig(path.join(accountsDir, "a-account"), true, "a@example.com");
+    writeCliConfig(path.join(accountsDir, "b-account"), true, "b@example.com");
+    writeCliConfig(path.join(accountsDir, "c-account"), true, "c@example.com");
 
     const loaded = loadEnvConfig({ env: { HOME: tmpBase }, cwd: "/workspace" });
     expect(loaded.configDirs).toHaveLength(3);
     expect(loaded.configDirs.map((d) => path.basename(d))).toEqual(
       expect.arrayContaining(["a-account", "b-account", "c-account"]),
     );
+  });
+
+  it("drops a generated duplicate of an account that is already signed in", () => {
+    const accountsDir = makeTmpAccounts();
+    writeCliConfig(path.join(accountsDir, "yuzhang"), true, "y@example.com");
+    writeCliConfig(path.join(accountsDir, "account-3806"), true, "y@example.com");
+
+    const loaded = loadEnvConfig({ env: { HOME: tmpBase }, cwd: "/workspace" });
+    expect(loaded.configDirs.map((d) => path.basename(d))).toEqual(["yuzhang"]);
   });
 
   it("CURSOR_CONFIG_DIRS takes priority over auto-discovery", () => {

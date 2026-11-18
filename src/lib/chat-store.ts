@@ -1345,7 +1345,8 @@ export async function recordApiSession(
   ];
   if (opts.assistantText.trim()) {
     const last = messages[messages.length - 1];
-    if (last?.role === "assistant") {
+    const endsWithAssistant = opts.messages[opts.messages.length - 1]?.role === "assistant";
+    if (endsWithAssistant && last?.role === "assistant") {
       last.content = opts.assistantText.trim();
     } else {
       messages.push({ role: "assistant", content: opts.assistantText.trim(), ts: now });

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as http from "node:http";
 
 import type { BridgeConfig } from "../config.js";
@@ -92,9 +92,28 @@ import {
 import type { AcpPromptBlock } from "../acp-client.js";
 import { estimateContextWindowUsageFromMessages } from "../acp-context-usage.js";
 
+/**
+ * Stateless clients resend the full history each turn, so the same caller,
+ * path, system prompt and opening user message identify one conversation.
+ */
+export function apiConversationSessionId(
+  ownerKey: string,
+  pathname: string,
+  trafficMessages: TrafficMessage[],
+): string {
+  const firstOf = (role: string) =>
+    trafficMessages.find((m) => m.role === role)?.content ?? "";
+  const digest = createHash("sha256")
+    .update(JSON.stringify([ownerKey, pathname, firstOf("system"), firstOf("user")]))
+    .digest("hex")
+    .slice(0, 24);
+  return `api_${digest}`;
+}
+
 function maybeRecordProxyChatSession(
   config: BridgeConfig,
   pathname: string,
+  ownerKey: string,
   trafficMessages: TrafficMessage[],
   assistantText: string,
   model?: string,
@@ -109,6 +128,7 @@ function maybeRecordProxyChatSession(
     mode,
     messages: trafficMessages,
     assistantText,
+    sessionId: apiConversationSessionId(ownerKey, pathname, trafficMessages),
     cwd,
   }).catch(() => undefined);
 }
@@ -605,12 +625,21 @@ export async function handleChatCompletions(
           ctx.toolSessions.resume(record, submittedToolOutputs, listener),
       });
       reportRequestSuccess(configDir, Date.now() - startedAt);
+      const replyText = normalizeAssistantReplyText(result.text);
       logTrafficResponse(
         config.verbose,
         config.verboseFull,
         model ?? cursorModel,
-        normalizeAssistantReplyText(result.text),
+        replyText,
         !!body.stream,
+      );
+      maybeRecordProxyChatSession(
+        config,
+        pathname,
+        ownerKey,
+        trafficMessages,
+        replyText,
+        displayModel ?? cursorModel,
       );
     } catch (error) {
       reportRequestError(configDir, Date.now() - startedAt);
@@ -801,12 +830,23 @@ export async function handleChatCompletions(
       ) {
         reportRateLimit(configDir, 60_000);
       }
+      const replyText = normalizeAssistantReplyText(result.text);
       logTrafficResponse(
         config.verbose,
         config.verboseFull,
         model ?? cursorModel,
-        normalizeAssistantReplyText(result.text),
+        replyText,
         !!body.stream,
+      );
+      maybeRecordProxyChatSession(
+        config,
+        pathname,
+        ownerKey,
+        trafficMessages,
+        replyText,
+        displayModel ?? cursorModel,
+        mode,
+        workspaceDir,
       );
     } catch (error) {
       if (record) {
@@ -1012,6 +1052,7 @@ export async function handleChatCompletions(
           maybeRecordProxyChatSession(
             config,
             pathname,
+            ownerKey,
             trafficMessages,
             normalizedAccumulated,
             displayModel ?? cursorModel,
@@ -1098,6 +1139,7 @@ export async function handleChatCompletions(
         maybeRecordProxyChatSession(
           config,
           pathname,
+          ownerKey,
           trafficMessages,
           normalizedAccumulated,
           displayModel ?? cursorModel,
@@ -1245,6 +1287,7 @@ export async function handleChatCompletions(
   maybeRecordProxyChatSession(
     config,
     pathname,
+    ownerKey,
     trafficMessages,
     content,
     displayModel ?? cursorModel,

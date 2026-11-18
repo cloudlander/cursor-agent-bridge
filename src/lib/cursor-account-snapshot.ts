@@ -85,6 +85,45 @@ export function readCursorCliAuth(configDir: string): {
   }
 }
 
+/** Folders created by an unnamed `agent login`, not by an explicit account name. */
+const GENERATED_ACCOUNT_DIR = /^account-\d+$/;
+
+function cursorIdentityKey(configDir: string): string | undefined {
+  const auth = readCursorCliAuth(configDir);
+  const authId = auth.authId?.trim();
+  if (authId) return `id:${authId}`;
+  const email = auth.email?.trim().toLowerCase();
+  return email ? `email:${email}` : undefined;
+}
+
+/**
+ * One directory per Cursor user. A generated `account-1234` folder is dropped
+ * when the same login already has a named directory, so an API run cannot
+ * surface a second account for that user.
+ */
+export function collapseDuplicateAccountDirs(dirs: string[]): string[] {
+  const groups = new Map<string, string[]>();
+  for (const dir of dirs) {
+    const key = cursorIdentityKey(dir);
+    if (!key) continue;
+    const list = groups.get(key);
+    if (list) list.push(dir);
+    else groups.set(key, [dir]);
+  }
+  const drop = new Set<string>();
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    const named = list.find(
+      (dir) => !GENERATED_ACCOUNT_DIR.test(path.basename(dir)),
+    );
+    const keep = path.resolve(named ?? list[0]);
+    for (const dir of list) {
+      if (path.resolve(dir) !== keep) drop.add(path.resolve(dir));
+    }
+  }
+  return dirs.filter((dir) => !drop.has(path.resolve(dir)));
+}
+
 export function resolveTokenForConfigDir(configDir: string): string | undefined {
   const auth = readCursorCliAuth(configDir);
   return readAccessTokenForAuth(configDir, auth.authId);

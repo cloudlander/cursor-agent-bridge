@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { applyAccountCliAuthEnv } from "./account-cli-auth.js";
+import { createRunConfigDir } from "./run-config-dir.js";
 import type { BridgeConfig } from "./config.js";
 import { decodeJwtPayload } from "./cursor-account-api.js";
 import { configDirsForAccountUsage } from "./cursor-account-snapshot.js";
@@ -108,31 +109,39 @@ export async function runAgentAuthRefresh(
     ...resolved.env,
     ...config.acpEnv,
   };
-  if (configDir) {
-    env.CURSOR_CONFIG_DIR = configDir;
+  const runConfig = configDir ? createRunConfigDir(configDir) : undefined;
+  if (configDir && runConfig) {
     applyAccountCliAuthEnv(env, configDir);
+    env.CURSOR_CONFIG_DIR = runConfig.dir;
   }
 
   return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      runConfig?.dispose();
+      resolve(code);
+    };
     const child = spawn(resolved.command, resolved.args, {
       env,
       stdio: "ignore",
       windowsVerbatimArguments: resolved.windowsVerbatimArguments,
     });
     const timeoutMs = 45_000;
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill("SIGTERM");
-      resolve(null);
+      finish(null);
     }, timeoutMs);
     timer.unref?.();
 
     child.on("error", () => {
-      clearTimeout(timer);
-      resolve(null);
+      finish(null);
     });
     child.on("exit", (code) => {
-      clearTimeout(timer);
-      resolve(code);
+      finish(code);
     });
   });
 }

@@ -107,6 +107,13 @@ describe("account-registry", () => {
     expect(path.basename(dirs[0])).toBe("a");
   });
 
+  it("discoverAuthenticatedAccountDirs hides a generated copy of the same login", () => {
+    writeAuth(path.join(accountsRoot(), "yuzhang"), "y@example.com", "auth0|same");
+    writeAuth(path.join(accountsRoot(), "account-3806"), "y@example.com", "auth0|same");
+    const dirs = discoverAuthenticatedAccountDirs().map((d) => path.basename(d));
+    expect(dirs).toEqual(["yuzhang"]);
+  });
+
   it("findDuplicateAuthError ignores legacy ~/.cursor when not in configDirs", () => {
     const legacy = path.join(tmpHome, ".cursor");
     writeAuth(legacy, "legacy@example.com", "legacy-sub");

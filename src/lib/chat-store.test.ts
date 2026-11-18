@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { BridgeConfig } from "./config.js";
 import {
+  getChatSession,
   listChatSessions,
   parseAgentTranscript,
   summarizeAgentTranscript,
@@ -555,6 +556,38 @@ describe("per-workspace chat stores", () => {
     expect(other.activeId).toBe("b");
     expect(def.sessions.some((s) => s.source === "api" && s.cwd?.endsWith("sub"))).toBe(true);
     expect(other.sessions.some((s) => s.source === "api")).toBe(false);
+  });
+
+  it("updates one API session across turns of a tool-calling conversation", async () => {
+    const config = makeTmpConfig();
+    const sessionId = "api_conversation";
+    await recordApiSession(config, {
+      api: "chat",
+      apiPath: "/v1/chat/completions",
+      messages: [{ role: "user", content: "list workspaces" }],
+      assistantText: "Checking.",
+      sessionId,
+    });
+    await recordApiSession(config, {
+      api: "chat",
+      apiPath: "/v1/chat/completions",
+      messages: [
+        { role: "user", content: "list workspaces" },
+        { role: "assistant", content: "Checking." },
+        { role: "tool", content: "[\"a\",\"b\"]" },
+      ],
+      assistantText: "Workspaces: a, b",
+      sessionId,
+    });
+    const { sessions } = await listChatSessions(config);
+    const api = sessions.filter((s) => s.source === "api");
+    expect(api.map((s) => s.id)).toEqual([sessionId]);
+    const stored = await getChatSession(config, sessionId);
+    expect(stored?.messages?.map((m) => [m.role, m.content])).toEqual([
+      ["user", "list workspaces"],
+      ["assistant", "Checking."],
+      ["assistant", "Workspaces: a, b"],
+    ]);
   });
 
   it("lists host CLI history when the adopted account dir has no sessions", async () => {

@@ -2,6 +2,7 @@ import * as path from "node:path";
 
 import { applyAccountCliAuthEnv } from "./account-cli-auth.js";
 import { AcpConnection, type AcpAvailableModel } from "./acp-connection.js";
+import { createRunConfigDir } from "./run-config-dir.js";
 import { matchCliModelToAcpCatalog } from "./acp-model-match.js";
 import type { BridgeConfig } from "./config.js";
 import type { CursorCliModel } from "./cursor-cli.js";
@@ -59,9 +60,10 @@ export async function fetchAcpAvailableModels(
   configDir?: string,
 ): Promise<AcpAvailableModel[]> {
   const env = { ...config.acpEnv };
-  if (configDir) {
-    env.CURSOR_CONFIG_DIR = path.resolve(configDir);
-    applyAccountCliAuthEnv(env, env.CURSOR_CONFIG_DIR);
+  const runConfig = configDir ? createRunConfigDir(configDir) : undefined;
+  if (configDir && runConfig) {
+    applyAccountCliAuthEnv(env, configDir);
+    env.CURSOR_CONFIG_DIR = runConfig.dir;
   }
   const connection = new AcpConnection(
     config.acpCommand,
@@ -82,6 +84,7 @@ export async function fetchAcpAvailableModels(
     return session.models?.availableModels ?? [];
   } finally {
     await connection.close().catch(() => undefined);
+    runConfig?.dispose();
   }
 }
 

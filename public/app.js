@@ -959,7 +959,8 @@
         return true;
       }
       showLoginGate();
-      void beginAgentOAuthLogin();
+      const signedIn = Array.isArray(auth.accounts) && auth.accounts.some((a) => a.authenticated);
+      if (!signedIn) void beginAgentOAuthLogin();
       return false;
     } catch (e) {
       showLoginGate(`Could not check Cursor auth: ${e.message}`);
