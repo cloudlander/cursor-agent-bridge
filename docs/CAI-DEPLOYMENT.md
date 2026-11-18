@@ -52,22 +52,30 @@ At startup, `app.sh` calls `GET ${CDSW_ENGINE_URL}/application` (with `CDSW_API_
 
 ## User-deployed web apps (dynamic routes)
 
-Static HTML/CSS/JS apps are served **without restarting** the bridge after deploy:
+Static and dynamic apps are served **without restarting** the bridge. The standard deploy package is a `cursor-bridge-app` version `1` zip (`manifest.json` plus `payload/`). An app with no `launch` is static and can be exported. A dynamic app has `launch` and `port`. `POST /api/apps/deploy` is the only deployment API: a static app is copied into place, and a dynamic app is registered so the supervisor starts it. `kind` may be omitted and is inferred from `launch`. See the bundle table in [README.md](../README.md).
 
 | Route | Purpose |
 |-------|---------|
 | `/{name}/` | Short URL for deployed app (e.g. `/aigc-course/`) |
 | `/apps/{name}/` | Canonical app URL |
-| `/apps` | App index page |
-| `GET /api/apps` | JSON list of static apps and catalog proxies + `appsDir` path |
-| `POST /api/apps/deploy` | Hot-deploy a static site from the workspace — body `{ "name": "my-app", "sourceDir": "public/my-app" }` |
-| `POST /api/apps/catalog` | Register a process listening on `127.0.0.1:{port}` — body `{ "name", "port", "title?", "pid?", "launch?" }` |
-| `POST /api/apps/catalog/{name}/heartbeat` | Refresh a catalog registration. Optional body `{ "pid", "launch" }` |
-| `POST /api/apps/catalog/{name}/restart` | Start or restart a dynamic app that has a launch command |
-| `POST /api/apps/catalog/{name}/stop` | Stop it and do not relaunch until Restart |
-| `DELETE /api/apps/catalog/{name}` | Deregister and stop the process |
+| `/apps` | Redirects to the dashboard **Deployed apps** card |
+| `GET /api/apps` | JSON list of static and dynamic apps + `appsDir` path |
+| `POST /api/apps/deploy` | Only deployment API. Zip (`Content-Type: application/zip`): static is copied and served; dynamic is registered and the supervisor starts it. JSON `{ "name", "sourceDir" }` copies a static workspace folder. JSON `{ "name", "port", "launch?", … }` deploys a process already listening on `127.0.0.1` |
+| `GET /api/apps/{name}/export` | Download the app as `{name}.zip` (static or dynamic) |
+| `POST /api/apps/{name}/restart` | Start or restart a dynamic app. 400 for a static app |
+| `POST /api/apps/{name}/stop` | Stop a dynamic app; it is not relaunched until Restart. 400 for a static app |
+| `DELETE /api/apps/{name}` | Delete a static or dynamic app. A dynamic app is stopped and its registration and installed files are removed |
 
-Apps live under `<HOME>/.cursor-api-proxy/apps/` (override with `CURSOR_BRIDGE_APPS_DIR`). A static app folder must include `index.html`. A catalog proxy is a JSON file under `apps/.catalog/` and is reverse-proxied to localhost; the listener must answer `GET /__bridge/catalog-prove`. When registration includes `launch` (`command`, optional `args` and `cwd`), the bridge starts that process on listen and keeps it alive. Stop survives a bridge restart and a later register or heartbeat. Dashboard **Apps** and `/apps` expose Restart, Stop, and Delete and require no bridge API key. Registering a new local process does not require a bridge code change.
+Apps live under `<HOME>/.cursor-api-proxy/apps/` (override with `CURSOR_BRIDGE_APPS_DIR`). A static app must include `index.html` and supports deploy, export, and delete. A dynamic app is a JSON registration under `apps/.catalog/` reverse-proxied to localhost, and also supports restart and stop. The supervisor starts launch-backed apps on listen and restarts them when `GET /__bridge/catalog-health` fails. Stop survives a bridge restart. The dashboard **Deployed apps** card (search by name, 5 per page) and the chat panel Apps tab use these routes and require no bridge API key.
+
+Move an app to another bridge:
+
+```bash
+curl -s -o aigc-course.zip "http://127.0.0.1:${CDSW_APP_PORT}/api/apps/aigc-course/export"
+curl -s -X POST "http://127.0.0.1:${CDSW_APP_PORT}/api/apps/deploy" \
+  -H "content-type: application/zip" \
+  --data-binary @aigc-course.zip
+```
 
 Example (from project root after building a site under `public/aigc-course/`):
 

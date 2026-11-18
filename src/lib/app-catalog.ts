@@ -4,7 +4,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 
 import type { BridgeConfig } from "./config.js";
-import { BodyTooLargeError, json, readBodyLimited } from "./http.js";
+import { json } from "./http.js";
 
 /** Same shape as dynamic-apps APP_NAME_PATTERN. */
 const APP_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
@@ -18,7 +18,6 @@ const MAX_TTL_MS = 600_000;
 /** Drop registrations that have not heartbeated for this long. */
 const PURGE_AFTER_MS = 60 * 60 * 1000;
 const PROVE_TIMEOUT_MS = 2_000;
-const REGISTER_BODY_MAX = 8_192;
 
 const HOP_BY_HOP = new Set([
   "connection",
@@ -290,7 +289,7 @@ export function writeBridgeCatalogEndpoint(config: BridgeConfig, appsDir: string
       listenHost: config.host,
       connectHost: connectHost(config.host),
       port: config.port,
-      catalogPath: "/api/apps/catalog",
+      deployPath: "/api/apps/deploy",
       pid: process.pid,
       updatedAt: new Date().toISOString(),
     });
@@ -300,36 +299,12 @@ export function writeBridgeCatalogEndpoint(config: BridgeConfig, appsDir: string
   }
 }
 
-export type CatalogApiMatch =
-  | { op: "register" }
-  | { op: "delete"; name: string }
-  | { op: "heartbeat"; name: string }
-  | { op: "stop"; name: string }
-  | { op: "restart"; name: string };
-
-export function matchCatalogApi(method: string, pathname: string): CatalogApiMatch | null {
-  if (pathname === "/api/apps/catalog" && method === "POST") return { op: "register" };
-  const beat = pathname.match(/^\/api\/apps\/catalog\/([^/]+)\/heartbeat$/);
-  if (beat && method === "POST") {
-    return { op: "heartbeat", name: decodeURIComponent(beat[1] ?? "") };
-  }
-  const stop = pathname.match(/^\/api\/apps\/catalog\/([^/]+)\/stop$/);
-  if (stop && method === "POST") {
-    return { op: "stop", name: decodeURIComponent(stop[1] ?? "") };
-  }
-  const restart = pathname.match(/^\/api\/apps\/catalog\/([^/]+)\/restart$/);
-  if (restart && method === "POST") {
-    return { op: "restart", name: decodeURIComponent(restart[1] ?? "") };
-  }
-  const del = pathname.match(/^\/api\/apps\/catalog\/([^/]+)$/);
-  if (del && method === "DELETE") {
-    return { op: "delete", name: decodeURIComponent(del[1] ?? "") };
-  }
-  return null;
-}
-
-function pathnameOf(req: http.IncomingMessage): string {
-  return (req.url ?? "/").split("?")[0] ?? "/";
+/** Marks a registration alive after a successful health probe. Keeps `desired` from disk. */
+export function touchCatalogEntry(appsDir: string, name: string): void {
+  const entry = readCatalogEntry(appsDir, name);
+  if (!entry) return;
+  entry.heartbeatAt = new Date().toISOString();
+  saveEntry(appsDir, entry);
 }
 
 function firstHeader(value: string | string[] | undefined): string | undefined {
@@ -396,60 +371,48 @@ function clip(value: unknown, max: number): string | undefined {
   return trimmed.slice(0, max);
 }
 
-async function registerCatalogApp(
+export type RunningAppBody = {
+  name?: unknown;
+  port?: unknown;
+  title?: unknown;
+  description?: unknown;
+  ttlSec?: unknown;
+  pid?: unknown;
+  launch?: unknown;
+};
+
+export type RegisterRunningAppResult =
+  | { ok: true; name: string; port: number; ttlMs: number }
+  | { ok: false; status: number; error: string };
+
+/**
+ * Dynamic deploy for a process that is already listening on 127.0.0.1. The
+ * listener must answer the ownership probe. Deploying again refreshes the entry.
+ */
+export async function registerRunningApp(
   req: http.IncomingMessage,
-  res: http.ServerResponse,
+  body: RunningAppBody,
   host: CatalogHost,
-): Promise<void> {
-  let raw: string;
-  try {
-    raw = await readBodyLimited(req, REGISTER_BODY_MAX);
-  } catch (err) {
-    if (err instanceof BodyTooLargeError) {
-      json(res, 413, { error: "body too large" });
-      return;
-    }
-    throw err;
-  }
-  let body: {
-    name?: string;
-    port?: number;
-    title?: string;
-    description?: string;
-    ttlSec?: number;
-    pid?: number;
-    launch?: unknown;
-  };
-  try {
-    body = JSON.parse(raw || "{}") as typeof body;
-  } catch {
-    json(res, 400, { error: "invalid json" });
-    return;
-  }
+): Promise<RegisterRunningAppResult> {
   const name = String(body.name ?? "").trim();
   const port = body.port;
   if (!isCatalogAppName(name) || host.reservedNames.has(name)) {
-    json(res, 400, { error: "invalid app name" });
-    return;
+    return { ok: false, status: 400, error: "invalid app name" };
   }
   if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
-    json(res, 400, { error: "port must be an integer from 1 to 65535" });
-    return;
+    return { ok: false, status: 400, error: "port must be an integer from 1 to 65535" };
   }
   const nonce = crypto.randomBytes(16).toString("hex");
   const proved = await proveLocalPort(port, name, nonce);
   if (!proved) {
-    json(res, 400, {
-      error:
-        "listener on 127.0.0.1 did not prove ownership (GET /__bridge/catalog-prove)",
-    });
-    return;
+    return {
+      ok: false,
+      status: 400,
+      error: "listener on 127.0.0.1 did not prove ownership (GET /__bridge/catalog-prove)",
+    };
   }
   const reported = applyProcessReport(req, body);
-  if (!reported.ok) {
-    json(res, reported.status, { error: reported.error });
-    return;
-  }
+  if (!reported.ok) return reported;
   const now = new Date().toISOString();
   const previous = readCatalogEntry(host.appsDir, name);
   const entry: CatalogEntry = {
@@ -465,86 +428,7 @@ async function registerCatalogApp(
     launch: reported.launch ?? previous?.launch,
   };
   saveEntry(host.appsDir, entry);
-  json(res, 200, {
-    ok: true,
-    name,
-    port,
-    url: `/apps/${name}/`,
-    shortUrl: `/${name}/`,
-    ttlMs: entry.ttlMs,
-  });
-}
-
-async function heartbeatCatalogApp(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  host: CatalogHost,
-  name: string,
-): Promise<void> {
-  const entry = readCatalogEntry(host.appsDir, name);
-  if (!entry) {
-    json(res, 404, { error: "not registered" });
-    return;
-  }
-  const healthy = await probeCatalogHealth(entry.port, entry.name);
-  if (!healthy) {
-    json(res, 502, { error: "upstream health check failed", name });
-    return;
-  }
-  let raw = "";
-  try {
-    raw = await readBodyLimited(req, REGISTER_BODY_MAX);
-  } catch (err) {
-    if (err instanceof BodyTooLargeError) {
-      json(res, 413, { error: "body too large" });
-      return;
-    }
-    throw err;
-  }
-  if (raw.trim()) {
-    let body: { pid?: number; launch?: unknown };
-    try {
-      body = JSON.parse(raw) as typeof body;
-    } catch {
-      json(res, 400, { error: "invalid json" });
-      return;
-    }
-    const reported = applyProcessReport(req, body);
-    if (!reported.ok) {
-      json(res, reported.status, { error: reported.error });
-      return;
-    }
-    if (reported.pid !== undefined) entry.pid = reported.pid;
-    if (reported.launch) entry.launch = reported.launch;
-  }
-  entry.heartbeatAt = new Date().toISOString();
-  saveEntry(host.appsDir, entry);
-  json(res, 200, { ok: true, name, online: true, desired: entry.desired });
-}
-
-export function handleCatalogApi(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  host: CatalogHost,
-): boolean {
-  const match = matchCatalogApi(req.method ?? "GET", pathnameOf(req));
-  if (!match || match.op === "stop" || match.op === "restart" || match.op === "delete") {
-    return false;
-  }
-  void (async () => {
-    try {
-      if (match.op === "register") {
-        await registerCatalogApp(req, res, host);
-        return;
-      }
-      await heartbeatCatalogApp(req, res, host, match.name);
-    } catch (err) {
-      if (res.headersSent) return;
-      const message = err instanceof Error ? err.message : String(err);
-      json(res, 500, { error: message });
-    }
-  })();
-  return true;
+  return { ok: true, name, port, ttlMs: entry.ttlMs };
 }
 
 export function proxyCatalogApp(

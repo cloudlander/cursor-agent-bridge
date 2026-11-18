@@ -17,7 +17,12 @@
     loginPollTimer: null,
     loginSessionId: null,
     dashboardPolling: false,
+    appsData: null,
+    appsQuery: '',
+    appsPage: 0,
   };
+
+  const APPS_PAGE_SIZE = 5;
 
   function fmtTokens(n) {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
@@ -217,26 +222,42 @@
     $('status-body').replaceChildren(kv, ...publicBlock, healthRow);
   }
 
-  function proxyStatusLabel(app) {
-    if (app.desired === 'stopped') return 'proxy stopped';
-    const state = app.online === false ? 'proxy offline' : 'proxy';
+  function dynamicStatusLabel(app) {
+    if (app.desired === 'stopped') return 'dynamic · stopped';
+    const state = app.online === false ? 'dynamic · offline' : 'dynamic · online';
     return app.managed === false ? `${state} · no launch command` : state;
   }
 
-  async function controlDynamicApp(button) {
+  async function controlApp(button) {
     const action = button.getAttribute('data-app-action');
     const name = button.getAttribute('data-app-name');
     if (!action || !name) return;
+    if (action === 'export') {
+      button.disabled = true;
+      try {
+        await downloadAppExport(name);
+        toast(`Exported ${name}`, 'ok');
+      } catch (e) {
+        toast(`Export failed: ${e.message}`, 'err');
+        await alertPopup(`Export failed: ${e.message}`);
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
+    const kind = button.getAttribute('data-app-kind');
     const prompts = {
       stop: `Stop ${name}? It stays stopped until you restart it.`,
-      delete: `Deregister ${name} and stop its process?`,
+      delete: kind === 'static'
+        ? `Delete ${name}? Its files will be removed from the apps directory.`
+        : `Delete ${name}? Its process is stopped and its registration and installed files are removed.`,
       restart: `Restart ${name}?`,
     };
     if (prompts[action] && !(await confirmPopup(prompts[action], action !== 'restart'))) return;
     const method = action === 'delete' ? 'DELETE' : 'POST';
     const path = action === 'delete'
-      ? `/api/apps/catalog/${encodeURIComponent(name)}`
-      : `/api/apps/catalog/${encodeURIComponent(name)}/${action}`;
+      ? `/api/apps/${encodeURIComponent(name)}`
+      : `/api/apps/${encodeURIComponent(name)}/${action}`;
     button.disabled = true;
     try {
       const url = typeof bridgePath === 'function' ? bridgePath(path) : path;
@@ -253,9 +274,72 @@
     }
   }
 
-  function renderApps(data) {
+  async function downloadAppExport(name) {
+    const path = `/api/apps/${encodeURIComponent(name)}/export`;
+    const url = typeof bridgePath === 'function' ? bridgePath(path) : path;
+    const res = await fetch(url);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `${res.status} ${res.statusText}`);
+    }
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = `${name}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+  }
+
+  async function deployAppFile(file) {
+    const ok = await confirmPopup(
+      `Deploy ${file.name}? An existing app with the same name is replaced. A static app is copied into place. A dynamic app is registered and the supervisor starts it.`,
+    );
+    if (!ok) return;
+    const url = typeof bridgePath === 'function' ? bridgePath('/api/apps/deploy') : '/api/apps/deploy';
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/zip' },
+      body: file,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+    const extra = data.kind === 'dynamic' ? '; the supervisor will start it' : '';
+    toast(`Deployed ${data.name || file.name}${extra}`, 'ok');
+    await refreshApps();
+  }
+
+  function appButton(app, action, label, extra = {}) {
+    return el('button', {
+      type: 'button',
+      class: action === 'delete' ? 'btn small danger' : 'btn small',
+      'data-app-action': action,
+      'data-app-name': app.name,
+      'data-app-kind': app.kind,
+      ...extra,
+    }, label);
+  }
+
+  function appActions(app) {
+    const buttons = [appButton(app, 'export', 'Export')];
+    if (app.kind === 'dynamic') {
+      const unmanaged = app.managed === false;
+      const noLaunch = { disabled: 'disabled', title: 'No launch command registered' };
+      buttons.push(
+        appButton(app, 'restart', 'Restart', unmanaged && app.desired !== 'stopped' ? noLaunch : {}),
+        appButton(app, 'stop', 'Stop', unmanaged ? noLaunch : {}),
+      );
+    }
+    buttons.push(appButton(app, 'delete', 'Delete'));
+    return el('span', { style: 'display: inline-flex; gap: 6px; margin-left: 8px;' }, ...buttons);
+  }
+
+  function renderApps() {
     const body = $('apps-body');
     if (!body) return;
+    const data = state.appsData;
     if (!data || !Array.isArray(data.apps)) {
       body.replaceChildren(el('div', { class: 'empty' }, 'No app data.'));
       return;
@@ -263,57 +347,51 @@
     if (data.apps.length === 0) {
       body.replaceChildren(
         el('div', { class: 'empty' },
-          'No apps yet. POST a static site to ',
-          el('code', {}, '/api/apps/deploy'),
-          ', or register a local process with ',
-          el('code', {}, 'POST /api/apps/catalog'),
+          'No apps yet. Deploy an app zip here, or post it to ',
+          el('code', {}, 'POST /api/apps/deploy'),
           '.',
         ),
       );
       return;
     }
+    const query = state.appsQuery.trim().toLowerCase();
+    const matches = query
+      ? data.apps.filter(app => app.name.toLowerCase().includes(query)
+        || (app.title || '').toLowerCase().includes(query))
+      : data.apps;
+    const pages = Math.max(1, Math.ceil(matches.length / APPS_PAGE_SIZE));
+    state.appsPage = Math.min(Math.max(state.appsPage, 0), pages - 1);
+    const start = state.appsPage * APPS_PAGE_SIZE;
     const list = el('ul', { style: 'margin: 0; padding-left: 0; list-style: none; line-height: 1.8;' });
-    for (const app of data.apps) {
+    for (const app of matches.slice(start, start + APPS_PAGE_SIZE)) {
       const link = el('a', { href: app.shortUrl || app.url, target: '_blank', rel: 'noopener' }, app.title || app.name);
-      const kind = app.kind === 'proxy' ? proxyStatusLabel(app) : 'static';
+      const kind = app.kind === 'dynamic' ? dynamicStatusLabel(app) : 'static';
       const meta = el(
         'span',
         { class: 'dim-text mono', style: 'font-size: 11px; margin-left: 6px;' },
         `${app.name} · ${kind} · ${app.shortUrl || app.url}`,
       );
-      const main = el('span', {}, link, meta);
-      if (app.kind !== 'proxy') {
-        list.appendChild(el('li', {}, main));
-        continue;
-      }
-      const restartAttrs = {
-        type: 'button',
-        class: 'btn small',
-        'data-app-action': 'restart',
-        'data-app-name': app.name,
-      };
-      const stopAttrs = { type: 'button', class: 'btn small', 'data-app-action': 'stop', 'data-app-name': app.name };
-      if (app.managed === false) {
-        if (app.desired !== 'stopped') {
-          restartAttrs.disabled = 'disabled';
-          restartAttrs.title = 'No launch command registered';
-        }
-        stopAttrs.disabled = 'disabled';
-        stopAttrs.title = 'No launch command registered';
-      }
-      const actions = el('span', { style: 'display: inline-flex; gap: 6px; margin-left: 8px;' },
-        el('button', restartAttrs, 'Restart'),
-        el('button', stopAttrs, 'Stop'),
-        el('button', { type: 'button', class: 'btn small danger', 'data-app-action': 'delete', 'data-app-name': app.name }, 'Delete'),
-      );
       list.appendChild(el('li', {
         style: 'display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between;',
-      }, main, actions));
+      }, el('span', {}, link, meta), appActions(app)));
     }
+    const content = matches.length === 0
+      ? el('div', { class: 'empty' }, `No app name matches "${state.appsQuery.trim()}".`)
+      : list;
+    const prev = el('button', { type: 'button', class: 'btn small', 'data-apps-page': 'prev' }, 'Prev');
+    const next = el('button', { type: 'button', class: 'btn small', 'data-apps-page': 'next' }, 'Next');
+    if (state.appsPage === 0) prev.disabled = true;
+    if (state.appsPage >= pages - 1) next.disabled = true;
+    const total = query ? `${matches.length} of ${data.apps.length} apps` : `${data.apps.length} apps`;
+    const pager = el('div', { class: 'apps-pager muted-text' },
+      prev,
+      el('span', {}, `Page ${state.appsPage + 1} of ${pages} · ${total}`),
+      next,
+    );
     const dir = el('p', { class: 'muted-text mono', style: 'font-size: 11px; margin: 10px 0 0; word-break: break-all;' },
       data.appsDir || '',
     );
-    body.replaceChildren(list, dir);
+    body.replaceChildren(content, pager, dir);
   }
 
   function renderConfig(cfg) {
@@ -624,8 +702,8 @@
 
   async function refreshApps() {
     try {
-      const data = await fetchJSON('/api/apps');
-      renderApps(data);
+      state.appsData = await fetchJSON('/api/apps');
+      renderApps();
     } catch (e) {
       const body = $('apps-body');
       if (body) body.replaceChildren(el('div', { class: 'empty' }, `Error: ${e.message}`));
@@ -894,11 +972,36 @@
     const appsBody = $('apps-body');
     if (appsBody) {
       appsBody.addEventListener('click', (event) => {
+        const pageButton = event.target.closest('[data-apps-page]');
+        if (pageButton) {
+          state.appsPage += pageButton.getAttribute('data-apps-page') === 'next' ? 1 : -1;
+          renderApps();
+          return;
+        }
         const button = event.target.closest('[data-app-action]');
         if (!button) return;
-        void controlDynamicApp(button);
+        void controlApp(button);
       });
     }
+    $('apps-search')?.addEventListener('input', (event) => {
+      state.appsQuery = event.target.value;
+      state.appsPage = 0;
+      renderApps();
+    });
+    $('apps-import-btn')?.addEventListener('click', () => {
+      $('apps-import-file')?.click();
+    });
+    $('apps-import-file')?.addEventListener('change', async (event) => {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      if (!file) return;
+      try {
+        await deployAppFile(file);
+      } catch (e) {
+        toast(`Deploy failed: ${e.message}`, 'err');
+        await alertPopup(`Deploy failed: ${e.message}`);
+      }
+    });
     $('pause-btn').addEventListener('click', () => {
       state.paused = !state.paused;
       $('pause-btn').textContent = state.paused ? 'Resume' : 'Pause';

@@ -31,7 +31,6 @@ import {
 } from "./agent-login.js";
 import {
   appsDirOf,
-  deployAppFromSource,
   dynamicAppsMatches,
   handleDynamicApps,
   listApps,
@@ -431,38 +430,6 @@ export function handleAdminDashboard(
   }
   if (req.method === "GET" && pathname === "/plugins") {
     return serveBridgeHtml(req, res, path.join(publicDir, "plugins.html"));
-  }
-  if (req.method === "POST" && pathname === "/api/apps/deploy") {
-    let raw = "";
-    req.on("data", (c) => (raw += c));
-    req.on("end", () => {
-      let body: { name?: string; sourceDir?: string } = {};
-      try {
-        body = JSON.parse(raw || "{}") as typeof body;
-      } catch {
-        return json(res, 400, { error: "invalid json" });
-      }
-      const name = String(body.name ?? "").trim();
-      const sourceDir = String(body.sourceDir ?? "").trim();
-      if (!name || !sourceDir) {
-        return json(res, 400, { error: "name and sourceDir are required" });
-      }
-      const result = deployAppFromSource(
-        appsDirOf(config),
-        name,
-        sourceDir,
-        config.workspace,
-      );
-      if (!result.ok) return json(res, 400, { error: result.error });
-      const ctx = getBridgePublicContext(req);
-      const mount = ctx?.mount ?? "";
-      json(res, 200, {
-        ...result,
-        url: publicPath(result.url, mount, config.appSegment),
-        shortUrl: publicPath(result.shortUrl, mount, config.appSegment),
-      });
-    });
-    return;
   }
   if (dynamicAppsMatches(req, config) && handleDynamicApps(req, res, config)) {
     return;

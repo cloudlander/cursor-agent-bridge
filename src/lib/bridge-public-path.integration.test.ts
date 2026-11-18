@@ -189,7 +189,7 @@ describe("public path routing", () => {
     }
   });
 
-  it("proxies a catalog app under the public path without a bridge restart", async () => {
+  it("proxies a deployed dynamic app under the public path without a bridge restart", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "catalog-public-"));
     const sessionsLog = path.join(root, "sessions.log");
     fs.writeFileSync(sessionsLog, "");
@@ -236,15 +236,20 @@ describe("public path routing", () => {
     const { server, port } = await listen(listener);
     const base = `http://127.0.0.1:${port}/proxy/8100/cursor-agent`;
     try {
-      const registered = await fetch(`${base}/api/apps/catalog`, {
+      const registered = await fetch(`${base}/api/apps/deploy`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: "ccv", port: upstreamPort, title: "CCV" }),
       });
       expect(registered.status).toBe(200);
 
-      const page = await fetch(`${base}/apps`);
-      expect(await page.text()).toContain("CCV");
+      const listed = (await (await fetch(`${base}/api/apps`)).json()) as {
+        apps: { name: string; title?: string; url: string }[];
+      };
+      expect(listed.apps.find((app) => app.name === "ccv")).toMatchObject({
+        title: "CCV",
+        url: "/proxy/8100/cursor-agent/apps/ccv/",
+      });
 
       const proxied = await fetch(`${base}/apps/ccv/api/auth-setup`, {
         headers: {

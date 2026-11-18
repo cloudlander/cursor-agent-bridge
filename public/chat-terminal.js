@@ -5,6 +5,7 @@
   const PANEL_WIDTH_KEY = 'cursor-bridge-chat-right-panel-width';
   const PANEL_TAB_KEY = 'cursor-bridge-chat-right-panel-tab';
   const PANEL_APP_KEY = 'cursor-bridge-chat-right-panel-app';
+  const APPS_UNFILTERED_LIMIT = 10;
   const PANEL_WIDTH_MIN = 280;
   const PANEL_WIDTH_DEFAULT = 420;
 
@@ -305,9 +306,9 @@
     });
   }
 
-  function fetchApi(path) {
+  function fetchApi(path, init) {
     const url = typeof bridgePath === 'function' ? bridgePath(path) : path;
-    return fetch(url);
+    return fetch(url, init);
   }
 
   function appUrl(app) {
@@ -316,7 +317,7 @@
 
   function appOptionLabel(app) {
     const name = app.title || app.name;
-    if (app.kind !== 'proxy') return `${name} · static`;
+    if (app.kind !== 'dynamic') return `${name} · static`;
     if (app.desired === 'stopped') return `${name} · stopped`;
     if (app.online === false) return `${name} · offline`;
     return `${name} · online`;
@@ -337,12 +338,38 @@
     empty.textContent = text;
   }
 
+  function setAppsStatus(text, kind) {
+    const status = $('chat-apps-status');
+    if (!status) return;
+    status.hidden = !text;
+    status.textContent = text || '';
+    status.dataset.kind = kind || '';
+  }
+
+  function selectedApp() {
+    const name = $('chat-apps-select')?.value;
+    return apps.find(item => item.name === name);
+  }
+
+  function syncAppActions(app) {
+    const exportBtn = $('chat-apps-export');
+    const restartBtn = $('chat-apps-restart');
+    if (exportBtn) exportBtn.hidden = !app;
+    if (restartBtn) {
+      restartBtn.hidden = !app || app.kind !== 'dynamic';
+      const noLaunch = app?.managed === false && app?.desired !== 'stopped';
+      restartBtn.disabled = noLaunch;
+      restartBtn.title = noLaunch ? 'No launch command registered' : 'Restart this dynamic app';
+    }
+  }
+
   function showAppFrame(name, force) {
     const frame = $('chat-apps-frame');
     const open = $('chat-apps-open');
     const select = $('chat-apps-select');
     const app = apps.find(item => item.name === name);
     const url = appUrl(app);
+    syncAppActions(url ? app : undefined);
     if (!url) {
       frame?.setAttribute('hidden', '');
       frame?.removeAttribute('src');
@@ -350,7 +377,11 @@
         open.hidden = true;
         open.removeAttribute('href');
       }
-      setAppsMessage(appsLoaded ? 'No apps deployed yet.' : 'Loading apps…', true);
+      const noMatch = apps.length > 0 && appSearchQuery();
+      setAppsMessage(
+        !appsLoaded ? 'Loading apps…' : noMatch ? 'No apps match the search.' : 'No apps deployed yet.',
+        true,
+      );
       return;
     }
     try {
@@ -370,28 +401,40 @@
     }
   }
 
+  function appSearchQuery() {
+    return ($('chat-apps-search')?.value || '').trim().toLowerCase();
+  }
+
+  function visibleApps() {
+    const q = appSearchQuery();
+    if (!q) return apps.slice(0, APPS_UNFILTERED_LIMIT);
+    return apps.filter(app => app.name.toLowerCase().includes(q)
+      || String(app.title || '').toLowerCase().includes(q));
+  }
+
   function renderAppSelect(preferred, force) {
     const select = $('chat-apps-select');
     if (!select) return;
     const current = preferred || select.value || readSavedApp();
+    const shown = visibleApps();
     select.replaceChildren();
-    if (apps.length === 0) {
+    if (shown.length === 0) {
       const opt = document.createElement('option');
       opt.value = '';
-      opt.textContent = 'No apps';
+      opt.textContent = apps.length === 0 ? 'No apps' : 'No matches';
       select.appendChild(opt);
       select.disabled = true;
       showAppFrame('');
       return;
     }
     select.disabled = false;
-    for (const app of apps) {
+    for (const app of shown) {
       const opt = document.createElement('option');
       opt.value = app.name;
       opt.textContent = appOptionLabel(app);
       select.appendChild(opt);
     }
-    const pick = apps.some(app => app.name === current) ? current : apps[0].name;
+    const pick = shown.some(app => app.name === current) ? current : shown[0].name;
     select.value = pick;
     showAppFrame(pick, force);
   }
@@ -410,6 +453,77 @@
     renderAppSelect(undefined, forceReload);
   }
 
+  async function responseError(res) {
+    const data = await res.json().catch(() => ({}));
+    return new Error(data.error || `${res.status} ${res.statusText}`);
+  }
+
+  async function exportSelectedApp() {
+    const app = selectedApp();
+    if (!app) return;
+    const button = $('chat-apps-export');
+    if (button) button.disabled = true;
+    setAppsStatus('');
+    try {
+      const res = await fetchApi(`/api/apps/${encodeURIComponent(app.name)}/export`);
+      if (!res.ok) throw await responseError(res);
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = `${app.name}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+    } catch (err) {
+      setAppsStatus(`Export failed: ${err.message}`, 'err');
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function restartSelectedApp() {
+    const app = selectedApp();
+    if (!app || app.kind !== 'dynamic') return;
+    if (!window.confirm(`Restart ${app.name}?`)) return;
+    const button = $('chat-apps-restart');
+    if (button) button.disabled = true;
+    setAppsStatus(`Restarting ${app.name}…`);
+    try {
+      const res = await fetchApi(`/api/apps/${encodeURIComponent(app.name)}/restart`, { method: 'POST' });
+      if (!res.ok) throw await responseError(res);
+      setAppsStatus(`Restarted ${app.name}. Reload once it is up.`);
+      await loadApps(false);
+    } catch (err) {
+      setAppsStatus(`Restart failed: ${err.message}`, 'err');
+    } finally {
+      syncAppActions(selectedApp());
+    }
+  }
+
+  async function deployAppFile(file) {
+    if (!window.confirm(`Deploy ${file.name}? An existing app with the same name is replaced.`)) return;
+    setAppsStatus(`Deploying ${file.name}…`);
+    try {
+      const res = await fetchApi('/api/apps/deploy', {
+        method: 'POST',
+        headers: { 'content-type': 'application/zip' },
+        body: file,
+      });
+      if (!res.ok) throw await responseError(res);
+      const data = await res.json().catch(() => ({}));
+      const extra = data.kind === 'dynamic' ? '; the supervisor is starting it' : '';
+      setAppsStatus(`Deployed ${data.name || file.name}${extra}.`);
+      const search = $('chat-apps-search');
+      if (data.name && search) search.value = data.name;
+      await loadApps(false);
+      if (data.name && apps.some(item => item.name === data.name)) renderAppSelect(data.name, true);
+    } catch (err) {
+      setAppsStatus(`Deploy failed: ${err.message}`, 'err');
+    }
+  }
+
   function showActiveTab() {
     if (activeTab === 'apps' && panelOpen()) {
       loadApps(false).catch(err => {
@@ -425,6 +539,9 @@
     $('chat-apps-pane')?.toggleAttribute('hidden', !appsOn);
     for (const el of document.querySelectorAll('.chat-terminal-tools')) {
       el.toggleAttribute('hidden', appsOn);
+    }
+    for (const el of document.querySelectorAll('.chat-apps-tools')) {
+      el.toggleAttribute('hidden', !appsOn);
     }
     const termTab = $('chat-right-tab-terminal');
     const appsTab = $('chat-right-tab-apps');
@@ -501,7 +618,26 @@
     $('chat-apps-select')?.addEventListener('change', event => {
       showAppFrame(event.target.value);
     });
+    $('chat-apps-search')?.addEventListener('input', () => {
+      if (!appsLoaded) return;
+      renderAppSelect(visibleApps()[0]?.name);
+    });
+    $('chat-apps-export')?.addEventListener('click', () => {
+      void exportSelectedApp();
+    });
+    $('chat-apps-restart')?.addEventListener('click', () => {
+      void restartSelectedApp();
+    });
+    $('chat-apps-deploy')?.addEventListener('click', () => {
+      $('chat-apps-deploy-file')?.click();
+    });
+    $('chat-apps-deploy-file')?.addEventListener('change', event => {
+      const file = event.target.files && event.target.files[0];
+      event.target.value = '';
+      if (file) void deployAppFile(file);
+    });
     $('chat-apps-reload')?.addEventListener('click', () => {
+      setAppsStatus('');
       loadApps(true).catch(err => {
         appsLoaded = false;
         setAppsMessage(`Could not load apps: ${err.message}`, true);

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -164,5 +165,41 @@ describe("dynamic-app-supervisor", () => {
     fs.writeFileSync(catalogFile, JSON.stringify({ ...entry, desired: "stopped" }));
     expect(await restartDynamicApp(appsDir, "plain")).toMatchObject({ ok: true, desired: "running" });
     expect(readCatalogEntry(appsDir, "plain")?.desired).toBe("running");
+  });
+
+  it("marks a dynamic app without a launch command alive from health probes", async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "dyn-supervisor-"));
+    const appsDir = path.join(tmp, "apps");
+    const catalogDir = path.join(appsDir, ".catalog");
+    fs.mkdirSync(catalogDir, { recursive: true });
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, name: "live" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const port = (server.address() as { port: number }).port;
+    const old = new Date(Date.now() - 120_000).toISOString();
+    fs.writeFileSync(
+      path.join(catalogDir, "live.json"),
+      JSON.stringify({
+        name: "live",
+        port,
+        ttlMs: 5_000,
+        registeredAt: old,
+        heartbeatAt: old,
+        desired: "running",
+      }),
+    );
+    try {
+      startDynamicAppSupervisor(appsDir, { intervalMs: 100 });
+      const deadline = Date.now() + 3_000;
+      while (readCatalogEntry(appsDir, "live")?.heartbeatAt === old && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const beat = Date.parse(readCatalogEntry(appsDir, "live")?.heartbeatAt ?? "");
+      expect(Date.now() - beat).toBeLessThan(5_000);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });
