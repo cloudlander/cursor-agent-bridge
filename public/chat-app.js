@@ -1868,10 +1868,11 @@
       const collapsed = isWorkspaceCollapsed(ws.id);
       const count = loaded ? sessions.length : null;
       const busy = workspaceBusy(ws.id);
+      const workspaceTitle = ws.name && ws.name !== ws.id ? `${ws.id}\n${ws.name}` : ws.id;
       const nameBtn = el('button', {
         type: 'button',
         class: 'chat-workspace-name',
-        title: ws.name,
+        title: workspaceTitle,
         onclick: e => { e.stopPropagation(); void activateWorkspace(ws.id); },
       }, ws.name);
       const actions = el('span', { class: 'chat-thread-actions' },
@@ -1892,6 +1893,7 @@
         class: `chat-workspace-row${ws.id === state.currentWorkspaceId ? ' current' : ''}${busy && collapsed ? ' generating' : ''}`,
         'data-workspace-id': ws.id,
         'data-collapsed': collapsed ? '1' : '0',
+        title: workspaceTitle,
       },
         el('button', {
           type: 'button',
