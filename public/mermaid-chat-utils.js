@@ -3,8 +3,31 @@
 
   const MERMAID_BLOCKED_SVG_TAGS = new Set(['script', 'iframe', 'object', 'embed']);
 
+  const SEQ_ARROW = '(?:<<)?--?(?:>>|>|x|\\))';
+  const SEQ_ID = '[^\\s:<>+\\-]+';
+  const SEQ_CHAIN_RE = new RegExp(
+    `^(\\s*)(${SEQ_ID})((?:\\s*${SEQ_ARROW}\\s*[+\\-]?${SEQ_ID}){2,})\\s*:(.*)$`,
+  );
+  const SEQ_HOP_RE = new RegExp(`\\s*(${SEQ_ARROW})\\s*([+\\-]?${SEQ_ID})`, 'g');
+
+  /** Models sometimes write `A-->>B-->>C: text`, which Mermaid rejects; emit one message per hop. */
+  function splitChainedSequenceMessage(line) {
+    const m = SEQ_CHAIN_RE.exec(line);
+    if (!m) return line;
+    const [, indent, first, chain, text] = m;
+    const out = [];
+    let from = first;
+    for (const [, arrow, to] of chain.matchAll(SEQ_HOP_RE)) {
+      out.push(`${indent}${from}${arrow}${to}:${text}`);
+      from = to.replace(/^[+-]/, '');
+    }
+    return out.join('\n');
+  }
+
   function prepareMermaidSource(source) {
     const lines = String(source || '').replace(/\r\n/g, '\n').split('\n');
+    const first = lines.find((l) => l.trim() && !l.trim().startsWith('%%')) || '';
+    const isSequence = /^sequenceDiagram\b/i.test(first.trim());
     return lines
       .map((line) => {
         const trimmed = line.trimStart();
@@ -14,6 +37,8 @@
         if (/^Note\s+(over|left of|right of)/i.test(trimmed) || /^title\s/i.test(trimmed)) {
           return line.replace(/<br\s*\/?>/gi, ' ');
         }
+        // Sequence messages natively support <br/>; a real newline would break the statement.
+        if (isSequence) return splitChainedSequenceMessage(line);
         if (/(-->|--|==>|===)/.test(line) && /[|"].*<br/i.test(line)) {
           return line.replace(/<br\s*\/?>/gi, ' ');
         }
@@ -22,9 +47,16 @@
       .join('\n');
   }
 
+  /** Mermaid HTML labels emit void tags like <br>; XML parsing needs them self-closed. */
+  function normalizeMermaidSvgForXml(svg) {
+    return String(svg)
+      .replace(/<(br|hr|img|wbr)\b([^>]*?)\s*\/?>/gi, '<$1$2 />')
+      .replace(/&nbsp;/g, '&#160;');
+  }
+
   function sanitizeMermaidSvg(svg) {
     if (!svg || typeof svg !== 'string') return '';
-    const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+    const doc = new DOMParser().parseFromString(normalizeMermaidSvgForXml(svg), 'image/svg+xml');
     const root = doc.documentElement;
     if (!root || root.nodeName.toLowerCase() !== 'svg') return '';
     const walk = (node) => {

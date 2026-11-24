@@ -43,6 +43,22 @@ describe("prepareMermaidSource", () => {
     expect(out).not.toMatch(/participant[^\n]*\n[^\n]*Node/);
   });
 
+  it("keeps <br/> inside sequenceDiagram messages and alt/loop text", () => {
+    const inSrc =
+      "sequenceDiagram\n  participant C as Cloud<br/>API\n  A->>C: step 1<br/>(detail)\n  C-->>A: ok<br/>done";
+    const out = utils.prepareMermaidSource(inSrc);
+    expect(out).toContain("participant C as Cloud API");
+    expect(out).toContain("A->>C: step 1<br/>(detail)");
+    expect(out).toContain("C-->>A: ok<br/>done");
+  });
+
+  it("splits chained sequence arrows into one message per hop", () => {
+    const inSrc = "sequenceDiagram\n    Core-->>DL-->>Admin: Data Lake = RUNNING\n    A->>B: plain";
+    const out = utils.prepareMermaidSource(inSrc);
+    expect(out).toContain("    Core-->>DL: Data Lake = RUNNING\n    DL-->>Admin: Data Lake = RUNNING");
+    expect(out).toContain("    A->>B: plain");
+  });
+
   it("converts <br/> to newlines inside flowchart node labels", () => {
     const inSrc = 'flowchart TB\n  U["line1<br/>line2"]';
     const out = utils.prepareMermaidSource(inSrc);
@@ -57,6 +73,14 @@ describe("sanitizeMermaidSvg", () => {
     const out = utils.sanitizeMermaidSvg(svg);
     expect(out.toLowerCase()).toContain("foreignobject");
     expect(out).toContain("<path");
+  });
+
+  it("keeps svg with unclosed <br> in HTML labels", () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml">a<br>b&nbsp;c</div></foreignObject><path d="M0 0"/></svg>';
+    const out = utils.sanitizeMermaidSvg(svg);
+    expect(out).toContain("<path");
+    expect(out).toContain("<br");
   });
 
   it("strips script tags", () => {
